@@ -1,0 +1,17 @@
+{
+    "manifest_version": 3,
+    "name": "FanVPN AI Bridge",
+    "version": "1.0.0",
+    "description": "Routes VS Code AI plugin requests through FanVPN browser proxy to access external AI APIs.",
+    "permissions": [
+        "nativeMessaging",
+        "offscreen"
+    ],
+    "host_permissions": [
+        "https://*/*",
+        "http://*/*"
+    ],
+    "background": {
+        "service_worker": "background.js"
+    }
+}

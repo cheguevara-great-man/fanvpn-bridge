@@ -1,0 +1,9 @@
+﻿{
+    "path":  "D:\\software\\Note\\fanvpn-bridge\\native-host\\bridge.bat",
+    "description":  "FanVPN Bridge for VS Code AI plugins",
+    "name":  "com.fanvpn.bridge",
+    "allowed_origins":  [
+                            "chrome-extension://eajodnnphjopelanpfopgaamnepnpdno/"
+                        ],
+    "type":  "stdio"
+}
