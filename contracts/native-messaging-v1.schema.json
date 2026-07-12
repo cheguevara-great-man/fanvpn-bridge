@@ -1,0 +1,235 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/cheguevara-great-man/fanvpn-bridge/contracts/native-messaging-v1.schema.json",
+  "title": "FanVPN Bridge Native Messaging Protocol v1",
+  "description": "Versioned envelopes exchanged between the native host and the Chrome extension.",
+  "oneOf": [
+    { "$ref": "#/$defs/hello" },
+    { "$ref": "#/$defs/helloAck" },
+    { "$ref": "#/$defs/requestHead" },
+    { "$ref": "#/$defs/requestBody" },
+    { "$ref": "#/$defs/requestAbort" },
+    { "$ref": "#/$defs/responseHead" },
+    { "$ref": "#/$defs/responseBody" },
+    { "$ref": "#/$defs/flowAck" },
+    { "$ref": "#/$defs/messageError" },
+    { "$ref": "#/$defs/ping" },
+    { "$ref": "#/$defs/pong" }
+  ],
+  "$defs": {
+    "protocolVersion": { "const": 1 },
+    "requestId": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "headers": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "array",
+        "prefixItems": [
+          { "type": "string", "minLength": 1, "maxLength": 256 },
+          { "type": "string", "maxLength": 16384 }
+        ],
+        "items": false,
+        "minItems": 2,
+        "maxItems": 2
+      }
+    },
+    "base": {
+      "type": "object",
+      "required": ["v", "type"],
+      "properties": {
+        "v": { "$ref": "#/$defs/protocolVersion" },
+        "type": { "type": "string" }
+      }
+    },
+    "hello": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "host_version", "max_chunk_bytes", "max_in_flight"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "hello" },
+            "host_version": { "type": "string", "minLength": 1 },
+            "max_chunk_bytes": { "type": "integer", "minimum": 16384, "maximum": 262144 },
+            "max_in_flight": { "type": "integer", "minimum": 1, "maximum": 16 }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "helloAck": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "extension_version", "executor"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "hello_ack" },
+            "extension_version": { "type": "string", "minLength": 1 },
+            "executor": { "enum": ["service_worker", "offscreen"] }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "requestHead": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "id", "method", "url", "headers"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "request.head" },
+            "id": { "$ref": "#/$defs/requestId" },
+            "method": { "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"] },
+            "url": { "type": "string", "format": "uri", "pattern": "^https://" },
+            "headers": { "$ref": "#/$defs/headers" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "requestBody": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "id", "seq", "data", "end"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "request.body" },
+            "id": { "$ref": "#/$defs/requestId" },
+            "seq": { "type": "integer", "minimum": 0 },
+            "data": { "type": "string", "contentEncoding": "base64", "maxLength": 349528 },
+            "end": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "requestAbort": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "id", "reason"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "request.abort" },
+            "id": { "$ref": "#/$defs/requestId" },
+            "reason": { "enum": ["client_cancelled", "timeout", "host_shutdown"] }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "responseHead": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "id", "status", "headers"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "response.head" },
+            "id": { "$ref": "#/$defs/requestId" },
+            "status": { "type": "integer", "minimum": 100, "maximum": 599 },
+            "headers": { "$ref": "#/$defs/headers" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "responseBody": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "id", "seq", "data", "end"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "response.body" },
+            "id": { "$ref": "#/$defs/requestId" },
+            "seq": { "type": "integer", "minimum": 0 },
+            "data": { "type": "string", "contentEncoding": "base64", "maxLength": 349528 },
+            "end": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "flowAck": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "id", "stream", "seq"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "flow.ack" },
+            "id": { "$ref": "#/$defs/requestId" },
+            "stream": { "enum": ["request", "response"] },
+            "seq": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "messageError": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "code", "message", "retryable"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "error" },
+            "id": { "$ref": "#/$defs/requestId" },
+            "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]+$" },
+            "message": { "type": "string", "maxLength": 4096 },
+            "retryable": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "ping": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "nonce"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "ping" },
+            "nonce": { "type": "string", "minLength": 1, "maxLength": 64 }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "pong": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "nonce"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "pong" },
+            "nonce": { "type": "string", "minLength": 1, "maxLength": 64 }
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

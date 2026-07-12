@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.log
+native-host/config.local.json
+native-host/com.fanvpn.bridge.local.json
+.env
+.env.*
+!.env.example

@@ -1,0 +1,28 @@
+{
+  "listen": {
+    "host": "127.0.0.1",
+    "port": 18888
+  },
+  "protocol": {
+    "max_chunk_bytes": 262144,
+    "max_in_flight": 4,
+    "request_timeout_seconds": 600
+  },
+  "routes": {
+    "openai": {
+      "upstream_base_url": "https://api.openai.com",
+      "remove_path_prefix": "",
+      "probe_path": "/v1/models"
+    },
+    "anthropic": {
+      "upstream_base_url": "https://api.anthropic.com",
+      "remove_path_prefix": "",
+      "probe_path": "/v1/models"
+    },
+    "gemini-openai": {
+      "upstream_base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "remove_path_prefix": "/v1",
+      "probe_path": "/models"
+    }
+  }
+}

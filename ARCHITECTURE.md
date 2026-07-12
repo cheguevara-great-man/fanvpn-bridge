@@ -1,391 +1,195 @@
-# FanVPN Bridge — 架构与技术文档
+# FanVPN Bridge v2 目标架构
 
-## 概述
+## 1. 可行性结论
 
-FanVPN Bridge 是一个本地桥接系统，让 VS Code AI 编程插件通过 Chrome 浏览器中的 FanVPN 扩展访问境外 AI 服务（OpenAI、Gemini、Anthropic 等）。
+这个目标在技术上可行，但需要把三层职责严格分开：
 
-**核心问题：** FanVPN 作为 Chrome 浏览器扩展，不开放本地代理端口，其他程序无法直接使用其通道。
+1. **AI 客户端层**：Codex 使用 Responses API；Claude Code 使用 Anthropic Messages API；CC Switch 可承担跨供应商协议转换。
+2. **FanVPN Bridge 传输层**：把本机 HTTP 请求无损送到 Chrome，并把 Chrome 收到的 HTTP 响应无损流回本机。
+3. **浏览器出口层**：在 Chrome 扩展上下文执行 `fetch`，由 FanVPN 已设置的浏览器代理承载网络流量。
 
-**解决方案：** 通过 Chrome Native Messaging 机制，构建一个"本地程序 ↔ Chrome 扩展"的桥接链路，让 VS Code 插件的 HTTP 请求经过 Chrome 浏览器上下文发出，从而走 FanVPN 代理。
+Gemini 3 的 `thoughtSignature` 必须随函数调用历史原样回传。这是有状态协议转换问题，应在 CC Switch 的 Gemini 适配器中解决。Bridge 不解析或修改 JSON 请求体，否则会同时破坏 OpenAI、Anthropic 和未来协议的透明性。
 
----
+## 2. v1 原型评估
 
-## 架构图
+现有原型验证了有价值的核心假设：本机 HTTP 可以通过 Native Messaging 送入 Chrome，Chrome 可以把响应流回本机。它不适合作为最终架构，主要原因如下。
 
-```
-┌──────────────────────────────────────────────────────────┐
-│  VS Code (Codex / Cline / Continue / Kilo Code 等)       │
-│  Base URL = http://127.0.0.1:18888                       │
-│  POST /v1/chat/completions                               │
-└─────────────────────┬────────────────────────────────────┘
-                      │  HTTP (普通 HTTPS 请求)
-                      ▼
-┌──────────────────────────────────────────────────────────┐
-│  bridge.py (SERVER 模式)                                  │
-│  PID 主进程，用户手动启动，常驻后台                         │
-│                                                          │
-│  :18888  ← HTTP Server (ThreadingHTTPServer)             │
-│            · 接收 VS Code 插件的 OpenAI 兼容 API 请求       │
-│            · 路径重写（strip_path_prefix）                 │
-│            · 生成 request_id，加入等待队列                 │
-│                                                          │
-│  :18889  ← Bridge TCP Listener                          │
-│            · 接受来自 bridge 进程的 TCP 连接               │
-│            · 双向转发 JSON 消息帧                          │
-└──────────┬───────────────────────┬───────────────────────┘
-           │  TCP :18889           │  HTTP :18888
-           │  (消息帧协议)           │  (请求 → 响应)
-           ▼                       ▼
-┌──────────────────────┐   VS Code 插件的请求从这里进入
-│  bridge.py           │   响应也从这里返回
-│  (BRIDGE 模式)        │
-│  Chrome 拉起           │
-│                       │
-│  stdin/stdout  ←→  TCP :18889
-│  纯消息帧转发，不解析内容
-└──────────┬────────────┘
-           │  Native Messaging (stdin/stdout)
-           │  4 字节 LE uint32 长度 + UTF-8 JSON
-           ▼
-┌──────────────────────────────────────────────────────────┐
-│  Chrome Extension (FanVPN AI Bridge)                      │
-│  Manifest V3, Service Worker + Offscreen Document         │
-│                                                          │
-│  background.js (Service Worker)                          │
-│    · chrome.runtime.connectNative() 建立 NM 连接          │
-│    · 接收 HTTP 请求，转发给 Offscreen Document            │
-│    · 25s 心跳 keep-alive，断线自动重连                     │
-│                                                          │
-│  offscreen.js (Offscreen Document)                       │
-│    · 在页面上下文中执行 fetch()                            │
-│    · 支持流式 (SSE) 和非流式响应                           │
-│    · 流式响应分批发回 Service Worker                       │
-└──────────┬──────────────────────────┬───────────────────┘
-           │  fetch() 页面上下文       │  sendMessage
-           │  (走 Chrome 代理设置)     │  (批量流式块)
-           ▼                          ▼
-┌──────────────────────┐   Service Worker 接收流式块
-│  FanVPN 扩展          │   逐块转发给 Native Host
-│  (chrome.proxy API)   │
-└──────────┬───────────┘
-           │  代理隧道
-           ▼
-┌──────────────────────────────────────────────────────────┐
-│  境外 AI API                                              │
-│  api.openai.com / generativelanguage.googleapis.com 等   │
-└──────────────────────────────────────────────────────────┘
+| 问题 | 影响 | v2 决策 |
+|---|---|---|
+| 手工启动 SERVER，再由 Chrome 启动 BRIDGE，并经 TCP `18889` 串联 | 双进程、双端口、角色探测和重连状态复杂 | Native Host 自身同时承担本地 HTTP Gateway，只保留一个进程 |
+| 通过 `18888` 是否有人监听来猜测进程角色 | 其他进程占端口时会误判，缺少所有权证明 | Chrome 明确拉起 Native Host；绑定失败即报告冲突并退出 |
+| Host 到 Chrome 的整份请求作为一条消息发送 | Native Messaging 单条 Host→Chrome 消息上限为 1 MiB，大工具定义/图片会失败 | 所有请求和响应都使用固定上限的分片帧 |
+| Offscreen 创建使用新版本 `hasDocument()`，且无并发创建锁 | 在较旧 Chrome 上错误判断，可能重复创建 | 最低 Chrome 116；使用 `runtime.getContexts()` 与单一创建 Promise |
+| Offscreen 失败后回退 Service Worker 直连 | 可能绕开 FanVPN，产生不可预测的直连 | 失败关闭，返回明确的 `EGRESS_UNAVAILABLE` |
+| 按 Content-Type 决定是否流式 | 大型非 SSE 响应被完整缓存 | 所有响应体按字节流转发 |
+| 固定单一 `target_base_url` | 无法同时服务 OpenAI、Anthropic、Gemini 路由 | 使用显式 route profile 与上游 allowlist |
+| 日志/配置边界不足 | 可能泄漏认证头或混淆网络与协议错误 | 结构化错误码、认证头脱敏、分层健康状态 |
+
+## 3. 进程和生命周期
+
+```text
+Chrome profile starts
+  └─ MV3 service worker calls runtime.connectNative()
+       └─ Chrome starts fanvpn_bridge native host
+            ├─ stdin/stdout: Native Messaging channel
+            └─ 127.0.0.1:18888: local HTTP gateway
 ```
 
----
+`connectNative()` 创建的 Port 同时保持 Native Host 和扩展 Service Worker 的生命周期。Port 断开后，扩展按退避策略重连；Native Host 在 stdin EOF 后停止接收新请求、取消在途请求并退出。
 
-## 关键设计决策
+不再使用 `bridge_port`，也不要求用户先手工启动 Python 服务。开发阶段仍使用 Python 启动器；发布阶段打包成独立 EXE，消除 Python 环境依赖。
 
-### 1. 为什么需要 Offscreen Document
+## 4. 模块划分
 
-**问题：** Chrome MV3 Service Worker 中的 `fetch()` 不经过 `chrome.proxy` 设置的代理。FanVPN 通过 `chrome.proxy` API 设置代理，但仅对"页面上下文"生效，Service Worker 的请求绕过代理直接走系统网络栈。
-
-**解决：** 使用 `chrome.offscreen` API 创建一个隐藏的 Offscreen Document（拥有 DOM 的页面上下文），所有 `fetch()` 在此执行，FanVPN 即可正常拦截。
-
-```
-Service Worker (接收 NM 消息)
-    │
-    │ chrome.runtime.sendMessage({type: "fetch-request", ...})
-    ▼
-Offscreen Document (页面上下文)
-    │
-    │ fetch(url, options)  ← 走 chrome.proxy → FanVPN
-    ▼
-   境外 AI API
-```
-
-### 2. 为什么用 TCP 而不是单进程
-
-**问题：** Chrome Native Messaging 要求 Chrome 拉起宿主进程，通过 stdin/stdout 通信。如果宿主进程同时要跑 HTTP Server，当 Service Worker 断开重连时，Chrome 会拉起第二个进程，导致端口冲突。
-
-**解决：** 二进程架构。同一份 `bridge.py` 自动判断角色：
-
-- **首次启动**（用户手动）：`:18888` 可绑定 → **SERVER 模式**，启动 HTTP Server + Bridge Listener
-- **Chrome 拉起**：`:18888` 已占用（connect 成功）→ **BRIDGE 模式**，连接 TCP，纯转发
-
-```python
-def main():
-    # 尝试连接 HTTP 端口来判断角色
-    probe = socket.socket()
-    probe.settimeout(0.5)
-    try:
-        probe.connect(("127.0.0.1", config["port"]))
-        run_bridge(config)   # 已连接 → BRIDGE
-    except (ConnectionRefusedError, OSError):
-        run_server(config)   # 无法连接 → SERVER
-```
-
-### 3. 为什么用 ThreadingHTTPServer 而不是 HTTPServer
-
-**问题：** Python 内置 `HTTPServer` 是单线程的。当 AI API 请求阻塞等待响应时（尤其是流式长连接），所有后续请求都会被阻塞。
-
-**解决：** 改用 `http.server.ThreadingHTTPServer`，每个请求独立线程处理。
-
----
-
-## 消息协议
-
-### 帧格式（TCP + Native Messaging 统一使用）
-
-```
-┌──────────────────────────────────────┐
-│  4 bytes: uint32 LE = 消息体长度      │
-├──────────────────────────────────────┤
-│  N bytes: UTF-8 JSON                 │
-└──────────────────────────────────────┘
-最大消息: 16 MiB
-```
-
-### 请求消息 (SERVER → BRIDGE → Extension)
-
-```json
-{
-  "id": "a1b2c3d4",
-  "method": "POST",
-  "url": "https://api.openai.com/v1/chat/completions",
-  "headers": {
-    "Authorization": "Bearer sk-xxx",
-    "Content-Type": "application/json"
-  },
-  "body": "<base64 编码的请求体>"
-}
-```
-
-### 响应消息 (Extension → BRIDGE → SERVER)
-
-**非流式完成：**
-```json
-{
-  "id": "a1b2c3d4",
-  "type": "complete",
-  "status": 200,
-  "headers": {"Content-Type": "application/json"},
-  "body": "<base64>"
-}
-```
-
-**流式块：**
-```json
-{"id": "a1b2c3d4", "type": "stream", "status": 200, "headers": {...}}
-{"id": "a1b2c3d4", "type": "stream", "body": "<base64 chunk>"}
-{"id": "a1b2c3d4", "type": "stream", "body": "<base64 chunk>"}
-{"id": "a1b2c3d4", "type": "done"}
-```
-
-**错误：**
-```json
-{"id": "a1b2c3d4", "type": "error", "error": "Failed to fetch"}
-```
-
-**心跳：**
-```json
-{"type": "ping"}
-{"type": "pong"}
-```
-
----
-
-## 请求生命周期
-
-```
-1. VS Code 插件发送 POST http://127.0.0.1:18888/v1/chat/completions
-2. ProxyHandler._proxy() 接收请求
-3. 应用 strip_path_prefix 配置：/v1/chat/completions → /chat/completions
-4. 拼接完整 URL：target_base_url + 路径
-5. 移除 hop-by-hop headers (Host, Connection 等)
-6. BridgeManager.forward_request() 生成 request_id
-7. 将请求 JSON 通过 TCP :18889 发送给 BRIDGE 进程
-8. BRIDGE 进程通过 stdout 转发给 Chrome 扩展
-9. Chrome Service Worker 接收，转发给 Offscreen Document
-10. Offscreen Document 执行 fetch()（走 FanVPN 代理）
-11. 响应沿原路返回：fetch → sendMessage → NM → TCP → PendingRequest
-12. PendingRequest 逐块传递响应给 HTTP ResponseWriter
-13. 流式响应使用 chunked transfer encoding 实时转发
-14. 请求完成，清理 pending request
-```
-
----
-
-## 并发处理
-
-```
-SERVER 主线程
-  ├── HTTP Server (ThreadingHTTPServer)
-  │   ├── 请求线程 1: 等待 bridge 响应...
-  │   ├── 请求线程 2: 等待 bridge 响应...
-  │   └── 请求线程 3: 等待 bridge 响应...
-  │
-  ├── Bridge Accept Thread: 接受 TCP 连接
-  │   └── Bridge Handler Thread: 读 TCP → dispatch to pending[]
-  │
-  └── 共享状态
-      ├── self.bridge_conn (conn_lock)
-      ├── self.pending = {id: PendingRequest} (pending_lock)
-      └── self.write_lock (TCP 写同步)
-
-BRIDGE 进程
-  ├── stdin→TCP thread: 读 stdin → 写 TCP
-  └── TCP→stdout thread: 读 TCP → 写 stdout
-```
-
----
-
-## 配置 (config.json)
-
-```json
-{
-    "port": 18888,
-    "bridge_port": 18889,
-    "target_base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-    "strip_path_prefix": "/v1",
-    "request_timeout": 120
-}
-```
-
-| 字段 | 说明 |
-|------|------|
-| `port` | HTTP Server 监听端口 |
-| `bridge_port` | Bridge TCP 监听端口 |
-| `target_base_url` | 目标 API 基础 URL |
-| `strip_path_prefix` | 从请求路径中剥离的前缀 |
-| `request_timeout` | 请求超时秒数 |
-
-### 配置示例
-
-| 目标 API | target_base_url | strip_path_prefix |
-|----------|----------------|-------------------|
-| OpenAI | `https://api.openai.com` | `""` |
-| Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | `"/v1"` |
-| Anthropic | `https://api.anthropic.com` | `""` |
-| Groq | `https://api.groq.com/openai` | `"/v1"` |
-| OpenRouter | `https://openrouter.ai/api` | `""` |
-
-### 路径重写示例 (Gemini)
-
-```
-VS Code 插件请求:  POST /v1/chat/completions
-strip_path_prefix: "/v1"
-重写后路径:         /chat/completions
-最终 URL:           https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
-```
-
----
-
-## 项目结构
-
-```
+```text
 fanvpn-bridge/
-├── native-host/
-│   ├── bridge.py              # 核心桥接程序 (SERVER + BRIDGE 二合一)
-│   ├── bridge.bat             # Native Messaging 启动器 (Chrome 调用)
-│   ├── config.json            # 配置文件
-│   └── test_bridge.py         # 端到端测试脚本
-├── chrome-extension/
-│   ├── manifest.json          # MV3 扩展声明
-│   ├── background.js          # Service Worker (NM 连接 + 消息路由)
-│   ├── offscreen.html         # Offscreen Document 宿主页
-│   └── offscreen.js           # fetch() 执行器 (页面上下文)
-├── install.ps1                # Windows 安装脚本
-└── ARCHITECTURE.md            # 本文档
+├─ chrome-extension/
+│  ├─ manifest.json                 # 当前 v1 原型清单
+│  ├─ background.js / offscreen.js  # 当前 v1 原型
+│  └─ src/
+│     └─ protocol.js                # v2 浏览器端契约与常量
+├─ native-host/
+│  ├─ bridge.py                     # 当前 v1 原型
+│  └─ fanvpn_bridge/
+│     ├─ contracts.py               # v2 端口/领域接口
+│     └─ errors.py                  # 跨层稳定错误码
+├─ contracts/
+│  └─ native-messaging-v1.schema.json
+├─ config/
+│  └─ routes.example.json
+├─ docs/
+│  ├─ REQUIREMENTS.md
+│  └─ adr/
+├─ tests/
+│  ├─ contract/
+│  └─ integration/
+└─ tools/
 ```
 
----
+实现阶段的 Native Host 内部分为以下端口：
 
-## 安装与使用
+- `LocalHttpServer`：只处理本地 HTTP 语义、客户端取消和 chunked response。
+- `RouteResolver`：把 `/{route}/...` 解析成受 allowlist 约束的上游 URL。
+- `NativeMessageChannel`：负责编解码、版本协商、分片与流控。
+- `RequestDispatcher`：用 request id 关联 HTTP 请求和浏览器响应。
+- `ResponseSink`：把 response head/body/end 写回具体 HTTP 连接。
+- `HealthSnapshotProvider`：分别报告进程、Native Messaging、浏览器执行器和最近出口错误。
 
-### 前置条件
+浏览器扩展内部分为：
 
-- Python 3.8+
-- Google Chrome（已安装 FanVPN 扩展）
-- VS Code + AI 编程插件
+- `NativePortController`：连接、握手、退避重连。
+- `FrameAssembler`：校验顺序并组装 request body 流。
+- `EgressExecutor`：在选定的 Chrome 上下文执行 `fetch`。
+- `ResponsePump`：读取 `ReadableStream`，按协议分片返回。
+- `CapabilityProbe`：区分 Native Host 不可用、执行器不可用与 FanVPN 代理不可用。
 
-### 安装步骤
+## 5. 本地 HTTP 接口
 
-```powershell
-# 1. 加载 Chrome 扩展
-# Chrome → chrome://extensions → 开发者模式 → 加载已解压的扩展
-# 选择: fanvpn-bridge\chrome-extension
-# 记下 32 位扩展 ID
+### 5.1 路由格式
 
-# 2. 注册 Native Messaging
-cd D:\software\Note\fanvpn-bridge
-.\install.ps1 -ExtensionId "你的扩展ID"
+本地 Base URL 为：
 
-# 3. 刷新 Chrome 扩展
-# chrome://extensions → FanVPN AI Bridge → 🔄 刷新
-
-# 4. 编辑 config.json 设置目标 API
-# native-host\config.json
-
-# 5. 启动桥接服务
-python D:\software\Note\fanvpn-bridge\native-host\bridge.py
+```text
+http://127.0.0.1:18888/{route}
 ```
 
-### VS Code 插件配置
+例子：
 
-插件 Base URL 设为：
-
+```text
+Codex       -> http://127.0.0.1:18888/openai/v1/responses
+Claude Code -> http://127.0.0.1:18888/anthropic/v1/messages
+CC Switch   -> http://127.0.0.1:18888/gemini-openai/v1/chat/completions
 ```
-http://127.0.0.1:18888
+
+`route` 只能来自本机配置。客户端不能通过 query、header 或绝对 URL 指定任意目标主机。
+
+### 5.2 管理端点
+
+- `GET /__bridge/health`：不访问外网，返回本地进程和通道状态。
+- `POST /__bridge/probe/{route}`：显式执行无凭据出口探测；任何 HTTP 响应（包括 401/403/404）都证明网络可达，连接错误则分类返回。
+- `GET /__bridge/version`：返回应用、协议和扩展版本，不包含环境变量或路径秘密。
+
+### 5.3 HTTP 透明性
+
+- 支持 GET/POST/PUT/PATCH/DELETE/OPTIONS/HEAD。
+- 删除 hop-by-hop headers；保留端到端 header，包括 `Authorization`、`x-api-key` 和供应商 beta header。
+- 请求体和响应体均按字节流传输，不解析 JSON，不根据 Content-Type 决定是否缓存。
+- 客户端断开时发送 `request.abort`，浏览器侧调用 `AbortController.abort()`。
+
+## 6. Native Messaging 协议
+
+规范文件为 `contracts/native-messaging-v1.schema.json`。
+
+关键约束：
+
+- 首次消息必须完成 `hello` / `hello_ack` 版本协商。
+- 单个原始 body chunk 最大 256 KiB；Base64 与 JSON 封装后仍显著低于 1 MiB。
+- 每个 body frame 带单调递增的 `seq`。
+- 双向最多允许 4 个未确认 body frame，使用累计 `flow.ack` 提供背压。
+- `request.head`、`response.head` 与 body/end 分离，支持真正的流式请求和响应。
+- 协议错误只终止对应 request；通道级损坏才断开整个 Port。
+
+## 7. 路由和协议边界
+
+### 7.1 直接访问
+
+```text
+Codex Responses API -> Bridge route=openai -> api.openai.com
+Claude Messages API -> Bridge route=anthropic -> api.anthropic.com
 ```
 
-API Key 填写目标服务的真实 Key。模型名填写目标服务支持的模型。
+Codex 当前自定义 provider 支持 `base_url`，但 wire API 只支持 `responses`。因此 Bridge 必须完整支持 `/v1/responses` 及其 SSE 语义，不能假设所有客户端都是 `/v1/chat/completions`。
 
----
+### 7.2 经 CC Switch 转换到 Gemini
 
-## 已测试验证
+```text
+Codex Responses
+  -> CC Switch (Responses -> Gemini/OpenAI-compatible conversion + signature state)
+  -> Bridge route=gemini-openai (transport only)
+  -> Gemini OpenAI compatibility endpoint
+```
 
-| 测试 | 状态 |
-|------|------|
-| `/health` 端口 | ✅ 200, `native_bridge_connected: true` |
-| `GET /v1/models` (通过 FanVPN → Gemini) | ✅ 200, 55 models |
-| `POST /v1/chat/completions` 非流式 | ✅ 200, `"Hello"` |
-| `POST /v1/chat/completions` 流式 SSE | ✅ 200, `'1\n2\n3\n4\n5'` |
-| 多线程并发 | ✅ ThreadingHTTPServer |
-| FanVPN 通道 (Offscreen Document) | ✅ cf-ray 确认走美国节点 |
-| 进程模式判断 (connect 法) | ✅ 无重复进程 |
+CC Switch 必须：
 
-### 踩过的坑（已修复）
+- 捕获 Gemini 返回的所有 relevant thought signatures；
+- 保持 part 的顺序和边界；
+- 在后续函数调用历史中原样回放；
+- 对流式空字符串/延迟出现的 signature 做稳定合并；
+- 绝不让 Bridge 伪造或缓存 signature。
 
-1. **`SO_REUSEADDR` 导致多 SERVER**：Windows 上允许多进程 bind 同一端口，改为 `connect()` 探测判断模式
-2. **`HTTPServer` 单线程阻塞**：流式请求占住唯一线程，新请求无法处理，改为 `ThreadingHTTPServer`
-3. **Offscreen Document 流式 done 信号缺失**：`forwardToNative` 收到 `stream-init` 后直接 return，没发 `done`，server 永久阻塞
-4. **Git `link.exe` 假货**：公司电脑 PATH 里 Git 的 `link.exe` 不是 MSVC 链接器，编译 CC Switch 需用 GitHub Actions
+## 8. Chrome 出口策略
 
----
+当前 v1 实测记录表明 Service Worker 直接 `fetch` 可能绕过 FanVPN，而 Offscreen Document 路径可工作。由于当前实机 FanVPN 处于代理连接失败状态，这一结论需要在恢复后重新做 A/B 验证。
 
-## 故障排查
+v2 把出口封装成 `EgressExecutor`，按以下顺序推进：
 
-| 现象 | 可能原因 | 解决 |
-|------|---------|------|
-| `502 Bridge not connected` | Chrome 未运行或扩展未加载 | 检查 chrome://extensions 确认扩展已启用 |
-| 请求超时无响应 | Offscreen Document 未创建 | 刷新扩展，检查扩展错误日志 |
-| `Connection refused` | bridge.py 未启动 | 运行 `python bridge.py` |
-| 重复进程 | 旧版 bug (SO_REUSEADDR) | 已修复，使用新版 bridge.py |
-| FanVPN 不生效 | fetch 在 Service Worker 执行 | 已修复，改用 Offscreen Document |
+1. 自动化测试分别验证 Service Worker 和 Offscreen 的出口 IP/可达性。
+2. 如果 Service Worker 确认走 FanVPN，优先采用它并删除 Offscreen 依赖。
+3. 如果只有 Offscreen 生效，使用 Chrome 116+ 的 `runtime.getContexts()` 管理唯一文档。
+4. 任一执行器不可用时失败关闭，不回退到未经验证的系统直连。
 
----
+Offscreen API 没有专用于网络请求的 reason，因此此路径属于兼容性风险，需要记录浏览器版本并保持替换能力。
 
-## 技术限制
+## 9. 错误分类
 
-- **不支持 WebSocket：** 仅支持标准 HTTP 请求（GET/POST/PUT/DELETE）
-- **Chrome 必须运行：** bridge 依赖 Chrome 扩展作为网络出口
-- **MV3 限制：** Service Worker 可能被 Chrome 回收（有心跳保活，但不能 100% 保证）
-- **单文件 > 1 MiB：** 受 Native Messaging 消息大小限制，超大型请求/响应可能失败
-- **仅 Windows：** 当前安装脚本仅支持 Windows（代码本身跨平台）
+| 错误码 | 层 | 示例 |
+|---|---|---|
+| `ROUTE_NOT_FOUND` | 本地路由 | route 未配置 |
+| `UPSTREAM_NOT_ALLOWED` | 安全策略 | URL 不在 allowlist |
+| `NATIVE_CHANNEL_UNAVAILABLE` | Native Messaging | 扩展未连接 |
+| `PROTOCOL_MISMATCH` | 契约 | 扩展/Host 版本不兼容 |
+| `EGRESS_UNAVAILABLE` | 浏览器执行器 | Offscreen 未创建或已崩溃 |
+| `PROXY_CONNECTION_FAILED` | FanVPN/Chrome 网络 | `ERR_PROXY_CONNECTION_FAILED` |
+| HTTP 4xx/5xx（原样） | 上游应用 | Gemini 400 thought signature 错误 |
+| `CLIENT_CANCELLED` | 本地客户端 | Codex/Claude 断开连接 |
 
-## CC Switch 补丁
+上游返回的 4xx/5xx 状态码和响应体应原样返回，不包装成 Bridge 的 502。只有未收到有效 HTTP response head 的传输失败才由 Bridge 生成网关错误。
 
-CC Switch 是 VS Code AI 路由插件（`D:\software\CC-Switch-v3.16.5-Windows-Portable\`），负责 Codex Responses API ↔ Chat Completions API 转换。
+## 10. 分阶段交付
 
-**已修复的 Bug（源码已在 `D:\software\CC-Switch-src\`）：**
-
-1. `thoughtSignature` 放错层级 — 修复到 part 级别，与 Gemini API 一致
-2. 流式中空字符串签名覆盖有效签名 — 增加空串保护
-3. 新增 7 个单元测试
-
-**编译状态：** 本地无法编译（缺 VS/MSVC），已配置 GitHub Actions 但签名步骤失败。详见 `DEVELOPMENT.md`。
+1. 契约与 fake-extension：完成协议编码、分片、流控、取消和路由单测。
+2. 单进程 Native Host：本地 HTTP 与 Native Messaging 用内存 fake 打通。
+3. Chrome 扩展执行器：实现 fail-closed fetch 与大响应流。
+4. 真实 FanVPN 验证：恢复代理后测试 OpenAI、Anthropic、Gemini 端点。
+5. 客户端集成：先直连 Codex/Claude，再接 CC Switch Gemini 转换。
+6. Windows 打包安装：独立 EXE、注册/卸载、诊断工具和可回滚升级。
