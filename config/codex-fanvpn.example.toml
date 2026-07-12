@@ -1,0 +1,15 @@
+# Copy this file to $CODEX_HOME/fanvpn.config.toml and run:
+#   codex --profile fanvpn
+#
+# Do not replace your normal ~/.codex/config.toml unless you intentionally
+# want API-key authentication to replace the current ChatGPT login.
+model = "gpt-5.4"
+model_provider = "fanvpn_openai"
+
+[model_providers.fanvpn_openai]
+name = "OpenAI through FanVPN Bridge"
+base_url = "http://127.0.0.1:18888/openai/v1"
+env_key = "OPENAI_API_KEY"
+env_key_instructions = "Set OPENAI_API_KEY, then restart VS Code."
+wire_api = "responses"
+supports_websockets = false

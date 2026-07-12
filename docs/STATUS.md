@@ -36,6 +36,8 @@
 | `anthropic` | 401 x-api-key header is required | 已到达 Anthropic/Cloudflare SJC |
 | `gemini-openai` | 404 Requested entity was not found | 已到达 Google API；探测路径不需要是有效模型调用 |
 
+原生 `gemini` route 已使用本机进程级 `GEMINI_API_KEY` 完成真实鉴权，返回 50 个模型，其中包括 Gemini 3、3.1 和 3.5 系列。Key 未写入配置、仓库或测试输出。
+
 这些状态码证明网络和 HTTP 透明转发成立，不代表 API 鉴权或模型调用已经通过。
 
 ## 本机安装状态
