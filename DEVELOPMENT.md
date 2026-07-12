@@ -1,74 +1,68 @@
 # 开发说明
 
-## 当前阶段
+## 已完成的 v2 切片
 
-本分支只建立 v2 的需求、架构、目录、模块边界和线协议。v1 原型继续保留，便于对照验证，但新功能不再继续堆叠到单文件 `bridge.py`。
+- 严格 JSON 配置、loopback 绑定和 HTTPS route allowlist。
+- Native Messaging 4-byte framing、1 MiB Host 出站保护、256 KiB body 分片。
+- `hello/hello_ack` 版本协商、累计 ACK、最多 4 个未确认 frame。
+- 并发 request id 状态机、取消、超时和稳定错误码。
+- HTTP/1.1 Gateway、健康/版本端点、chunked 流式响应。
+- Offscreen fetch 执行器；不提供 Service Worker 直连 fallback。
+- 固定开发扩展 ID、独立 EXE 构建、Chrome HKCU Native Host 安装/卸载。
+- 无真实 API Key 的 unit、fake-extension integration 和 packaged-EXE smoke tests。
 
-## 开发原则
-
-1. Bridge 是透明传输层，不做供应商 JSON 转换。
-2. 任何网络 fallback 都必须先证明仍经过 FanVPN；默认失败关闭。
-3. 不把 API Key 写进配置、日志、测试 fixture 或 Git。
-4. Native Messaging 任一方向都必须分片，不能依赖当前请求“小于 1 MiB”。
-5. 测试先使用 fake extension；真实 Chrome/FanVPN 测试单独标记，不能伪装成 CI 已通过。
-6. 上游 HTTP 错误、Chrome 网络错误、桥接协议错误必须可区分。
-
-## 计划中的 Python 包
+## 包结构
 
 ```text
 native-host/fanvpn_bridge/
-├─ contracts.py       # 稳定接口与领域对象（已建立）
-├─ errors.py          # 稳定错误码（已建立）
-├─ config.py          # 配置加载、schema 校验、allowlist
-├─ framing.py         # Chrome 4-byte native framing
-├─ protocol.py        # v1 envelope 与分片/流控
-├─ channel.py         # stdin/stdout 通道
-├─ routing.py         # route -> upstream URL
-├─ dispatcher.py      # request id 与在途请求状态机
+├─ config.py          # 严格配置与 allowlist
+├─ contracts.py       # 稳定端口/领域对象
+├─ errors.py          # 跨层错误码
+├─ framing.py         # Chrome Native Messaging framing
+├─ protocol.py        # envelope、分片、base64、FlowWindow
+├─ routing.py         # 本地 route -> HTTPS upstream
+├─ dispatcher.py      # 并发请求状态机
 ├─ http_server.py     # loopback HTTP/1.1 gateway
-├─ health.py          # 分层健康快照
-└─ main.py            # 组合根和优雅退出
-```
+└─ main.py            # Native Host 组合根
 
-## 计划中的扩展模块
-
-```text
 chrome-extension/src/
-├─ protocol.js        # 稳定契约与常量（已建立）
-├─ native-port.js     # connectNative、握手、重连
-├─ request-store.js   # 分片组装与 AbortController
-├─ egress.js          # EgressExecutor 接口
-├─ service-worker-egress.js
-├─ offscreen-egress.js
-├─ response-pump.js
-└─ background.js      # 组合根
+├─ protocol.js        # 浏览器端契约
+├─ background.js      # Native Port、握手、重连、Offscreen 生命周期
+├─ offscreen.js       # 请求组装、fetch、响应流和背压
+└─ popup.js           # 本机诊断状态
 ```
 
-## 测试分层
+## 测试命令
 
-- `tests/unit`：路由拼接、header 过滤、错误映射、状态机。
-- `tests/contract`：schema、消息大小、seq、ack、版本协商。
-- `tests/integration`：本地 HTTP Gateway 与 fake extension 的端到端流式测试。
-- `tests/e2e`：需要用户 Chrome + FanVPN 的手工/受控测试。
+项目运行时只依赖 Python 标准库。开发测试使用 Python 3.12+ 与 Node 22+：
 
-首批必须覆盖：
+```powershell
+python tools\run_v2_tests.py
+node tools\check_extension.mjs
+node tools\check_extension_identity.mjs
+node tools\check_offscreen.mjs
+python tools\smoke_native_exe.py
+```
 
-- 大于 1 MiB 的请求体可分片通过；
-- 100 MiB 响应不完整驻留内存；
-- SSE chunk 边界任意拆分仍字节一致；
-- 并发请求不会串流；
-- 客户端取消能传播到 `AbortController`；
-- 断开 Native Port 后在途请求得到确定错误；
-- 绝对 URL、未知 route 和非 loopback bind 被拒绝；
-- 日志不出现 Authorization 或 x-api-key 值。
+目前覆盖：配置拒绝、开放代理防护、路径重写、framing、分片、ACK、2 MiB request、四路并发、认证头、HTTP health、chunked response 与独立 EXE 生命周期。
 
-## CC Switch 仓库边界
+## 下一实现顺序
 
-`cheguevara-great-man/cc-switch` 是独立交付物。当前 `fix/thought-signature` 分支包含 part-level signature 放置和 shadow state 相关代码；后续应在该仓库单独完成测试、CI 和可执行文件产物，不把补丁复制进 FanVPN Bridge。
+1. ✅ 在真实 Chrome 中验证 Offscreen 请求经过 FanVPN。
+2. ✅ 增加无凭据 `POST /__bridge/probe/{route}` 出口探测。
+3. 使用真实 OpenAI/Anthropic/Gemini Key 做原样 HTTP/SSE 验证。
+4. 配置 Codex 与 Claude Code 的 Base URL。
+5. 回到 `cc-switch` 仓库完成 Gemini 3 多轮工具调用和 CI 产物验证。
+6. 增加发布 ZIP、版本升级和诊断日志脱敏。
 
-## Git 工作流
+## 已知限制
 
-- 架构阶段分支：`codex/architecture-foundation`
-- 后续实现按可验证切片拆分分支/提交。
-- 每个提交必须保持 schema 可解析、Python 可导入、测试可运行。
-- 真实 API Key 与本机生成的 Native Host manifest 不提交。
+- 本地 HTTP 请求目前要求 `Content-Length`，不接收 chunked request body。
+- Offscreen Fetch API 会自动解压 HTTP body，因此 Bridge 删除上游 `Content-Encoding` 和 `Content-Length`，再以 chunked 编码返回。
+- 浏览器侧请求体在 fetch 前缓冲，当前上限 32 MiB；响应体不整体缓存。
+- WebSocket 尚未实现，第一阶段以 Responses/Anthropic SSE 为目标。
+- Offscreen API 没有专用于网络出口的 reason；当前使用 `DOM_SCRAPING` 是开发模式兼容方案，未来需评估更合适的 Chrome 执行上下文。
+
+## CC Switch 边界
+
+`cheguevara-great-man/cc-switch` 是独立交付物。Gemini `thoughtSignature` 的捕获、part 顺序和后续回放必须在该仓库修复，不能下沉到 Bridge 传输层。

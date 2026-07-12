@@ -22,7 +22,7 @@
     "gemini-openai": {
       "upstream_base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
       "remove_path_prefix": "/v1",
-      "probe_path": "/models"
+      "probe_path": "/v1/models"
     }
   }
 }

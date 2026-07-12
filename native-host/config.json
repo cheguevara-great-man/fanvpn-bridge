@@ -1,7 +1,0 @@
-{
-    "port": 18888,
-    "bridge_port": 18889,
-    "target_base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-    "strip_path_prefix": "/v1",
-    "request_timeout": 120
-}

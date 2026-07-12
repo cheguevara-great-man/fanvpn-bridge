@@ -1,17 +1,23 @@
 {
-    "manifest_version": 3,
-    "name": "FanVPN AI Bridge",
-    "version": "1.0.0",
-    "description": "Routes VS Code AI plugin requests through FanVPN browser proxy to access external AI APIs.",
-    "permissions": [
-        "nativeMessaging",
-        "offscreen"
-    ],
-    "host_permissions": [
-        "https://*/*",
-        "http://*/*"
-    ],
-    "background": {
-        "service_worker": "background.js"
-    }
+  "manifest_version": 3,
+  "name": "FanVPN AI Bridge",
+  "version": "2.0.0",
+  "description": "Provides a loopback AI API bridge through Chrome and FanVPN.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAr24kwvml/+oIG1vM9iz+hJxmy6Y/fzr52SXmm0Z/Y7MtwejxYBmEHVTm0FiTbjwV/lxJy86ORJIblYoQSMCPNEe47H/5DJpptQ+stxUj3bDAJg91S9IzSAjgpjzAs5jueisL/LFTvqIigJ/A5VGrx7U9jTBnTj+vYA6eWOM6EdlGGw2jgr9GmouKi+kpqWdjJpS275aBem+cNiw+09KidrBbNzBlkX7ql0NIrgT2+5XaO/JuFlzLktNHG6PqnpDS7b8yo5DIyHzVmLK3d3iUKE8rEMfA58nQzkc2/LciD+5EknuBW/mYrvHa6MW02boFPXpcaFDopDyPPlCcBGRr2QIDAQAB",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "nativeMessaging",
+    "offscreen"
+  ],
+  "host_permissions": [
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "FanVPN AI Bridge",
+    "default_popup": "popup.html"
+  }
 }

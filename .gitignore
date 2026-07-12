@@ -3,7 +3,7 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
-dist/
+/dist*/
 build/
 *.log
 native-host/config.local.json
@@ -11,3 +11,4 @@ native-host/com.fanvpn.bridge.local.json
 .env
 .env.*
 !.env.example
+.claude/settings.local.json

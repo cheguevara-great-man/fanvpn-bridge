@@ -15,18 +15,31 @@ from .contracts import (
     ResponseSink,
     RouteResolver,
 )
+from .config import BridgeConfig, ProtocolConfig, RouteConfig, load_config, parse_config
+from .dispatcher import NativeDispatcher
 from .errors import BridgeError, ErrorCode
+from .http_server import BridgeHTTPServer, create_http_server
+from .routing import RouteTable
 
 __all__ = [
     "BridgeError",
+    "BridgeConfig",
+    "BridgeHTTPServer",
     "EgressRequest",
     "ErrorCode",
     "Header",
     "HealthSnapshot",
     "HealthSnapshotProvider",
     "MessageChannel",
+    "NativeDispatcher",
+    "ProtocolConfig",
     "RequestDispatcher",
     "ResolvedRoute",
+    "RouteConfig",
+    "RouteTable",
     "ResponseSink",
     "RouteResolver",
+    "load_config",
+    "parse_config",
+    "create_http_server",
 ]
