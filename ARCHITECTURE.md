@@ -104,6 +104,7 @@ http://127.0.0.1:18888/{route}
 Codex       -> http://127.0.0.1:18888/openai/v1/responses
 Claude Code -> http://127.0.0.1:18888/anthropic/v1/messages
 CC Switch   -> http://127.0.0.1:18888/gemini-openai/v1/chat/completions
+CC Switch   -> http://127.0.0.1:18888/gemini/v1beta/models/...:streamGenerateContent
 ```
 
 `route` 只能来自本机配置。客户端不能通过 query、header 或绝对 URL 指定任意目标主机。
@@ -150,8 +151,8 @@ Codex 当前自定义 provider 支持 `base_url`，但 wire API 只支持 `respo
 ```text
 Codex Responses
   -> CC Switch (Responses -> Gemini/OpenAI-compatible conversion + signature state)
-  -> Bridge route=gemini-openai (transport only)
-  -> Gemini OpenAI compatibility endpoint
+  -> Bridge route=gemini (transport only)
+  -> Gemini native generateContent endpoint
 ```
 
 CC Switch 必须：

@@ -37,7 +37,7 @@ Claude Code 把 API Base URL 指向本地 `anthropic` route。Bridge 保留 `x-a
 
 ### 场景 C：Codex 经 CC Switch 使用 Gemini
 
-CC Switch 接收 Codex Responses 请求，转换为 Gemini 可接受的请求并维护 thought signature 状态；它把上游 Base URL 指向 Bridge 的 `gemini-openai` route。Bridge 只传输转换后的 HTTP。
+CC Switch 接收 Codex/Claude 请求，转换为 Gemini 原生请求并维护 thought signature 状态；它把 Gemini 原生上游 Base URL 指向 Bridge 的 `gemini` route。只有供应商本身要求 OpenAI compatibility 格式时才使用 `gemini-openai`。Bridge 只传输转换后的 HTTP。
 
 ## 非功能要求
 

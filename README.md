@@ -60,6 +60,7 @@ Bridge 只转发 HTTP 字节，不把 Responses API、Chat Completions、Anthrop
 |---|---|
 | Codex → OpenAI | `http://127.0.0.1:18888/openai/v1` |
 | Claude Code → Anthropic | `http://127.0.0.1:18888/anthropic` |
+| CC Switch → Gemini native | `http://127.0.0.1:18888/gemini` |
 | CC Switch → Gemini OpenAI compatibility | `http://127.0.0.1:18888/gemini-openai/v1` |
 
 路由定义位于打包目录的 `routes.json`，源模板是 [config/routes.example.json](config/routes.example.json)。配置不保存 API Key；客户端发送的认证头只在内存中转发。

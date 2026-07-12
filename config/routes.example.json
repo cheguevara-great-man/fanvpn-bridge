@@ -19,6 +19,11 @@
       "remove_path_prefix": "",
       "probe_path": "/v1/models"
     },
+    "gemini": {
+      "upstream_base_url": "https://generativelanguage.googleapis.com",
+      "remove_path_prefix": "",
+      "probe_path": "/v1beta/models"
+    },
     "gemini-openai": {
       "upstream_base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
       "remove_path_prefix": "/v1",
