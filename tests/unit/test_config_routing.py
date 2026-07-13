@@ -21,6 +21,7 @@ def valid_config() -> dict[str, object]:
                 "upstream_base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
                 "remove_path_prefix": "/v1",
                 "probe_path": "/v1/models",
+                "request_header_allowlist": ["Accept", "Content-Type", "X-Goog-Api-Key"],
             },
         },
     }
@@ -32,6 +33,10 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.listen_host, "127.0.0.1")
         self.assertEqual(config.protocol.max_chunk_bytes, 262144)
         self.assertEqual(set(config.routes), {"openai", "gemini"})
+        self.assertEqual(
+            config.routes["gemini"].request_header_allowlist,
+            frozenset({"accept", "content-type", "x-goog-api-key"}),
+        )
 
     def test_rejects_non_loopback_listener(self) -> None:
         raw = valid_config()
@@ -51,6 +56,16 @@ class ConfigTests(unittest.TestCase):
     def test_rejects_unknown_fields(self) -> None:
         raw = valid_config()
         raw["secret"] = "must-not-be-accepted"
+        with self.assertRaises(BridgeError):
+            parse_config(raw)
+
+    def test_rejects_invalid_header_allowlist_name(self) -> None:
+        raw = valid_config()
+        routes = raw["routes"]
+        assert isinstance(routes, dict)
+        gemini = routes["gemini"]
+        assert isinstance(gemini, dict)
+        gemini["request_header_allowlist"] = ["valid", "bad header"]
         with self.assertRaises(BridgeError):
             parse_config(raw)
 

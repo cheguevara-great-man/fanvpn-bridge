@@ -26,6 +26,15 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
                     "upstream_base_url": "https://api.openai.com",
                     "probe_path": "/v1/models",
                 },
+                "gemini": {
+                    "upstream_base_url": "https://generativelanguage.googleapis.com",
+                    "probe_path": "/v1beta/models",
+                    "request_header_allowlist": [
+                        "accept",
+                        "content-type",
+                        "x-goog-api-key",
+                    ],
+                },
             },
         }
         self.config = parse_config(config_raw)
@@ -45,6 +54,11 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
                     "url": head["url"],
                     "body_bytes": len(body),
                     "authorization_forwarded": authorization == "Bearer test-secret",
+                    "header_names": sorted(
+                        pair[0].lower()
+                        for pair in head["headers"]
+                        if isinstance(pair, list) and len(pair) == 2
+                    ),
                 },
                 separators=(",", ":"),
             ).encode()
@@ -114,6 +128,26 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
         status, _headers, payload = self.request("POST", "/evil/v1/responses", b"{}")
         self.assertEqual(status, 404)
         self.assertEqual(json.loads(payload)["error"]["code"], "ROUTE_NOT_FOUND")
+
+    def test_route_header_allowlist_removes_cross_origin_client_metadata(self) -> None:
+        status, _headers, payload = self.request(
+            "POST",
+            "/gemini/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse",
+            b"{}",
+            {
+                "Accept": "text/event-stream",
+                "Content-Type": "application/json",
+                "X-Goog-Api-Key": "test-key",
+                "X-App": "cli",
+                "X-Stainless-Runtime": "node",
+                "Anthropic-Dangerous-Direct-Browser-Access": "true",
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            json.loads(payload)["header_names"],
+            ["accept", "content-type", "x-goog-api-key"],
+        )
 
     def test_probe_uses_route_without_client_credentials(self) -> None:
         status, _headers, payload = self.request("POST", "/__bridge/probe/openai")

@@ -27,6 +27,7 @@ class RouteConfig:
     upstream_base_url: str
     remove_path_prefix: str = ""
     probe_path: str = "/"
+    request_header_allowlist: frozenset[str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,7 +105,12 @@ def parse_config(raw: object) -> BridgeConfig:
         route_raw = _require_object(value, f"routes.{name}")
         _reject_unknown(
             route_raw,
-            {"upstream_base_url", "remove_path_prefix", "probe_path"},
+            {
+                "upstream_base_url",
+                "remove_path_prefix",
+                "probe_path",
+                "request_header_allowlist",
+            },
             f"routes.{name}",
         )
         base_url = _require_string(
@@ -124,11 +130,16 @@ def parse_config(raw: object) -> BridgeConfig:
                 ErrorCode.CONFIG_INVALID,
                 f"routes.{name}.probe_path must start with /",
             )
+        header_allowlist = _optional_header_allowlist(
+            route_raw.get("request_header_allowlist"),
+            f"routes.{name}.request_header_allowlist",
+        )
         routes[name] = RouteConfig(
             name=name,
             upstream_base_url=base_url,
             remove_path_prefix=remove_prefix.rstrip("/"),
             probe_path=probe_path,
+            request_header_allowlist=header_allowlist,
         )
 
     return BridgeConfig(
@@ -208,6 +219,23 @@ def _optional_number(
             f"protocol.{key} must be from {minimum} to {maximum}",
         )
     return float(value)
+
+
+def _optional_header_allowlist(value: object, field: str) -> frozenset[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list) or len(value) > 64:
+        raise BridgeError(ErrorCode.CONFIG_INVALID, f"{field} must be an array of at most 64 names")
+    names: set[str] = set()
+    for item in value:
+        if (
+            not isinstance(item, str)
+            or not item
+            or any(not (character.isalnum() or character in "!#$%&'*+-.^_`|~") for character in item)
+        ):
+            raise BridgeError(ErrorCode.CONFIG_INVALID, f"{field} contains an invalid HTTP header name")
+        names.add(item.lower())
+    return frozenset(names)
 
 
 def _reject_unknown(values: Mapping[str, object], allowed: set[str], field: str) -> None:

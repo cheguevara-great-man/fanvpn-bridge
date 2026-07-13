@@ -142,7 +142,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         request_id = uuid.uuid4().hex
         try:
             route = server.routes.resolve_local_target(self.path)
-            headers = self._request_headers()
+            route_config = server.bridge_config.routes[route.name]
+            headers = self._request_headers(route_config.request_header_allowlist)
             body = self._request_body(server.bridge_config.protocol.max_chunk_bytes)
             sink = QueueResponseSink(server.bridge_config.protocol.max_in_flight)
             request = EgressRequest(
@@ -194,7 +195,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             error = BridgeError(ErrorCode.INTERNAL_ERROR, str(exc) or type(exc).__name__)
             self._send_bridge_error(error, request_id, head_only=False)
 
-    def _request_headers(self) -> list[Header]:
+    def _request_headers(self, allowlist: frozenset[str] | None = None) -> list[Header]:
         connection_tokens = {
             token.strip().lower()
             for token in self.headers.get("Connection", "").split(",")
@@ -205,6 +206,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             Header(name, value)
             for name, value in self.headers.items()
             if name.lower() not in excluded
+            and (allowlist is None or name.lower() in allowlist)
         ]
 
     def _request_body(self, chunk_size: int) -> Iterable[bytes]:

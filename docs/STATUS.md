@@ -1,12 +1,12 @@
 # 实机验证状态
 
-验证日期：2026-07-12（Asia/Shanghai）
+验证日期：2026-07-13（Asia/Shanghai）
 
 ## 已验证链路
 
 ```text
 127.0.0.1 HTTP
-  -> dist-final/fanvpn-bridge/fanvpn-bridge.exe
+  -> fanvpn-bridge/fanvpn-bridge.exe
   -> Chrome Native Messaging
   -> FanVPN AI Bridge v2 (bgpbajocpomglgdffkgcklhepbcfpbfd)
   -> Offscreen fetch
@@ -40,19 +40,26 @@
 
 `chatgpt-codex` route 已使用现有 ChatGPT 登录完成两次真实 `codex exec`：HTTP fallback 和 `supports_websockets = false` 模式均成功，后者无 WebSocket 重试延迟。
 
-这些状态码证明网络和 HTTP 透明转发成立，不代表 API 鉴权或模型调用已经通过。
+原生 Gemini SSE 已真实返回预期文本。Gemini route 的请求头 allowlist 也已用 Claude/SDK 元数据头完成回归验证，确认不会再因 Chrome CORS 预检出现 `Failed to fetch`。
+
+Claude Code 经 CC Switch 使用 `gemini-3.5-flash` 已完成两项真实测试：简单文本响应成功；Bash 工具调用、多轮结果回传和最终响应成功。这证明 CC Switch 的 Gemini 3+ `thoughtSignature` 保存与回放补丁在实际链路中有效。测试期间 Google 曾返回一次瞬时 503，CC Switch 自动重试后成功。
 
 ## 本机安装状态
 
 - Native Host 注册：`HKCU\Software\Google\Chrome\NativeMessagingHosts\com.fanvpn.bridge`
-- 当前构建目录：`dist-final\fanvpn-bridge`
+- 当前构建目录：`dist-runtime-20260713-headerfilter\fanvpn-bridge`
 - 用户级 `NO_PROXY`：包含 `127.0.0.1,localhost`
 - Edge：未注册
 
-## 仍需验证
+## 已完成的第一阶段目标
+
+- Codex CLI 复用现有 ChatGPT 登录，经 `chatgpt-codex` route 完成真实 `codex exec`。
+- Claude Code 经 CC Switch 转换 Gemini Native，并通过 Chrome/FanVPN 完成真实流式和工具调用。
+- 两条链路的外网出口均由浏览器扩展承担，不依赖 Bridge 提供 SOCKS/CONNECT 端口。
+
+## 后续可选验证
 
 - OpenAI Responses API authenticated SSE。
 - Anthropic Messages API authenticated SSE。
-- Codex VS Code 扩展使用本地 provider。
-- Claude Code 使用本地 Anthropic Base URL。
-- CC Switch + Gemini 3 多轮工具调用和 thought signature 回放。
+- Codex VS Code 扩展在 UI 会话中长期稳定运行。
+- Claude VS Code 扩展在 UI 会话中长期稳定运行。

@@ -1,0 +1,12 @@
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "Reply exactly FANVPN_NATIVE_STREAM_OK"
+        }
+      ]
+    }
+  ]
+}

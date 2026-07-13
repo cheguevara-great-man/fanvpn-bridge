@@ -27,12 +27,24 @@
     "gemini": {
       "upstream_base_url": "https://generativelanguage.googleapis.com",
       "remove_path_prefix": "",
-      "probe_path": "/v1beta/models"
+      "probe_path": "/v1beta/models",
+      "request_header_allowlist": [
+        "accept",
+        "authorization",
+        "content-type",
+        "x-goog-api-key"
+      ]
     },
     "gemini-openai": {
       "upstream_base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
       "remove_path_prefix": "/v1",
-      "probe_path": "/v1/models"
+      "probe_path": "/v1/models",
+      "request_header_allowlist": [
+        "accept",
+        "authorization",
+        "content-type",
+        "x-goog-api-key"
+      ]
     }
   }
 }

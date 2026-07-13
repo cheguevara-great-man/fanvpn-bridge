@@ -22,13 +22,16 @@ Codex / Claude Code / CC Switch
 
 Bridge 只转发 HTTP 字节，不把 Responses API、Chat Completions、Anthropic Messages 或 Gemini Native 相互转换。Gemini 3 `thoughtSignature` 等会话语义继续由 CC Switch 负责。
 
-## 实机状态（2026-07-12）
+## 实机状态（2026-07-13）
 
 - Chrome + FanVPN 页面出口：通过。
 - 独立 Native Host + 固定 ID 扩展握手：通过。
 - `GET /__bridge/health`：`status=ok`、`executor=offscreen`。
 - 无凭据出口探测：OpenAI 401、Anthropic 401、Gemini/Google 404；三者均收到真实境外 API 响应。
-- 尚未使用用户 API Key；authenticated model/SSE/tool-call 验证是下一阶段。
+- Gemini API Key 鉴权、Gemini Native SSE：通过。
+- Codex 使用现有 ChatGPT 登录执行真实请求：通过。
+- Claude Code → CC Switch → Gemini 3.5 的真实多轮工具调用及 `thoughtSignature` 回放：通过。
+- Gemini 浏览器请求头 allowlist：通过，已消除 Claude/SDK 元数据头导致的 CORS 预检失败。
 
 ## Windows 快速安装
 
