@@ -38,6 +38,8 @@
 
 原生 `gemini` route 已使用本机进程级 `GEMINI_API_KEY` 完成真实鉴权，返回 50 个模型，其中包括 Gemini 3、3.1 和 3.5 系列。Key 未写入配置、仓库或测试输出。
 
+`chatgpt-codex` route 已使用现有 ChatGPT 登录完成两次真实 `codex exec`：HTTP fallback 和 `supports_websockets = false` 模式均成功，后者无 WebSocket 重试延迟。
+
 这些状态码证明网络和 HTTP 透明转发成立，不代表 API 鉴权或模型调用已经通过。
 
 ## 本机安装状态

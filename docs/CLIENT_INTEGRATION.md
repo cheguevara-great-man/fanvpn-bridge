@@ -43,6 +43,12 @@ Codex 自定义 provider 只支持 Responses wire API。示例见 `config/codex-
 
 该方式刻意不修改正常的 `~/.codex/config.toml`，因此不会破坏现有 ChatGPT 登录。VS Code 扩展若要永久切换到 API provider，应由 CC Switch 接管或在确认 API Key 可用后再修改用户级配置。
 
+### Codex 使用现有 ChatGPT 登录
+
+Codex 的 ChatGPT 订阅后端可以通过独立 route 转发。配置见 `config/codex-fanvpn-chatgpt.example.toml`。建议先把它复制为 `$CODEX_HOME/fanvpn-chatgpt.config.toml`，用 `codex --profile fanvpn-chatgpt` 验证，再决定是否合并进默认用户配置。
+
+这里使用 `requires_openai_auth = true` 复用现有 ChatGPT 登录，并显式设置 `supports_websockets = false`。Bridge 当前传输 HTTP/SSE；关闭 WebSocket 可避免客户端先重试 WebSocket 再回退 HTTP 的延迟。该 route 的固定上游是 `https://chatgpt.com/backend-api/codex`，不能被客户端改成其他主机。
+
 ## 验证
 
 ```powershell

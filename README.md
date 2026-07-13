@@ -59,6 +59,7 @@ Bridge 只转发 HTTP 字节，不把 Responses API、Chat Completions、Anthrop
 | 客户端/目标 | Base URL |
 |---|---|
 | Codex → OpenAI | `http://127.0.0.1:18888/openai/v1` |
+| Codex → ChatGPT subscription backend | `http://127.0.0.1:18888/chatgpt-codex` |
 | Claude Code → Anthropic | `http://127.0.0.1:18888/anthropic` |
 | CC Switch → Gemini native | `http://127.0.0.1:18888/gemini` |
 | CC Switch → Gemini OpenAI compatibility | `http://127.0.0.1:18888/gemini-openai/v1` |

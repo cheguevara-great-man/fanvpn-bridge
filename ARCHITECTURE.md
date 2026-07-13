@@ -102,6 +102,7 @@ http://127.0.0.1:18888/{route}
 
 ```text
 Codex       -> http://127.0.0.1:18888/openai/v1/responses
+Codex OAuth -> http://127.0.0.1:18888/chatgpt-codex/responses
 Claude Code -> http://127.0.0.1:18888/anthropic/v1/messages
 CC Switch   -> http://127.0.0.1:18888/gemini-openai/v1/chat/completions
 CC Switch   -> http://127.0.0.1:18888/gemini/v1beta/models/...:streamGenerateContent
