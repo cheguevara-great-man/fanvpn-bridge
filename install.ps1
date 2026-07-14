@@ -91,6 +91,7 @@ if (-not $SkipNoProxy) {
     Write-Host 'User NO_PROXY includes 127.0.0.1 and localhost. Restart VS Code to inherit it.'
 }
 Write-Host 'Refresh the unpacked extension in chrome://extensions after installation.'
+Write-Host 'In the FanVPN AI Bridge extension details, set Site access to On all sites.' -ForegroundColor Yellow
 if (-not $SkipStartupTask) {
     Write-Host "Startup task: $startupTaskName"
 }

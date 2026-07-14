@@ -32,8 +32,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 `
 3. 点击“加载已解压的扩展程序”。
 4. 选择仓库中的 `chrome-extension` 目录。
 5. 确认 ID 为 `bgpbajocpomglgdffkgcklhepbcfpbfd`。
+6. 打开 **FanVPN AI Bridge** 的“详情”，将“网站访问权限”设为 **在所有网站上**。
 
 Manifest 内置公开的开发 identity key，因此从不同目录加载时 ID 也保持不变。该 key 不是 API Key，也不包含私钥。
+
+Chrome 可能在扩展重装、升级或策略变化后扣留 Manifest 已声明的站点权限。此时 Gemini/OpenAI 可能仍返回普通 HTTP 认证错误，但 `chatgpt.com/backend-api/codex` 会在扩展上下文中表现为 `Failed to fetch`。扩展弹窗的“ChatGPT 网站权限”必须显示“已授权”；`diagnose.ps1` 中 `chatgpt_site_access_granted` 也应为 `true`。
 
 ## 3. 注册 Native Host
 
@@ -107,6 +110,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\uninstall.ps1
 
 | 现象 | 层 | 处理 |
 |---|---|---|
+| ChatGPT 网页可开，但 `chatgpt-codex` 返回 502 | Chrome 站点权限 | 在 FanVPN AI Bridge 详情中将网站访问设为“在所有网站上”，然后刷新扩展 |
 | 弹窗显示 Native Host 未连接 | 安装/注册 | 重新运行 `install.ps1`，刷新扩展 |
 | health 端口拒绝连接 | Native Host 未运行 | 检查扩展是否启用、ID 是否一致 |
 | `EGRESS_UNAVAILABLE` | Offscreen | 刷新扩展并查看扩展错误 |

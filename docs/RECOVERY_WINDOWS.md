@@ -38,6 +38,8 @@ node .\tools\inspect_codex_logs.mjs --errors
 
 Chrome MV3 Service Worker 或 Native Messaging 断开后，扩展仍按 1～30 秒指数退避重连。任务计划使用 `IgnoreNew`，不会并行启动多个引导器；18888 仍由 Chrome 拉起的单一 Native Host 持有。
 
+登录任务不能替用户授予 Chrome 站点权限。若扩展弹窗显示“ChatGPT 网站权限：被 Chrome 扣留”，请在 `chrome://extensions` 的 **FanVPN AI Bridge** 详情中选择“网站访问权限：在所有网站上”。这项权限属于 Bridge，而不是 FanVPN 节点开关。
+
 手动运行一次引导器：
 
 ```powershell

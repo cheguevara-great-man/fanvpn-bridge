@@ -45,7 +45,7 @@ Bridge 只转发 HTTP 字节，不把 Responses API、Chat Completions、Anthrop
    powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_native_host.ps1 -Python "C:\path\to\python.exe"
    ```
 
-2. Chrome 打开 `chrome://extensions`，启用开发者模式，加载目录 `chrome-extension`。
+2. Chrome 打开 `chrome://extensions`，启用开发者模式，加载目录 `chrome-extension`；在 **FanVPN AI Bridge** 详情中把“网站访问权限”设为“在所有网站上”。
 3. 注册 Native Host（固定扩展 ID 已内置）：
 
    ```powershell
