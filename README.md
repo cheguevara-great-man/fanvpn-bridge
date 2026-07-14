@@ -1,110 +1,101 @@
 # FanVPN Bridge
 
-FanVPN Bridge 让本机 Codex、Claude Code、CC Switch 等开发工具，通过 Chrome 中的 FanVPN 扩展访问境外 AI API，而不需要 Clash、系统 VPN 或 FanVPN 本地代理端口。
+让 Windows 开发工具借助 Chrome 中的 FanVPN 访问 OpenAI、Anthropic 和 Gemini，
+不需要 Clash、系统 VPN，也不要求 FanVPN 提供本地代理端口。
 
-## 当前实现
+> 当前项目面向 Google Chrome 116+ 和 Windows。Chrome 中需要已安装并启用
+> FanVPN；Bridge 本身不是通用 HTTP、SOCKS 或 CONNECT 代理。
+
+## 工作方式
 
 ```text
 Codex / Claude Code / CC Switch
-              │ HTTP on 127.0.0.1:18888
+              │ HTTP · 127.0.0.1:18888
               ▼
       fanvpn-bridge.exe
-              │ Chrome Native Messaging（分片 + 背压）
+              │ Chrome Native Messaging
               ▼
-     FanVPN AI Bridge 扩展
-              │ Offscreen fetch（失败关闭）
+       FanVPN AI Bridge
+              │ Offscreen fetch
               ▼
-          FanVPN 扩展
+        Chrome + FanVPN
               │
               ▼
- OpenAI / Anthropic / Gemini 等预设 HTTPS 上游
+ OpenAI / Anthropic / Google Gemini
 ```
 
-Bridge 只转发 HTTP 字节，不把 Responses API、Chat Completions、Anthropic Messages 或 Gemini Native 相互转换。Gemini 3 `thoughtSignature` 等会话语义继续由 CC Switch 负责。
+Bridge 只负责安全、透明的 HTTP 传输。AI 协议转换不在 Bridge 中完成：例如
+Claude Code 使用 Gemini 时，由 CC Switch 转换 Anthropic Messages 与 Gemini Native，
+并维护 Gemini 的 `thoughtSignature`。
 
-## 实机状态（2026-07-13）
+## 主要能力
 
-- Chrome + FanVPN 页面出口：通过。
-- 独立 Native Host + 固定 ID 扩展握手：通过。
-- `GET /__bridge/health`：`status=ok`、`executor=offscreen`。
-- 无凭据出口探测：OpenAI 401、Anthropic 401、Gemini/Google 404；三者均收到真实境外 API 响应。
-- Gemini API Key 鉴权、Gemini Native SSE：通过。
-- Codex 使用现有 ChatGPT 登录执行真实请求：通过。
-- Claude Code → CC Switch → Gemini 3.5 的真实多轮工具调用及 `thoughtSignature` 回放：通过。
-- Gemini 浏览器请求头 allowlist：通过，已消除 Claude/SDK 元数据头导致的 CORS 预检失败。
-- Windows 登录启动、Bridge readiness 和 Codex 项目会话映射恢复：已实现。
-- 本地客户端断开后会在 250 ms 轮询周期内取消浏览器请求，避免重启恢复阶段积累 600 秒僵尸请求。
+- 单一 Native Host 同时提供本地 HTTP 网关和 Chrome 通道。
+- OpenAI、ChatGPT Codex、Anthropic、Gemini Native 等显式路由。
+- 流式响应、分片、背压、并发、超时和客户端取消。
+- 仅监听 `127.0.0.1`，上游由静态 allowlist 限制。
+- Chrome 出口不可用时失败关闭，不回退到系统直连。
+- Windows 登录后自动启动 Chrome 并等待 Bridge ready。
+- VS Code Claude Code 可在 Anthropic 官方模式和 Gemini 模式之间切换，且不接管全局 Claude 配置。
 
-## Windows 快速安装
+## 快速开始
 
-完整说明见 [Windows 安装与诊断](docs/INSTALL_WINDOWS.md)。开发机最短流程：
-
-1. 构建独立 Native Host：
-
-   ```powershell
-   powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_native_host.ps1 -Python "C:\path\to\python.exe"
-   ```
-
-2. Chrome 打开 `chrome://extensions`，启用开发者模式，加载目录 `chrome-extension`；在 **FanVPN AI Bridge** 详情中把“网站访问权限”设为“在所有网站上”。
-3. 注册 Native Host（固定扩展 ID 已内置）：
-
-   ```powershell
-   powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
-   ```
-
-4. 刷新扩展，点击工具栏图标，确认 Native Host、协议握手和 `offscreen` 均正常。
-5. 检查本地网关：
-
-   ```powershell
-   Invoke-RestMethod http://127.0.0.1:18888/__bridge/health
-   ```
-
-安装脚本还会创建当前用户的 `FanVPN Bridge Bootstrap` 登录任务：后台启动 Chrome，并等待 Bridge ready。该任务不会读取或修改 Codex 的任务、项目、侧栏或本地数据库状态。详见 [Windows 重启恢复](docs/RECOVERY_WINDOWS.md)。
-
-## 本地 Base URL
-
-| 客户端/目标 | Base URL |
-|---|---|
-| Codex → OpenAI | `http://127.0.0.1:18888/openai/v1` |
-| Codex → ChatGPT subscription backend | `http://127.0.0.1:18888/chatgpt-codex` |
-| Claude Code → Anthropic | `http://127.0.0.1:18888/anthropic` |
-| CC Switch → Gemini native | `http://127.0.0.1:18888/gemini` |
-| CC Switch → Gemini OpenAI compatibility | `http://127.0.0.1:18888/gemini-openai/v1` |
-
-路由定义位于打包目录的 `routes.json`，源模板是 [config/routes.example.json](config/routes.example.json)。配置不保存 API Key；客户端发送的认证头只在内存中转发。
-
-Codex、Claude Code 和 CC Switch 的具体配置见 [docs/CLIENT_INTEGRATION.md](docs/CLIENT_INTEGRATION.md)。VS Code Claude 在 Anthropic 官方模式与 Gemini 模式之间切换，见 [docs/VSCODE_CLAUDE_MODES.md](docs/VSCODE_CLAUDE_MODES.md)。
-
-## 验证
+### 1. 构建 Native Host
 
 ```powershell
-# Python 核心、fake extension 与 HTTP Gateway
-python .\tools\run_v2_tests.py
-
-# 浏览器协议和 Offscreen 执行器
-node .\tools\check_extension.mjs
-node .\tools\check_offscreen.mjs
-
-# 已打包 EXE 的 Native Messaging + health smoke test
-python .\tools\smoke_native_exe.py
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_native_host.ps1 `
+  -Python "C:\path\to\python.exe"
 ```
+
+### 2. 加载 Chrome 扩展
+
+打开 `chrome://extensions`，启用开发者模式，加载仓库中的 `chrome-extension`
+目录。在扩展详情中，将 **FanVPN AI Bridge → 网站访问权限** 设为
+**在所有网站上**。
+
+### 3. 注册和启动
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+刷新扩展后检查：
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:18888/ready -Proxy $null
+```
+
+返回 HTTP 200 且 `ready=true` 后，再按[客户端使用指南](docs/USAGE.md)配置
+Codex、Claude Code 或 CC Switch。
+
+## 路由
+
+| 用途 | 本地 Base URL |
+|---|---|
+| OpenAI Responses API | `http://127.0.0.1:18888/openai/v1` |
+| ChatGPT Codex backend | `http://127.0.0.1:18888/chatgpt-codex` |
+| Anthropic Messages API | `http://127.0.0.1:18888/anthropic` |
+| Gemini Native | `http://127.0.0.1:18888/gemini` |
+| Gemini OpenAI compatibility | `http://127.0.0.1:18888/gemini-openai/v1` |
+
+路由来自 `config/routes.example.json`。API Key 不应写入路由配置。
 
 ## 文档
 
-- [需求与验收标准](docs/REQUIREMENTS.md)
-- [目标架构](ARCHITECTURE.md)
-- [开发说明](DEVELOPMENT.md)
-- [Windows 安装与诊断](docs/INSTALL_WINDOWS.md)
-- [实机验证状态](docs/STATUS.md)
-- [Windows 重启恢复](docs/RECOVERY_WINDOWS.md)
-- [VS Code Claude 官方模式](docs/VSCODE_CLAUDE_OFFICIAL.md)
-- [VS Code Claude 模式切换](docs/VSCODE_CLAUDE_MODES.md)
-- [Native Messaging v1 契约](contracts/native-messaging-v1.schema.json)
+| 文档 | 内容 |
+|---|---|
+| [文档导航](docs/README.md) | 从安装、使用、开发或排障开始 |
+| [架构](docs/ARCHITECTURE.md) | 当前系统边界、组件和协议 |
+| [Windows 安装](docs/INSTALLATION.md) | 构建、安装、更新、自动启动和卸载 |
+| [客户端使用](docs/USAGE.md) | Codex、Claude Code、CC Switch 和 Gemini 模式 |
+| [开发指南](docs/DEVELOPMENT.md) | 目录、测试、构建和开发约束 |
+| [故障排查](docs/TROUBLESHOOTING.md) | 面向当前版本的诊断步骤 |
+| [问题与解决记录](docs/PROBLEM_SOLVING.md) | 开发过程中的问题、原因和经验 |
 
 ## 安全边界
 
-- 强制监听 `127.0.0.1`，不向局域网开放。
-- 只允许配置中的 HTTPS 上游，不接受客户端提供任意目标主机。
-- 浏览器执行器不可用时失败关闭，不回退到系统直连。
-- Host→Chrome 单条消息受 1 MiB 保护，body 使用 256 KiB 分片。
-- 浏览器侧请求体最多缓冲 32 MiB；响应体按流和 ACK 背压传输。
+- 只监听 IPv4 loopback，不向局域网开放。
+- 客户端不能通过 URL、query 或 header 指定任意上游。
+- 认证头只在内存中转发，诊断输出不打印 Token、Cookie 或 API Key。
+- 浏览器执行器不可用时返回错误，不尝试绕过 FanVPN。
+- Bridge 不读取或修改 Codex 的任务、项目、侧栏或本地数据库。
