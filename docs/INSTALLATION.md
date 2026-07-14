@@ -125,25 +125,27 @@ Start-ScheduledTask -TaskName 'FanVPN Bridge Bootstrap'
 
 ## 更新
 
-先构建到新的输出目录，避免正在运行的 Host 锁定旧目录：
+项目使用 `dist-a` 和 `dist-b` 两套构建目录交替更新。更新脚本会读取 Chrome 当前注册的 Host，
+自动构建到另一套目录并切换注册；首次从默认的 `dist` 更新时选择 `dist-a`。
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_native_host.ps1 `
-  -DistRoot .\dist-next
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\update_native_host.ps1
 ```
 
-再将 Chrome 注册切换到对应产物：
+脚本完成后：
+
+1. 在 `chrome://extensions` 刷新 FanVPN AI Bridge。
+2. 关闭并重新打开 Chrome，让旧 Host 退出并释放上一套目录。
+3. 重新检查 `/ready` 和 `/routes`。
+
+下一次更新会自动使用刚刚释放的另一套目录。可以用 `-WhatIf` 只查看本次将使用哪一套，而不执行构建和注册：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 `
-  -BuildDirectory .\dist-next\browser-ai-bridge
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\update_native_host.ps1 -WhatIf
 ```
 
-必须让 `-BuildDirectory` 与实际构建目录匹配；不带该参数的 `install.ps1` 始终使用默认的
-`dist\browser-ai-bridge`。切换后刷新扩展、重开 Chrome，并重新检查 `/ready` 和 `/routes`。
-
-如果构建报 `WinError 5` 或 DLL 拒绝访问，说明目标目录仍被 Host 使用。关闭 Chrome 并等待
-`browser-ai-bridge.exe` 退出，或者换一个新的 `-DistRoot`。
+如果更新脚本仍报告 `WinError 5`，通常表示上一次切换后没有重开 Chrome，旧进程仍占用本次目标目录。
+关闭 Chrome 并等待所有 `browser-ai-bridge.exe` 退出后重试。
 
 ## 日志
 

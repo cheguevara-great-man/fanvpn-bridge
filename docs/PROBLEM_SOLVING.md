@@ -179,3 +179,7 @@ PyInstaller 无法先删除再重建该目录。
 
 **经验**：Windows 上不要原地覆盖正在运行的打包目录。保留“构建到新目录、验证、切换注册”的升级方式，
 回滚也更简单。
+
+**后续改进**：固定的 `dist-next` 在再次更新时也会成为正在使用的目录，因此最终采用 `dist-a` / `dist-b`
+双槽轮换。`update_native_host.ps1` 读取当前 Native Messaging manifest，自动构建并注册非活动槽位；
+每次切换后重开 Chrome，上一槽位就会被释放，供下次更新使用。
