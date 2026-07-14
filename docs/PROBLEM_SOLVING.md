@@ -152,3 +152,30 @@ body 字节透明。
 
 **经验**：浏览器 OAuth 包含浏览器授权、localhost callback、本地 Token Exchange
 和后续刷新四段网络路径；只验证登录网页不足以证明整个流程使用了同一出口。
+
+## 构建成功但安装后仍运行旧版本
+
+**现象**：`dist-next` 构建成功并包含新 route，但重新执行默认 `install.ps1` 后，`/routes` 仍没有新 route。
+
+**根因**：构建输出目录与 Native Messaging 注册目录是两个独立选择。默认安装命令固定使用
+`dist\browser-ai-bridge`，不会搜索或自动选择 `dist-next`。
+
+**解决**：自定义构建目录时同步执行
+`install.ps1 -BuildDirectory .\dist-next\browser-ai-bridge`，再刷新扩展并重开 Chrome。安装输出中的
+`Native Host` 和 `Manifest` 路径是最终生效位置，应逐字核对。
+
+**经验**：构建成功只说明产物已经生成，不代表 Chrome 已切换到该产物。部署验证必须同时检查安装路径、
+`/ready` 和 `/routes`。
+
+## 运行中的 Host 锁定 PyInstaller 输出目录
+
+**现象**：重复构建时出现 `WinError 5`，常见被锁文件为 `_internal\libcrypto-3.dll`。
+
+**根因**：Chrome 通过 Native Messaging 启动的 `browser-ai-bridge.exe` 正在从目标目录加载 DLL，
+PyInstaller 无法先删除再重建该目录。
+
+**解决**：关闭 Chrome 并等待 Host 退出后再构建；不希望中断当前链路时，使用新的 `-DistRoot`，构建成功后
+再用匹配的 `-BuildDirectory` 原子切换注册路径。
+
+**经验**：Windows 上不要原地覆盖正在运行的打包目录。保留“构建到新目录、验证、切换注册”的升级方式，
+回滚也更简单。
