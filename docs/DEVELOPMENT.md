@@ -60,7 +60,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_native_host.ps
   -Python "C:\path\to\python.exe" -DistRoot .\dist-next
 
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 `
-  -BuildDirectory .\dist-next\fanvpn-bridge
+  -BuildDirectory .\dist-next\browser-ai-bridge
 ```
 
 刷新 Chrome 扩展并检查 `/ready`。不要覆盖正在运行进程锁定的构建目录。

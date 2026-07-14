@@ -63,7 +63,7 @@ Start-ScheduledTask -TaskName 'FanVPN Bridge Bootstrap'
 ## 安全地重启 Bridge
 
 1. 关闭 Chrome。
-2. 确认本仓库构建目录中的 `fanvpn-bridge.exe` 已退出。
+2. 确认本仓库构建目录中的 `browser-ai-bridge.exe` 已退出。
 3. 重新打开 Chrome，或运行 `Start-ScheduledTask -TaskName 'FanVPN Bridge Bootstrap'`。
 4. 等待 `/ready` 返回 200。
 

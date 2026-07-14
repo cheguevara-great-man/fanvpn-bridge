@@ -12,7 +12,7 @@
 Codex / Claude Code / CC Switch
               │ HTTP · 127.0.0.1:18888
               ▼
-      fanvpn-bridge.exe
+     browser-ai-bridge.exe
               │ Chrome Native Messaging
               ▼
        FanVPN AI Bridge

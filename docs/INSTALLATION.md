@@ -17,7 +17,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_native_host.ps
   -Python "C:\path\to\python.exe"
 ```
 
-输出位于 `dist\fanvpn-bridge\`，包含 `fanvpn-bridge.exe`、运行库和
+输出位于 `dist\browser-ai-bridge\`，包含 `browser-ai-bridge.exe`、运行库和
 `routes.json`。
 
 如果现有进程锁定默认输出目录，可构建到新目录：
@@ -50,7 +50,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 `
-  -BuildDirectory .\dist-next\fanvpn-bridge
+  -BuildDirectory .\dist-next\browser-ai-bridge
 ```
 
 安装脚本会：

@@ -2,7 +2,7 @@ param(
     [ValidatePattern('^[a-p]{32}$')]
     [string]$ExtensionId = 'bgpbajocpomglgdffkgcklhepbcfpbfd',
 
-    [string]$BuildDirectory = (Join-Path $PSScriptRoot 'dist\fanvpn-bridge'),
+    [string]$BuildDirectory = (Join-Path $PSScriptRoot 'dist\browser-ai-bridge'),
 
     [switch]$SkipNoProxy,
 
@@ -11,7 +11,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $buildPath = [System.IO.Path]::GetFullPath($BuildDirectory)
-$exePath = Join-Path $buildPath 'fanvpn-bridge.exe'
+$exePath = Join-Path $buildPath 'browser-ai-bridge.exe'
 $routesPath = Join-Path $buildPath 'routes.json'
 $manifestPath = Join-Path $buildPath 'com.fanvpn.bridge.json'
 

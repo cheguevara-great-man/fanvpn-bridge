@@ -36,7 +36,7 @@ try {
         --noconfirm `
         --clean `
         --onedir `
-        --name fanvpn-bridge `
+        --name browser-ai-bridge `
         --paths (Join-Path $root 'native-host') `
         --workpath $workDirectory `
         --specpath $specDirectory `
@@ -47,6 +47,6 @@ try {
     $env:PYTHONPATH = $oldPythonPath
 }
 
-$outputDirectory = Join-Path $distDirectory 'fanvpn-bridge'
+$outputDirectory = Join-Path $distDirectory 'browser-ai-bridge'
 Copy-Item -LiteralPath (Join-Path $root 'config\routes.example.json') -Destination (Join-Path $outputDirectory 'routes.json') -Force
 Write-Host "Native Host built at: $outputDirectory" -ForegroundColor Green

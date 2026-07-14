@@ -22,7 +22,7 @@ Windows 用户登录
   └─ FanVPN Bridge Bootstrap 计划任务
       └─ 启动 Chrome
           └─ MV3 Service Worker 调用 runtime.connectNative()
-              └─ fanvpn-bridge.exe
+              └─ browser-ai-bridge.exe
                   ├─ stdin/stdout：Native Messaging
                   └─ 127.0.0.1:18888：HTTP Gateway
 

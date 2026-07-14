@@ -14,7 +14,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_EXE = ROOT / "dist" / "fanvpn-bridge" / "fanvpn-bridge.exe"
+DEFAULT_EXE = ROOT / "dist" / "browser-ai-bridge" / "browser-ai-bridge.exe"
 
 
 def read_native(stream) -> dict[str, object]:
@@ -45,7 +45,7 @@ def main() -> int:
     smoke_temp_root = ROOT / "build" / "smoke-temp"
     smoke_temp_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
-        prefix="fanvpn-bridge-smoke-",
+        prefix="browser-ai-bridge-smoke-",
         dir=smoke_temp_root,
     ) as temporary_directory:
         config = json.loads((exe.parent / "routes.json").read_text(encoding="utf-8"))
