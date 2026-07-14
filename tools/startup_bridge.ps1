@@ -42,7 +42,7 @@ if ($RepairScript -and $ProjectRoot -and (Test-Path -LiteralPath $RepairScript -
         $previousNodeNoWarnings = $env:NODE_NO_WARNINGS
         try {
             $env:NODE_NO_WARNINGS = '1'
-            & $node.Source $RepairScript "--project=$ProjectRoot" --apply *> $null
+            & $node.Source $RepairScript --all-projects --apply *> $null
             $repairExitCode = $LASTEXITCODE
             Write-StartupLog "PROJECT_MAPPING_REPAIR exit_code=$repairExitCode project=$ProjectRoot"
         } catch {

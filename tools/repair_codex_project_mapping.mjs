@@ -11,6 +11,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join, normalize, resolve } from "node:path";
 
 const applyChanges = process.argv.includes("--apply");
+const allProjects = process.argv.includes("--all-projects");
 const projectArgument = process.argv.find((argument) => argument.startsWith("--project="));
 const projectRoot = resolve(projectArgument?.slice("--project=".length) || process.cwd());
 const codexHome = process.env.CODEX_HOME || join(homedir(), ".codex");
@@ -22,7 +23,7 @@ function canonicalPath(value) {
   return normalize(resolve(withoutDevicePrefix)).replace(/[\\/]+$/, "").toLowerCase();
 }
 
-if (!isAbsolute(projectRoot) || !existsSync(projectRoot)) {
+if (!allProjects && (!isAbsolute(projectRoot) || !existsSync(projectRoot))) {
   throw new Error(`Project path does not exist: ${projectRoot}`);
 }
 if (!existsSync(statePath) || !existsSync(databasePath)) {
@@ -32,15 +33,19 @@ if (!existsSync(statePath) || !existsSync(databasePath)) {
 const database = new DatabaseSync(databasePath, { readOnly: true });
 let eligibleThreads;
 try {
-  eligibleThreads = database
+  const activeThreads = database
     .prepare(
       `SELECT id, title, cwd, rollout_path
          FROM threads
         WHERE source = 'vscode' AND archived = 0
         ORDER BY recency_at DESC`,
     )
-    .all()
-    .filter((thread) => canonicalPath(thread.cwd) === canonicalPath(projectRoot));
+    .all();
+  eligibleThreads = activeThreads.filter((thread) => {
+    const threadRoot = resolve(thread.cwd.startsWith("\\\\?\\") ? thread.cwd.slice(4) : thread.cwd);
+    return existsSync(threadRoot) &&
+      (allProjects || canonicalPath(threadRoot) === canonicalPath(projectRoot));
+  });
 } finally {
   database.close();
 }
@@ -60,38 +65,55 @@ state["electron-persisted-atom-state"]["flat-project-sidebar-preferences-v1"].ch
 
 const changedThreadIds = [];
 for (const thread of eligibleThreads) {
+  const threadRoot = allProjects
+    ? resolve(thread.cwd.startsWith("\\\\?\\") ? thread.cwd.slice(4) : thread.cwd)
+    : projectRoot;
   const hint = state["thread-workspace-root-hints"][thread.id];
   const writableRoots = state["thread-writable-roots"][thread.id] || [];
   const wasProjectless = state["projectless-thread-ids"].includes(thread.id);
   if (
-    canonicalPath(hint || projectRoot) !== canonicalPath(projectRoot) ||
+    canonicalPath(hint || threadRoot) !== canonicalPath(threadRoot) ||
     hint === undefined ||
-    !writableRoots.some((root) => canonicalPath(root) === canonicalPath(projectRoot)) ||
+    !writableRoots.some((root) => canonicalPath(root) === canonicalPath(threadRoot)) ||
     wasProjectless
   ) {
     changedThreadIds.push(thread.id);
   }
-  state["thread-workspace-root-hints"][thread.id] = projectRoot;
-  state["thread-writable-roots"][thread.id] = [projectRoot];
+  state["thread-workspace-root-hints"][thread.id] = threadRoot;
+  state["thread-writable-roots"][thread.id] = [threadRoot];
   state["projectless-thread-ids"] = state["projectless-thread-ids"].filter(
     (id) => id !== thread.id,
   );
 }
 
+const recoveredProjectRoots = [
+  ...new Map(
+    eligibleThreads.map((thread) => {
+      const root = allProjects
+        ? resolve(thread.cwd.startsWith("\\\\?\\") ? thread.cwd.slice(4) : thread.cwd)
+        : projectRoot;
+      return [canonicalPath(root), root];
+    }),
+  ).values(),
+];
 for (const key of [
   "electron-saved-workspace-roots",
   "project-order",
   "active-workspace-roots",
 ]) {
-  if (!state[key].some((root) => canonicalPath(root) === canonicalPath(projectRoot))) {
-    state[key].push(projectRoot);
+  for (const root of recoveredProjectRoots) {
+    if (!state[key].some((existingRoot) => canonicalPath(existingRoot) === canonicalPath(root))) {
+      state[key].push(root);
+    }
   }
 }
 
 const result = {
   mode: applyChanges ? "applied" : "dry-run",
+  scope: allProjects ? "all-existing-projects" : "single-project",
   codexHome,
-  projectRoot,
+  projectRoot: allProjects ? null : projectRoot,
+  recoveredProjectRoots,
   eligibleThreads: eligibleThreads.map(({ id, title, cwd }) => ({ id, title, cwd })),
   changedThreadIds,
   sidebarSortMode: "chronological",

@@ -30,7 +30,7 @@ node .\tools\inspect_codex_logs.mjs --errors
 
 `install.ps1` 注册当前用户任务计划 `FanVPN Bridge Bootstrap`。用户登录后，它会：
 
-1. 修复当前仓库旧会话缺失的项目映射；
+1. 修复所有目录仍存在的未归档 Codex 会话项目映射；
 2. 在后台启动 Chrome；
 3. 等待扩展拉起 Native Host；
 4. 使用指数退避等待 `/ready`，最多三分钟；
@@ -54,13 +54,31 @@ Start-ScheduledTask -TaskName 'FanVPN Bridge Bootstrap'
 node .\tools\repair_codex_project_mapping.mjs
 ```
 
+预览所有仍存在的历史项目：
+
+```powershell
+node .\tools\repair_codex_project_mapping.mjs --all-projects
+```
+
 应用时会再次备份 `.codex-global-state.json`，只迁移满足以下条件的记录：未归档、来源为本地 Codex、数据库 `cwd` 与当前项目 canonical path 相同。它不会修改 SQLite、rollout JSONL、标题或聊天正文。
 
 ```powershell
 node .\tools\repair_codex_project_mapping.mjs --apply
 ```
 
+恢复全部历史项目时增加 `--all-projects`。已归档会话、非 Codex/VS Code 来源和磁盘上已不存在的目录会被跳过。
+
 应用后重启 Codex 客户端，使内存中的项目列表重新加载。侧栏排序会切换为官方排障建议的 `chronological`。
+
+若 Codex 正在运行，它可能用内存中的旧项目列表覆盖刚写入的状态。可先启动一次性等待助手，再正常退出 Codex；日志出现 `COMPLETE exit_code=0` 后重新打开：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden `
+  -File .\tools\repair_after_codex_exit.ps1
+Get-Content "$env:LOCALAPPDATA\FanVPNBridge\codex-project-repair.log" -Tail 5
+```
+
+助手只等待 `codex` 和 `codex-code-mode-host` 正常退出，不会主动终止进程。登录启动任务也会在 Codex 加载前以 `--all-projects` 模式执行同一迁移。
 
 ## 停止、重启和卸载
 
