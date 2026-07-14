@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import logging
+import os
 import sys
 import threading
 from pathlib import Path
@@ -13,10 +15,13 @@ from .errors import BridgeError
 from .framing import FramedMessageChannel
 from .http_server import create_http_server
 from .routing import RouteTable
+from .runtime_logging import configure_runtime_logging
 
 
 def run(config_path: Path) -> int:
+    log = logging.getLogger("fanvpn_bridge.main")
     config = load_config(config_path)
+    log.info("config_loaded pid=%s routes=%s", os.getpid(), ",".join(sorted(config.routes)))
     channel = FramedMessageChannel(sys.stdin.buffer, sys.stdout.buffer)
     dispatcher = NativeDispatcher(
         channel,
@@ -33,22 +38,28 @@ def run(config_path: Path) -> int:
         daemon=True,
     )
     server_thread.start()
+    log.info("ready pid=%s listen=%s:%s", os.getpid(), config.listen_host, config.listen_port)
     dispatcher.wait_closed()
+    log.info("native_channel_closed pid=%s", os.getpid())
     server.shutdown()
     server.server_close()
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_runtime_logging()
+    log = logging.getLogger("fanvpn_bridge.main")
     parser = argparse.ArgumentParser(description="FanVPN Bridge v2 native host")
     parser.add_argument("--config", type=Path, default=_default_config_path())
     args, _chrome_args = parser.parse_known_args(argv)
     try:
         return run(args.config)
     except BridgeError as error:
+        log.error("bridge_error code=%s retryable=%s", error.code, error.retryable)
         print(str(error), file=sys.stderr, flush=True)
         return 1
     except Exception as error:  # Native Messaging stdout must remain protocol-only.
+        log.exception("internal_error type=%s", type(error).__name__)
         print(f"INTERNAL_ERROR: {error}", file=sys.stderr, flush=True)
         return 1
 

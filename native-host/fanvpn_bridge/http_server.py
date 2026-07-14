@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
+import select
+import socket
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -118,8 +122,18 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
 
     def _handle(self, method: str) -> None:
         server = cast(BridgeHTTPServer, self.server)
-        if self.path == "/__bridge/health":
+        if self.path in {"/health", "/__bridge/health"}:
             self._send_health(server)
+            return
+        if self.path == "/ready":
+            self._send_health(server, readiness=True)
+            return
+        if self.path == "/routes":
+            self._send_json(
+                200,
+                {"routes": sorted(server.bridge_config.routes)},
+                head_only=method == "HEAD",
+            )
             return
         if self.path == "/__bridge/version":
             snapshot = server.health.snapshot()
@@ -247,12 +261,20 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
     ) -> None:
         server = cast(BridgeHTTPServer, self.server)
         response_started = False
+        idle_deadline = time.monotonic() + timeout
         while True:
-            try:
-                event = sink.events.get(timeout=timeout)
-            except queue.Empty as exc:
+            remaining = idle_deadline - time.monotonic()
+            if remaining <= 0:
                 server.dispatcher.cancel(request_id, "timeout")
-                raise BridgeError(ErrorCode.REQUEST_TIMEOUT, "Timed out waiting for browser response") from exc
+                raise BridgeError(ErrorCode.REQUEST_TIMEOUT, "Timed out waiting for browser response")
+            try:
+                event = sink.events.get(timeout=min(0.25, remaining))
+            except queue.Empty:
+                if _socket_disconnected(self.connection):
+                    server.dispatcher.cancel(request_id, "client_disconnected")
+                    raise ConnectionResetError("Local HTTP client disconnected")
+                continue
+            idle_deadline = time.monotonic() + timeout
             if event.kind == "head":
                 if response_started:
                     raise BridgeError(ErrorCode.PROTOCOL_VIOLATION, "Duplicate response head")
@@ -301,12 +323,18 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(b"0\r\n\r\n")
         self.wfile.flush()
 
-    def _send_health(self, server: BridgeHTTPServer) -> None:
+    def _send_health(self, server: BridgeHTTPServer, *, readiness: bool = False) -> None:
         snapshot = server.health.snapshot()
+        ready = snapshot.native_channel_connected and snapshot.executor is not None
         self._send_json(
-            200,
+            200 if ready or not readiness else 503,
             {
-                "status": "ok" if snapshot.native_channel_connected else "degraded",
+                "status": "ok" if ready else "degraded",
+                "ready": ready,
+                "mode": "native-host-http-server",
+                "pid": os.getpid(),
+                "config_loaded": True,
+                "routes": sorted(server.bridge_config.routes),
                 "host_version": snapshot.host_version,
                 "protocol_version": snapshot.protocol_version,
                 "native_channel_connected": snapshot.native_channel_connected,
@@ -359,6 +387,20 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:
         # Runtime logging will be structured and secret-redacted in a later slice.
         return
+
+
+def _socket_disconnected(connection: socket.socket) -> bool:
+    """Return promptly when a local client vanished while the browser fetch is pending."""
+
+    try:
+        readable, _writable, exceptional = select.select([connection], [], [connection], 0)
+        if exceptional:
+            return True
+        if not readable:
+            return False
+        return connection.recv(1, socket.MSG_PEEK) == b""
+    except (OSError, ValueError):
+        return True
 
 
 def create_http_server(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -28,6 +29,8 @@ from .protocol import (
 
 
 HOST_VERSION = "0.2.0-dev"
+_LOG = logging.getLogger("fanvpn_bridge.dispatcher")
+_LOG.addHandler(logging.NullHandler())
 
 
 @dataclass(slots=True)
@@ -350,6 +353,7 @@ class NativeDispatcher:
     def _record_error(self, error: BridgeError) -> None:
         self._last_error_code = str(error.code)
         self._last_error_at = datetime.now(timezone.utc)
+        _LOG.warning("request_error code=%s retryable=%s", error.code, error.retryable)
 
     @staticmethod
     def _as_bridge_error(exc: Exception) -> BridgeError:

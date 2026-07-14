@@ -41,6 +41,8 @@ Manifest 内置公开的开发 identity key，因此从不同目录加载时 ID 
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
+默认同时注册当前用户登录任务 `FanVPN Bridge Bootstrap`。如果只想注册 Native Messaging Host，可显式传入 `-SkipStartupTask`。
+
 脚本会生成带绝对 EXE 路径和固定扩展 origin 的 manifest，并写入：
 
 ```text
@@ -60,6 +62,16 @@ HKCU\Software\Google\Chrome\NativeMessagingHosts\com.fanvpn.bridge
 ```powershell
 Invoke-RestMethod http://127.0.0.1:18888/__bridge/health
 ```
+
+也可以使用更直观的本地诊断端点：
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:18888/health -Proxy $null
+Invoke-RestMethod http://127.0.0.1:18888/ready -Proxy $null
+Invoke-RestMethod http://127.0.0.1:18888/routes -Proxy $null
+```
+
+重启恢复、启动日志、停止和回滚见 [RECOVERY_WINDOWS.md](RECOVERY_WINDOWS.md)。
 
 正常结果的关键字段：
 

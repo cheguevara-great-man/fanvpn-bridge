@@ -28,14 +28,19 @@ Gemini 3 的 `thoughtSignature` 必须随函数调用历史原样回传。这是
 ## 3. 进程和生命周期
 
 ```text
-Chrome profile starts
-  └─ MV3 service worker calls runtime.connectNative()
-       └─ Chrome starts fanvpn_bridge native host
-            ├─ stdin/stdout: Native Messaging channel
-            └─ 127.0.0.1:18888: local HTTP gateway
+Windows user logon
+  └─ FanVPN Bridge Bootstrap scheduled task
+       ├─ repair Codex project/thread mapping (idempotent, with backup)
+       └─ start Chrome without opening a visible window
+            └─ MV3 service worker calls runtime.connectNative()
+                 └─ Chrome starts fanvpn_bridge native host
+                      ├─ stdin/stdout: Native Messaging channel
+                      └─ 127.0.0.1:18888: local HTTP gateway
 ```
 
 `connectNative()` 创建的 Port 同时保持 Native Host 和扩展 Service Worker 的生命周期。Port 断开后，扩展按退避策略重连；Native Host 在 stdin EOF 后停止接收新请求、取消在途请求并退出。
+
+安装脚本注册当前用户级 `FanVPN Bridge Bootstrap` 登录任务。任务先以事务式文件替换修复 Codex 的项目映射，再启动 Chrome，并按指数退避等待 `/ready`；它不接触 API 密钥，也不另建常驻代理进程。Native Host 的 `/health`、`/ready` 和 `/routes` 只报告脱敏的运行状态。若本地 AI 客户端在响应完成前断开，HTTP Gateway 会立即向浏览器发送取消信号，避免失效的 `fetch` 长时间占满 Chrome 的连接槽。
 
 不再使用 `bridge_port`，也不要求用户先手工启动 Python 服务。开发阶段仍使用 Python 启动器；发布阶段打包成独立 EXE，消除 Python 环境依赖。
 

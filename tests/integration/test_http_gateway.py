@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import http.client
 import json
+import socket
 import threading
+import time
 import unittest
 
 from fanvpn_bridge.config import parse_config
@@ -26,6 +28,10 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
                     "upstream_base_url": "https://api.openai.com",
                     "probe_path": "/v1/models",
                 },
+                "chatgpt-codex": {
+                    "upstream_base_url": "https://chatgpt.com/backend-api/codex",
+                    "probe_path": "/models",
+                },
                 "gemini": {
                     "upstream_base_url": "https://generativelanguage.googleapis.com",
                     "probe_path": "/v1beta/models",
@@ -41,6 +47,8 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
         host_channel, extension_channel = channel_pair()
 
         def responder(head: dict[str, object], body: bytes):
+            if str(head["url"]).endswith("/v1/hang"):
+                return None
             authorization = next(
                 (
                     pair[1]
@@ -105,6 +113,66 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
         self.assertEqual(health["status"], "ok")
         self.assertTrue(health["native_channel_connected"])
         self.assertEqual(health["executor"], "offscreen")
+        self.assertTrue(health["ready"])
+        self.assertEqual(health["mode"], "native-host-http-server")
+        self.assertEqual(health["routes"], ["chatgpt-codex", "gemini", "openai"])
+
+    def test_root_health_ready_and_routes_are_local_diagnostics(self) -> None:
+        status, _headers, payload = self.request("GET", "/health")
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(payload)["config_loaded"])
+        status, _headers, payload = self.request("GET", "/ready")
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(payload)["ready"])
+        status, _headers, payload = self.request("GET", "/routes")
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            json.loads(payload)["routes"],
+            ["chatgpt-codex", "gemini", "openai"],
+        )
+
+    def test_chatgpt_codex_preserves_required_end_to_end_headers(self) -> None:
+        status, _headers, payload = self.request(
+            "POST",
+            "/chatgpt-codex/responses",
+            b"{}",
+            {
+                "Accept": "text/event-stream",
+                "Authorization": "Bearer test-secret",
+                "ChatGPT-Account-ID": "test-account",
+                "Content-Type": "application/json",
+                "OpenAI-Beta": "responses=experimental",
+                "X-OpenAI-Test": "present",
+            },
+        )
+        self.assertEqual(status, 200)
+        header_names = json.loads(payload)["header_names"]
+        for required in (
+            "accept",
+            "authorization",
+            "chatgpt-account-id",
+            "content-type",
+            "openai-beta",
+            "x-openai-test",
+        ):
+            self.assertIn(required, header_names)
+
+    def test_disconnected_client_cancels_pending_browser_request(self) -> None:
+        client = socket.create_connection(("127.0.0.1", self.port), timeout=2)
+        client.sendall(
+            b"GET /openai/v1/hang HTTP/1.1\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Connection: close\r\n\r\n"
+        )
+        deadline = time.monotonic() + 2
+        while self.dispatcher.snapshot().active_requests == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(self.dispatcher.snapshot().active_requests, 1)
+        client.close()
+        deadline = time.monotonic() + 2
+        while self.dispatcher.snapshot().active_requests and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(self.dispatcher.snapshot().active_requests, 0)
 
     def test_large_post_streams_through_fake_extension(self) -> None:
         body = b"z" * (2 * 1024 * 1024)

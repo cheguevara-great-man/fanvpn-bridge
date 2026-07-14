@@ -79,7 +79,7 @@ class CollectingSink:
 
 Responder = Callable[
     [dict[str, object], bytes],
-    tuple[int, list[list[str]], Sequence[bytes]],
+    tuple[int, list[list[str]], Sequence[bytes]] | None,
 ]
 
 
@@ -140,10 +140,13 @@ class FakeExtension:
             raise AssertionError(f"Unexpected host message: {message_type}")
 
     def _respond(self, request_id: str) -> None:
-        status, headers, chunks = self.responder(
+        response = self.responder(
             self.requests[request_id],
             bytes(self.bodies[request_id]),
         )
+        if response is None:
+            return
+        status, headers, chunks = response
         self.channel.send(
             envelope("response.head", id=request_id, status=status, headers=headers)
         )

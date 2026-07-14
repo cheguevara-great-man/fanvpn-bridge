@@ -32,6 +32,8 @@ Bridge 只转发 HTTP 字节，不把 Responses API、Chat Completions、Anthrop
 - Codex 使用现有 ChatGPT 登录执行真实请求：通过。
 - Claude Code → CC Switch → Gemini 3.5 的真实多轮工具调用及 `thoughtSignature` 回放：通过。
 - Gemini 浏览器请求头 allowlist：通过，已消除 Claude/SDK 元数据头导致的 CORS 预检失败。
+- Windows 登录启动、Bridge readiness 和 Codex 项目会话映射恢复：已实现。
+- 本地客户端断开后会在 250 ms 轮询周期内取消浏览器请求，避免重启恢复阶段积累 600 秒僵尸请求。
 
 ## Windows 快速安装
 
@@ -56,6 +58,8 @@ Bridge 只转发 HTTP 字节，不把 Responses API、Chat Completions、Anthrop
    ```powershell
    Invoke-RestMethod http://127.0.0.1:18888/__bridge/health
    ```
+
+安装脚本还会创建当前用户的 `FanVPN Bridge Bootstrap` 登录任务：后台启动 Chrome、修复 Codex 项目映射，并等待 Bridge ready。详见 [Windows 重启恢复与 Codex 会话修复](docs/RECOVERY_WINDOWS.md)。
 
 ## 本地 Base URL
 
@@ -92,6 +96,7 @@ python .\tools\smoke_native_exe.py
 - [开发说明](DEVELOPMENT.md)
 - [Windows 安装与诊断](docs/INSTALL_WINDOWS.md)
 - [实机验证状态](docs/STATUS.md)
+- [Windows 重启恢复与 Codex 会话修复](docs/RECOVERY_WINDOWS.md)
 - [Native Messaging v1 契约](contracts/native-messaging-v1.schema.json)
 
 ## 安全边界

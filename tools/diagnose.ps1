@@ -12,6 +12,18 @@ $result = [ordered]@{
     no_proxy_has_loopback = [bool]($userNoProxy -match '(^|,)\s*(127\.0\.0\.1|localhost)\s*(,|$)')
     health = $null
     health_error = $null
+    startup_task = $null
+}
+
+$startupTask = Get-ScheduledTask -TaskName 'FanVPN Bridge Bootstrap' -ErrorAction SilentlyContinue
+if ($startupTask) {
+    $taskInfo = Get-ScheduledTaskInfo -TaskName 'FanVPN Bridge Bootstrap'
+    $result.startup_task = [ordered]@{
+        state = [string]$startupTask.State
+        last_run_time = $taskInfo.LastRunTime
+        last_task_result = $taskInfo.LastTaskResult
+        next_run_time = $taskInfo.NextRunTime
+    }
 }
 
 if ($result.registry_present) {
@@ -24,9 +36,13 @@ if ($result.registry_present) {
 }
 
 try {
-    $result.health = Invoke-RestMethod -Uri 'http://127.0.0.1:18888/__bridge/health' -TimeoutSec 2
+    $result.health = Invoke-RestMethod -Uri 'http://127.0.0.1:18888/health' -TimeoutSec 2 -Proxy $null
 } catch {
-    $result.health_error = $_.Exception.Message
+    try {
+        $result.health = Invoke-RestMethod -Uri 'http://127.0.0.1:18888/__bridge/health' -TimeoutSec 2 -Proxy $null
+    } catch {
+        $result.health_error = $_.Exception.Message
+    }
 }
 
 $result | ConvertTo-Json -Depth 6
