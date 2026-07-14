@@ -66,6 +66,29 @@ Git、上传网盘、粘贴到聊天或放入项目目录。
 设置后完全退出并重新打开 VS Code。`auth-openai` 仅转发 Codex 自己发送的 OAuth
 请求；Bridge 不读取、保存或打印 Token。
 
+目标电脑的 `~/.codex/config.toml` 需要选择 ChatGPT Bridge provider。建议先备份原文件，再复制
+[`config/codex-fanvpn-chatgpt.example.toml`](../config/codex-fanvpn-chatgpt.example.toml)：
+
+```powershell
+Copy-Item "$HOME\.codex\config.toml" "$HOME\.codex\config.toml.before-browser-bridge.bak" -ErrorAction SilentlyContinue
+Copy-Item ".\config\codex-fanvpn-chatgpt.example.toml" "$HOME\.codex\config.toml" -Force
+```
+
+最终关键配置应为：
+
+```toml
+model_provider = "fanvpn_chatgpt"
+
+[model_providers.fanvpn_chatgpt]
+base_url = "http://127.0.0.1:18888/chatgpt-codex"
+requires_openai_auth = true
+wire_api = "responses"
+supports_websockets = false
+```
+
+完成后关闭所有 VS Code 窗口再重新打开。不要再次点击 OAuth 登录；Codex IDE 会读取已安全迁移到
+`~/.codex/auth.json` 的凭据。已验证的成功判据是：Codex 直接进入聊天页，并能在关闭 Clash 的情况下完成一次真实对话。
+
 ## VS Code Claude Code：Anthropic 官方模式
 
 该模式使用 Claude.ai 官方登录或 Anthropic API Key，不经过 CC Switch：

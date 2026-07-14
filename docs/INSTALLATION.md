@@ -10,6 +10,44 @@
 
 项目只注册 Google Chrome，不写入 Edge 的 Native Messaging 注册表。
 
+## 新电脑完整部署（已验证）
+
+以下流程适用于没有 Clash、仅通过 Chrome 中 FanVPN 出口联网的 Windows 电脑。PowerShell 中切换目录直接使用
+`Set-Location` 或 `cd`，不要使用 CMD 专用的 `cd /d`。
+
+```powershell
+Set-Location 'D:\software\AI_Coding\codex\browser-ai-bridge'
+git status --short
+python --version
+```
+
+如果 Git 无法访问 GitHub，可以在能够访问 GitHub 的 Chrome 中下载仓库 ZIP，再解压到目标目录；不要把路径或命令先经过
+Markdown 转换工具，否则 `_`、`*`、`[` 等字符可能被自动加上反斜杠。
+
+依次构建、加载扩展并注册 Host：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_native_host.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+然后在 `chrome://extensions` 加载仓库的 `chrome-extension` 目录，将网站访问权限设为“在所有网站上”，刷新扩展并确认弹窗显示：
+
+- Native Host：已连接
+- 协议握手：完成
+- 浏览器执行器：`offscreen`
+- ChatGPT 网站权限：已授权
+
+最后验证：
+
+```powershell
+curl.exe http://127.0.0.1:18888/ready
+curl.exe http://127.0.0.1:18888/routes
+```
+
+`/ready` 应包含 `"ready":true`，`/routes` 应至少包含 `anthropic`、`auth-openai`、`chatgpt-codex`、
+`gemini`、`gemini-openai` 和 `openai`。这只证明 Bridge 链路就绪；FanVPN 节点仍需用户在 Chrome 中开启和切换。
+
 ## 构建 Native Host
 
 ```powershell
@@ -26,6 +64,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_native_host.ps
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_native_host.ps1 `
   -Python "C:\path\to\python.exe" -DistRoot .\dist-next
 ```
+
+构建到自定义目录后，安装时必须明确指定同一产物目录：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 `
+  -BuildDirectory .\dist-next\browser-ai-bridge
+```
+
+单独运行 `install.ps1` 始终注册默认的 `dist\browser-ai-bridge`，不会自动选择最近生成的 `dist-next`。
 
 ## 加载 Chrome 扩展
 
