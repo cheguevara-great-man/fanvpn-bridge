@@ -59,7 +59,7 @@ Bridge 只转发 HTTP 字节，不把 Responses API、Chat Completions、Anthrop
    Invoke-RestMethod http://127.0.0.1:18888/__bridge/health
    ```
 
-安装脚本还会创建当前用户的 `FanVPN Bridge Bootstrap` 登录任务：后台启动 Chrome、修复 Codex 项目映射，并等待 Bridge ready。详见 [Windows 重启恢复与 Codex 会话修复](docs/RECOVERY_WINDOWS.md)。
+安装脚本还会创建当前用户的 `FanVPN Bridge Bootstrap` 登录任务：后台启动 Chrome，并等待 Bridge ready。该任务不会读取或修改 Codex 的任务、项目、侧栏或本地数据库状态。详见 [Windows 重启恢复](docs/RECOVERY_WINDOWS.md)。
 
 ## 本地 Base URL
 
@@ -96,7 +96,7 @@ python .\tools\smoke_native_exe.py
 - [开发说明](DEVELOPMENT.md)
 - [Windows 安装与诊断](docs/INSTALL_WINDOWS.md)
 - [实机验证状态](docs/STATUS.md)
-- [Windows 重启恢复与 Codex 会话修复](docs/RECOVERY_WINDOWS.md)
+- [Windows 重启恢复](docs/RECOVERY_WINDOWS.md)
 - [Native Messaging v1 契约](contracts/native-messaging-v1.schema.json)
 
 ## 安全边界

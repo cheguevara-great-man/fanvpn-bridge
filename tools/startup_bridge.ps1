@@ -1,7 +1,5 @@
 param(
     [string]$ChromePath,
-    [string]$RepairScript,
-    [string]$ProjectRoot,
     [string]$ReadyUrl = 'http://127.0.0.1:18888/ready',
     [string]$LegacyHealthUrl = 'http://127.0.0.1:18888/__bridge/health',
     [int]$TimeoutSeconds = 180
@@ -36,24 +34,6 @@ if (-not $ChromePath -or -not (Test-Path -LiteralPath $ChromePath -PathType Leaf
 }
 
 Write-StartupLog "START chrome=$ChromePath timeout_seconds=$TimeoutSeconds"
-if ($RepairScript -and $ProjectRoot -and (Test-Path -LiteralPath $RepairScript -PathType Leaf)) {
-    $node = Get-Command node.exe -ErrorAction SilentlyContinue
-    if ($node) {
-        $previousNodeNoWarnings = $env:NODE_NO_WARNINGS
-        try {
-            $env:NODE_NO_WARNINGS = '1'
-            & $node.Source $RepairScript --all-projects --apply *> $null
-            $repairExitCode = $LASTEXITCODE
-            Write-StartupLog "PROJECT_MAPPING_REPAIR exit_code=$repairExitCode project=$ProjectRoot"
-        } catch {
-            Write-StartupLog "PROJECT_MAPPING_REPAIR failed: $($_.Exception.Message)"
-        } finally {
-            $env:NODE_NO_WARNINGS = $previousNodeNoWarnings
-        }
-    } else {
-        Write-StartupLog 'PROJECT_MAPPING_REPAIR skipped because node.exe was not found.'
-    }
-}
 Start-Process -FilePath $ChromePath -ArgumentList '--no-first-run', '--no-default-browser-check', '--no-startup-window' -WindowStyle Hidden
 
 $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)

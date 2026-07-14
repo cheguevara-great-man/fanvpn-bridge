@@ -61,9 +61,7 @@ if (-not $SkipStartupTask) {
         throw 'Google Chrome executable was not found; startup task was not installed.'
     }
     $powershellPath = Join-Path $PSHOME 'powershell.exe'
-    $repairScript = Join-Path $PSScriptRoot 'tools\repair_codex_project_mapping.mjs'
-    $projectRoot = [System.IO.Path]::GetFullPath($PSScriptRoot)
-    $arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$startupScript`" -ChromePath `"$chromePath`" -RepairScript `"$repairScript`" -ProjectRoot `"$projectRoot`""
+    $arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$startupScript`" -ChromePath `"$chromePath`""
     $action = New-ScheduledTaskAction -Execute $powershellPath -Argument $arguments
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
     $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
