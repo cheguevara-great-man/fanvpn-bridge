@@ -61,7 +61,7 @@ state["active-workspace-roots"] ||= [];
 state["electron-persisted-atom-state"] ||= {};
 state["electron-persisted-atom-state"]["flat-project-sidebar-preferences-v1"] ||= {};
 state["electron-persisted-atom-state"]["flat-project-sidebar-preferences-v1"].chatSortMode =
-  "chronological";
+  "updated_at";
 
 const changedThreadIds = [];
 for (const thread of eligibleThreads) {
@@ -96,11 +96,11 @@ const recoveredProjectRoots = [
     }),
   ).values(),
 ];
-for (const key of [
-  "electron-saved-workspace-roots",
-  "project-order",
-  "active-workspace-roots",
-]) {
+const projectListKeys = ["electron-saved-workspace-roots", "project-order"];
+if (!allProjects) {
+  projectListKeys.push("active-workspace-roots");
+}
+for (const key of projectListKeys) {
   for (const root of recoveredProjectRoots) {
     if (!state[key].some((existingRoot) => canonicalPath(existingRoot) === canonicalPath(root))) {
       state[key].push(root);
@@ -116,7 +116,7 @@ const result = {
   recoveredProjectRoots,
   eligibleThreads: eligibleThreads.map(({ id, title, cwd }) => ({ id, title, cwd })),
   changedThreadIds,
-  sidebarSortMode: "chronological",
+  sidebarSortMode: "updated_at",
   stateChanged: JSON.stringify(state) !== originalState,
   backupPath: null,
 };

@@ -68,7 +68,7 @@ node .\tools\repair_codex_project_mapping.mjs --apply
 
 恢复全部历史项目时增加 `--all-projects`。已归档会话、非 Codex/VS Code 来源和磁盘上已不存在的目录会被跳过。
 
-应用后重启 Codex 客户端，使内存中的项目列表重新加载。侧栏排序会切换为官方排障建议的 `chronological`。
+应用后重启 Codex 客户端，使内存中的项目列表重新加载。侧栏会切换为按更新时间显示任务（当前客户端内部值为 `updated_at`）。
 
 若 Codex 正在运行，它可能用内存中的旧项目列表覆盖刚写入的状态。可先启动一次性等待助手，再正常退出 Codex；日志出现 `COMPLETE exit_code=0` 后重新打开：
 

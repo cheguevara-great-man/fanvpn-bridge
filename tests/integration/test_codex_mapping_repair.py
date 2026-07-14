@@ -36,7 +36,7 @@ class CodexMappingRepairIntegrationTests(unittest.TestCase):
                 "projectless-thread-ids": ["active-a", "active-b", "archived", "missing"],
                 "electron-saved-workspace-roots": [],
                 "project-order": [],
-                "active-workspace-roots": [],
+                "active-workspace-roots": [str(project_a)],
                 "electron-persisted-atom-state": {},
             }
             (codex_home / ".codex-global-state.json").write_text(
@@ -88,6 +88,14 @@ class CodexMappingRepairIntegrationTests(unittest.TestCase):
                 {Path(path) for path in repaired["electron-saved-workspace-roots"]},
                 {project_a, project_b},
             )
+            self.assertEqual(repaired["active-workspace-roots"], [str(project_a)])
+            self.assertEqual(
+                repaired["electron-persisted-atom-state"][
+                    "flat-project-sidebar-preferences-v1"
+                ]["chatSortMode"],
+                "updated_at",
+            )
+            self.assertEqual(result["sidebarSortMode"], "updated_at")
             self.assertTrue(Path(result["backupPath"]).is_file())
 
 
