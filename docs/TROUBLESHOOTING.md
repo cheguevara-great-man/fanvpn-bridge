@@ -27,6 +27,7 @@ Invoke-RestMethod http://127.0.0.1:18888/routes -Proxy $null
 | 扩展显示 Native Host 未连接 | 注册路径、构建目录或扩展 ID 不一致 | 运行 `diagnose.ps1`，重新构建并注册 |
 | `/health` 正常但 `/ready` 失败 | Offscreen 尚未就绪或扩展通道断开 | 刷新 FanVPN AI Bridge，查看扩展错误 |
 | ChatGPT 网页可开，但 Codex route 返回 502 | Chrome 扣留 Bridge 的站点权限 | 将 FanVPN AI Bridge 的网站访问设为“在所有网站上” |
+| Codex 登录 Token Exchange 返回地区 403 | Token Exchange 由本地 Codex 进程直连 `auth.openai.com` | 使用 API Key，或按使用指南安全迁移已有登录缓存并配置认证刷新路由 |
 | `Failed to fetch` / `UPSTREAM_CONNECTION_FAILED` | FanVPN 未开启、节点失效或目标被节点限制 | 在同一 Chrome profile 检查 FanVPN 并切换节点 |
 | 本地请求被发送到 Clash/系统代理 | `NO_PROXY` 未包含 loopback，或应用未重启 | 添加 `127.0.0.1,localhost` 后重启 VS Code |
 | 请求长时间无首个流式输出 | 扩展版本旧或未刷新 | 刷新 FanVPN AI Bridge，确认已加载当前 `stream.js` |

@@ -74,6 +74,7 @@ Codex、Claude Code 或 CC Switch。
 |---|---|
 | OpenAI Responses API | `http://127.0.0.1:18888/openai/v1` |
 | ChatGPT Codex backend | `http://127.0.0.1:18888/chatgpt-codex` |
+| Codex authentication refresh | `http://127.0.0.1:18888/auth-openai` |
 | Anthropic Messages API | `http://127.0.0.1:18888/anthropic` |
 | Gemini Native | `http://127.0.0.1:18888/gemini` |
 | Gemini OpenAI compatibility | `http://127.0.0.1:18888/gemini-openai/v1` |

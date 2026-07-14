@@ -40,6 +40,32 @@ supports_websockets = false
 该 route 固定转发到 ChatGPT Codex backend。Bridge 不读取浏览器 Cookie，而是转发
 Codex 自己已有的认证请求头。Bridge 当前不传输 WebSocket，因此必须关闭 WebSocket。
 
+### 在另一台电脑复用现有 ChatGPT 登录
+
+Codex IDE 与 CLI 共用本机的登录缓存。首次 OAuth 登录的 Token Exchange 固定访问
+`auth.openai.com`，不会使用 `chatgpt_base_url`。如果目标电脑无法直接完成这一步，
+可以通过用户自己控制的离线介质，将已登录电脑上的 `~/.codex/auth.json` 复制到
+目标电脑相同位置。该文件包含访问和刷新凭据，必须像密码一样保护：不要提交到
+Git、上传网盘、粘贴到聊天或放入项目目录。
+
+目标电脑还应设置以下用户环境变量，使后续 Token 刷新和注销经 Bridge 访问认证服务：
+
+```powershell
+[Environment]::SetEnvironmentVariable(
+  'CODEX_REFRESH_TOKEN_URL_OVERRIDE',
+  'http://127.0.0.1:18888/auth-openai/oauth/token',
+  'User'
+)
+[Environment]::SetEnvironmentVariable(
+  'CODEX_REVOKE_TOKEN_URL_OVERRIDE',
+  'http://127.0.0.1:18888/auth-openai/oauth/revoke',
+  'User'
+)
+```
+
+设置后完全退出并重新打开 VS Code。`auth-openai` 仅转发 Codex 自己发送的 OAuth
+请求；Bridge 不读取、保存或打印 Token。
+
 ## VS Code Claude Code：Anthropic 官方模式
 
 该模式使用 Claude.ai 官方登录或 Anthropic API Key，不经过 CC Switch：

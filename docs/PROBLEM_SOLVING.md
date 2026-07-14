@@ -137,3 +137,18 @@ body 字节透明。
 启动任务只启动 Chrome 并等待 Bridge ready。
 
 **经验**：先用 `/ready` 和真实 API 请求证明网络层，再把客户端 UI 问题留在客户端边界内。
+
+## 新电脑的 Codex OAuth Token Exchange 返回地区 403
+
+**现象**：Chrome 中的 ChatGPT 登录页面成功，但回到 Codex 时显示 Token Exchange
+被地区策略拒绝。
+
+**根因**：浏览器授权页面使用 Chrome/FanVPN，而授权码换 Token 的 POST 请求由
+本地 Codex 进程直接发送到 `auth.openai.com`；`chatgpt_base_url` 不控制 OAuth issuer。
+
+**解决**：新增固定的 `auth-openai` route，用于已登录凭据的刷新和注销。首次部署
+可以使用官方 API Key，或通过用户自己控制的离线介质迁移已有 `auth.json`；后者
+必须按密码保护，不能进入仓库或聊天记录。
+
+**经验**：浏览器 OAuth 包含浏览器授权、localhost callback、本地 Token Exchange
+和后续刷新四段网络路径；只验证登录网页不足以证明整个流程使用了同一出口。
