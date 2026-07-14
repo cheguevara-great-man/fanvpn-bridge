@@ -55,15 +55,15 @@ CI 的成功证据。命令见[客户端使用](USAGE.md#路由验证)。
 
 ## 构建与安装开发版本
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_native_host.ps1 `
-  -Python "C:\path\to\python.exe" -DistRoot .\dist-next
+已安装环境使用 A/B 更新脚本，避免覆盖正在运行进程锁定的目录：
 
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 `
-  -BuildDirectory .\dist-next\browser-ai-bridge
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\update_native_host.ps1 `
+  -Python "C:\path\to\python.exe"
 ```
 
-刷新 Chrome 扩展并检查 `/ready`。不要覆盖正在运行进程锁定的构建目录。
+脚本根据当前 Native Messaging 注册自动在 `dist-a` 和 `dist-b` 之间切换。刷新扩展、重开 Chrome，
+再检查 `/ready`。首次安装仍按[安装文档](INSTALLATION.md)使用默认 `dist`。
 
 ## 改动原则
 

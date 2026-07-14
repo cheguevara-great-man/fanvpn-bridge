@@ -28,8 +28,8 @@ Invoke-RestMethod http://127.0.0.1:18888/routes -Proxy $null
 | `/health` 正常但 `/ready` 失败 | Offscreen 尚未就绪或扩展通道断开 | 刷新 FanVPN AI Bridge，查看扩展错误 |
 | ChatGPT 网页可开，但 Codex route 返回 502 | Chrome 扣留 Bridge 的站点权限 | 将 FanVPN AI Bridge 的网站访问设为“在所有网站上” |
 | Codex 登录 Token Exchange 返回地区 403 | Token Exchange 由本地 Codex 进程直连 `auth.openai.com` | 使用 API Key，或按使用指南安全迁移已有登录缓存并配置认证刷新路由 |
-| 已构建 `dist-next`，但新路由没有出现 | `install.ps1` 默认仍注册了 `dist` 中的旧 Host | 使用 `install.ps1 -BuildDirectory .\dist-next\browser-ai-bridge`，刷新扩展并重开 Chrome |
-| PyInstaller 报 `WinError 5` 或 `libcrypto-3.dll` 拒绝访问 | 当前注册的 `browser-ai-bridge.exe` 正在使用目标构建目录 | 关闭 Chrome，确认 Host 进程退出后再构建；或改用新的 `-DistRoot` |
+| 更新后新路由没有出现 | Chrome 仍在运行切换前的 Host，或扩展尚未刷新 | 刷新扩展并重开 Chrome，再检查 `/ready` 和 `/routes` |
+| A/B 更新报 `WinError 5` 或 `libcrypto-3.dll` 拒绝访问 | 上次切换后未重开 Chrome，旧进程仍占用本次目标槽位 | 关闭 Chrome，确认所有 Host 进程退出后重新运行更新脚本 |
 | `Failed to fetch` / `UPSTREAM_CONNECTION_FAILED` | FanVPN 未开启、节点失效或目标被节点限制 | 在同一 Chrome profile 检查 FanVPN 并切换节点 |
 | 本地请求被发送到 Clash/系统代理 | `NO_PROXY` 未包含 loopback，或应用未重启 | 添加 `127.0.0.1,localhost` 后重启 VS Code |
 | 请求长时间无首个流式输出 | 扩展版本旧或未刷新 | 刷新 FanVPN AI Bridge，确认已加载当前 `stream.js` |
