@@ -64,7 +64,11 @@ await dispatch(
 );
 
 const deadline = Date.now() + 2000;
-while (!outbound.some((message) => message.type === protocol.MessageType.RESPONSE_BODY)) {
+while (
+  !outbound.some(
+    (message) => message.type === protocol.MessageType.RESPONSE_BODY && message.end === true,
+  )
+) {
   if (Date.now() > deadline) throw new Error("offscreen response timed out");
   await new Promise((resolve) => setTimeout(resolve, 5));
 }
@@ -74,10 +78,13 @@ assert.equal(observedFetch.authorization, "Bearer extension-test");
 assert.equal(new TextDecoder().decode(observedFetch.body), "request-body");
 assert.equal(outbound[0].type, protocol.MessageType.FLOW_ACK);
 const head = outbound.find((message) => message.type === protocol.MessageType.RESPONSE_HEAD);
-const body = outbound.find((message) => message.type === protocol.MessageType.RESPONSE_BODY);
+const bodies = outbound.filter((message) => message.type === protocol.MessageType.RESPONSE_BODY);
 assert.equal(head.status, 200);
 assert.equal(head.headers.some(([name]) => name === "content-length"), false);
-assert.equal(new TextDecoder().decode(protocol.base64ToBytes(body.data)), "data: hello\n\n");
-assert.equal(body.end, true);
+assert.equal(bodies.length, 2);
+assert.equal(new TextDecoder().decode(protocol.base64ToBytes(bodies[0].data)), "data: hello\n\n");
+assert.equal(bodies[0].end, false);
+assert.equal(protocol.base64ToBytes(bodies[1].data).byteLength, 0);
+assert.equal(bodies[1].end, true);
 
 console.log("offscreen executor: OK");

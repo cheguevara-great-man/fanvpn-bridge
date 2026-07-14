@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -12,8 +12,6 @@ if (!apiKey) {
 const configDirectory = join(homedir(), ".cc-switch");
 const databasePath = join(configDirectory, "cc-switch.db");
 const backupDirectory = join(configDirectory, "backups");
-const claudeDirectory = join(homedir(), ".claude");
-const claudeSettingsPath = join(claudeDirectory, "settings.json");
 const providerId = "fanvpn-gemini-native";
 const bridgeBaseUrl = "http://127.0.0.1:18888/gemini";
 const model = "gemini-3.5-flash";
@@ -57,13 +55,10 @@ try {
           apiKeyPresent: true,
           apiKeyLength: apiKey.length,
           actions: [
-            ...(existsSync(claudeSettingsPath)
-              ? []
-              : ["create the missing Claude Code settings file"]),
             "back up the CC Switch database",
             "upsert the Gemini Native provider for Claude Code",
             "make it the current Claude provider",
-            "enable Claude proxy takeover on 127.0.0.1:15721",
+            "enable the Claude protocol-conversion proxy on 127.0.0.1:15721",
           ],
         },
         null,
@@ -72,10 +67,6 @@ try {
     );
     process.exitCode = 0;
   } else {
-    if (!existsSync(claudeSettingsPath)) {
-      mkdirSync(claudeDirectory, { recursive: true });
-      writeFileSync(claudeSettingsPath, "{}\n", { encoding: "utf8", flag: "wx" });
-    }
     mkdirSync(backupDirectory, { recursive: true });
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const backupPath = join(

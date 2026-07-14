@@ -73,7 +73,7 @@ Bridge 只转发 HTTP 字节，不把 Responses API、Chat Completions、Anthrop
 
 路由定义位于打包目录的 `routes.json`，源模板是 [config/routes.example.json](config/routes.example.json)。配置不保存 API Key；客户端发送的认证头只在内存中转发。
 
-Codex、Claude Code 和 CC Switch 的具体配置见 [docs/CLIENT_INTEGRATION.md](docs/CLIENT_INTEGRATION.md)。
+Codex、Claude Code 和 CC Switch 的具体配置见 [docs/CLIENT_INTEGRATION.md](docs/CLIENT_INTEGRATION.md)。VS Code Claude 在 Anthropic 官方模式与 Gemini 模式之间切换，见 [docs/VSCODE_CLAUDE_MODES.md](docs/VSCODE_CLAUDE_MODES.md)。
 
 ## 验证
 
@@ -97,6 +97,8 @@ python .\tools\smoke_native_exe.py
 - [Windows 安装与诊断](docs/INSTALL_WINDOWS.md)
 - [实机验证状态](docs/STATUS.md)
 - [Windows 重启恢复](docs/RECOVERY_WINDOWS.md)
+- [VS Code Claude 官方模式](docs/VSCODE_CLAUDE_OFFICIAL.md)
+- [VS Code Claude 模式切换](docs/VSCODE_CLAUDE_MODES.md)
 - [Native Messaging v1 契约](contracts/native-messaging-v1.schema.json)
 
 ## 安全边界

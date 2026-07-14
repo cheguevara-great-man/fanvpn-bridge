@@ -12,11 +12,19 @@ FanVPN Bridge 是受 allowlist 约束的反向 HTTP 网关，不是 `CONNECT`/SO
 http://127.0.0.1:18888/anthropic
 ```
 
-认证仍由 Claude Code 的 `ANTHROPIC_API_KEY` 或 `ANTHROPIC_AUTH_TOKEN` 提供。示例见 `config/claude-fanvpn.example.json`。
+认证仍由 Claude Code 自己提供：可以使用 Claude.ai 官方账号登录，也可以使用 Anthropic Console 的 `ANTHROPIC_API_KEY`。官方账号登录时不要设置 API Key 或自定义认证 Token，否则环境变量会优先于已保存的 OAuth 登录。
+
+VS Code 插件推荐使用只影响该插件的配置：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\configure_vscode_claude_official.ps1
+```
+
+该脚本不会修改 `~/.claude/settings.json`，也不会启动 CC Switch。完整说明见 [VS Code Claude Code：Anthropic 官方模式](VSCODE_CLAUDE_OFFICIAL.md)。通用 Claude Code 配置示例见 `config/claude-fanvpn.example.json`。
 
 ### Claude Code 经 CC Switch 使用 Gemini
 
-这是 Gemini 3 多轮工具调用的主链路：
+只有 Claude Code 使用 Gemini API 时才需要这条链路。CC Switch 负责协议转换和 Gemini 3 多轮工具调用状态：
 
 ```text
 Claude Code
@@ -35,7 +43,11 @@ Claude Code
 - API Key：Google Gemini key
 - 模型：例如 `gemini-3.5-flash`
 
-然后启动 CC Switch 本地代理，并开启 Claude 应用接管。Bridge 不解析 JSON，也不生成、缓存或修改 `thoughtSignature`。
+然后使用 VS Code 专用模式脚本启动 CC Switch 本地代理并配置插件。不要开启全局 Claude 应用接管；Bridge 不解析 JSON，也不生成、缓存或修改 `thoughtSignature`。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\set_vscode_claude_mode.ps1 -Mode Gemini
+```
 
 也可以关闭 CC Switch 后，用 Node.js 22+ 的脚本完成同样的可回滚配置：
 
@@ -47,7 +59,7 @@ node .\tools\configure_ccswitch_gemini.mjs
 node .\tools\configure_ccswitch_gemini.mjs --apply
 ```
 
-脚本会创建 `Gemini Native via FanVPN` 供应商、设为当前 Claude 供应商，并启用 `127.0.0.1:15721` 的 Claude 接管。若 `~/.claude/settings.json` 尚不存在，也会先创建最小配置，避免 CC Switch 首次接管失败。可用 `node .\tools\inspect_ccswitch_db.mjs --summary` 查看脱敏后的生效状态。
+脚本会创建 `Gemini Native via FanVPN` 供应商、设为当前 Claude 供应商，并启用 `127.0.0.1:15721` 的协议转换代理。它不修改 `~/.claude/settings.json`。可用 `node .\tools\inspect_ccswitch_db.mjs --summary` 查看脱敏后的生效状态。完整的 VS Code 专用切换流程见 [VS Code Claude Code 模式切换](VSCODE_CLAUDE_MODES.md)。
 
 Gemini route 只向浏览器转发必要请求头。Claude Code 和 SDK 产生的 `anthropic-*`、`x-app`、`x-stainless-*` 元数据头会触发 Google 的跨域预检失败，因此不会送到 Google；认证头、内容类型和流式响应保持不变。
 

@@ -9,6 +9,7 @@ import {
   envelope,
   isProtocolEnvelope,
 } from "./protocol.js";
+import { pumpResponseBody } from "./stream.js";
 
 const requests = new Map();
 
@@ -149,7 +150,11 @@ async function executeRequest(id, state) {
         headers: responseHeaders,
       }),
     );
-    await pumpResponse(id, state, response.body);
+    await pumpResponseBody(response.body, {
+      maxChunkBytes: MAX_CHUNK_BYTES,
+      sendFrame: (sequence, bytes, end) =>
+        sendResponseFrame(id, state, sequence, bytes, end),
+    });
   } catch (error) {
     if (state.controller.signal.aborted) return;
     const failure = classifyFetchError(error);
@@ -164,29 +169,6 @@ async function executeRequest(id, state) {
   } finally {
     requests.delete(id);
   }
-}
-
-async function pumpResponse(id, state, body) {
-  if (!body) {
-    await sendResponseFrame(id, state, 0, new Uint8Array(), true);
-    return;
-  }
-  const reader = body.getReader();
-  let pending = null;
-  let sequence = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    for (let offset = 0; offset < value.byteLength; offset += MAX_CHUNK_BYTES) {
-      const piece = value.slice(offset, Math.min(offset + MAX_CHUNK_BYTES, value.byteLength));
-      if (pending) {
-        await sendResponseFrame(id, state, sequence, pending, false);
-        sequence += 1;
-      }
-      pending = piece;
-    }
-  }
-  await sendResponseFrame(id, state, sequence, pending || new Uint8Array(), true);
 }
 
 async function sendResponseFrame(id, state, sequence, bytes, end) {
