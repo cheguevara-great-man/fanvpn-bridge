@@ -10,6 +10,7 @@ import threading
 from pathlib import Path
 
 from .config import load_config
+from .codex_login import CodexLoginError, run_codex_login
 from .dispatcher import NativeDispatcher
 from .errors import BridgeError
 from .framing import FramedMessageChannel
@@ -52,9 +53,29 @@ def main(argv: list[str] | None = None) -> int:
     log = logging.getLogger("fanvpn_bridge.main")
     parser = argparse.ArgumentParser(description="FanVPN Bridge v2 native host")
     parser.add_argument("--config", type=Path, default=_default_config_path())
+    parser.add_argument("--codex-login", action="store_true")
+    parser.add_argument("--codex-home", type=Path, default=Path.home() / ".codex")
+    parser.add_argument("--bridge-url", default="http://127.0.0.1:18888")
+    parser.add_argument("--browser", type=Path)
+    parser.add_argument("--login-timeout", type=float, default=600)
     args, _chrome_args = parser.parse_known_args(argv)
     try:
+        if args.codex_login:
+            result = run_codex_login(
+                codex_home=args.codex_home,
+                bridge_url=args.bridge_url,
+                browser_path=args.browser,
+                timeout_seconds=args.login_timeout,
+            )
+            print(f"Codex login saved to: {result.auth_path}", flush=True)
+            if result.backup_path is not None:
+                print(f"Previous credentials backed up to: {result.backup_path}", flush=True)
+            return 0
         return run(args.config)
+    except CodexLoginError as error:
+        log.error("codex_login_error type=%s", type(error).__name__)
+        print(f"CODEX_LOGIN_ERROR: {error}", file=sys.stderr, flush=True)
+        return 2
     except BridgeError as error:
         log.error("bridge_error code=%s retryable=%s", error.code, error.retryable)
         print(str(error), file=sys.stderr, flush=True)
