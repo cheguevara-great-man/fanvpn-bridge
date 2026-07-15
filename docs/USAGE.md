@@ -100,6 +100,46 @@ supports_websockets = false
 `~/.codex/auth.json`。成功判据是：Codex 直接进入聊天页，并能在关闭 Clash 的情况下
 完成一次真实对话。
 
+## 可选的 VS Code 网络模式切换
+
+安装直连模式后，桌面有两个入口：
+
+- **VS Code - Browser Bridge**：继续使用 `127.0.0.1:18888 -> Chrome -> 浏览器代理扩展`。
+- **VS Code - Direct US Proxy**：使用 `127.0.0.1:18889 -> 自有美国 HTTPS 代理`，不经过 Chrome。
+
+切换前必须关闭所有 VS Code 窗口并等待几秒，再点击所需按钮。VS Code 的第一个进程会
+决定后续窗口继承的环境；在已有窗口未退出时启动另一模式，无法可靠切换。两个按钮都会
+保留 `~/.codex/config.toml` 中的其他内容，只更新受管 provider 和顶层 `model_provider`；
+第一次修改前还会保留 `config.toml.before-network-mode.bak`。
+
+Claude Code 处于 Anthropic 官方模式时，按钮也会同步切换它：直连模式移除本地
+`ANTHROPIC_BASE_URL` 覆盖，让官方请求继承 `18889`；浏览器模式恢复 `18888/anthropic`。
+如果 Claude 当前指向 CC Switch、Gemini 或自定义网关，启动器会保留该显式链路，不擅自修改。
+
+也可以在仓库根目录用命令选择：
+
+```powershell
+# 默认浏览器桥接
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  .\tools\start_vscode_network_mode.ps1 -Mode Browser
+
+# 可选服务器直连
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  .\tools\start_vscode_network_mode.ps1 -Mode Direct
+```
+
+直连模式会按需启动本地 `18889`，并只给这次启动的 VS Code 传入代理参数和环境变量；
+不会改 Windows 全局代理，也不会影响其他已经运行的软件。浏览器模式会停止 `18889`，
+但不会关闭 Chrome、修改浏览器代理扩展或改变 Clash 设置。
+
+VS Code 官方说明主程序使用 Chromium 网络栈并支持 `--proxy-server`，同时也说明部分扩展
+尚未完全共享该代理栈。因此启动器同时设置进程级 `HTTP_PROXY`、`HTTPS_PROXY` 和
+`ALL_PROXY`，以覆盖 Codex 及遵循标准代理环境变量的扩展；无法保证第三方扩展一定遵循。
+
+直连模式使用当前 `~/.codex/auth.json`。如果尚未登录，可先用本文前面的浏览器登录助手
+完成一次登录，再关闭 VS Code 并选择直连按钮；直连模式下后续 Token 刷新会通过 `18889`
+访问官方端点。
+
 ## VS Code Claude Code：Anthropic 官方模式
 
 该模式使用 Claude.ai 官方登录或 Anthropic API Key，不经过 CC Switch：

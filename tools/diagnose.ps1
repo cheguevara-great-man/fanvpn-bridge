@@ -193,6 +193,18 @@ if ($result.manifest_present -and -not $result.executable_present) { $warnings.A
 if (-not $result.health) { $warnings.Add('Running Bridge health endpoint is unavailable.') }
 if (-not $result.no_proxy_has_loopback) { $warnings.Add('User NO_PROXY does not include loopback.') }
 
+$directCredentialPath = Join-Path $env:LOCALAPPDATA 'FanVPNBridge\direct-proxy.json'
+$result.direct_mode_configured = Test-Path -LiteralPath $directCredentialPath -PathType Leaf
+try {
+    $directReady = Invoke-RestMethod `
+        -Uri 'http://browser-ai-bridge.local/ready' `
+        -Proxy 'http://127.0.0.1:18889' `
+        -TimeoutSec 1
+    $result.direct_proxy_running = $directReady.mode -eq 'vscode-direct-proxy'
+} catch {
+    $result.direct_proxy_running = $false
+}
+
 $result.deployment_warnings = @($warnings)
 $result | ConvertTo-Json -Depth 8
 if ($Strict -and $warnings.Count -gt 0) { exit 1 }

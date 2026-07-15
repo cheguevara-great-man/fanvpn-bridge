@@ -14,6 +14,7 @@ from .codex_login import CodexLoginError, run_codex_login
 from .dispatcher import NativeDispatcher
 from .errors import BridgeError
 from .framing import FramedMessageChannel
+from .forward_proxy import ForwardProxyError, run_forward_proxy
 from .http_server import create_http_server
 from .routing import RouteTable
 from .runtime_logging import configure_runtime_logging
@@ -58,8 +59,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--bridge-url", default="http://127.0.0.1:18888")
     parser.add_argument("--browser", type=Path)
     parser.add_argument("--login-timeout", type=float, default=600)
+    parser.add_argument("--forward-proxy", action="store_true")
+    parser.add_argument("--proxy-config", type=Path)
+    parser.add_argument("--proxy-host", default="127.0.0.1")
+    parser.add_argument("--proxy-port", type=int, default=18889)
     args, _chrome_args = parser.parse_known_args(argv)
     try:
+        if args.forward_proxy:
+            if args.proxy_config is None:
+                raise ForwardProxyError("--proxy-config is required with --forward-proxy")
+            return run_forward_proxy(
+                args.proxy_config,
+                args.proxy_host,
+                args.proxy_port,
+            )
         if args.codex_login:
             result = run_codex_login(
                 codex_home=args.codex_home,
@@ -76,6 +89,12 @@ def main(argv: list[str] | None = None) -> int:
         log.error("codex_login_error type=%s", type(error).__name__)
         print(f"CODEX_LOGIN_ERROR: {error}", file=sys.stderr, flush=True)
         return 2
+    except ForwardProxyError as error:
+        log.error("forward_proxy_error type=%s", type(error).__name__)
+        print(f"FORWARD_PROXY_ERROR: {error}", file=sys.stderr, flush=True)
+        return 2
+    except KeyboardInterrupt:
+        return 130
     except BridgeError as error:
         log.error("bridge_error code=%s retryable=%s", error.code, error.retryable)
         print(str(error), file=sys.stderr, flush=True)

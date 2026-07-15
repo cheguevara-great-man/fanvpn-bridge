@@ -20,6 +20,17 @@ $activeBuild = $null
 $previousManifestPath = $null
 $registryWasPresent = Test-Path -LiteralPath $registryPath
 
+$directPidPath = Join-Path $env:LOCALAPPDATA 'FanVPNBridge\direct-proxy.pid'
+if (Test-Path -LiteralPath $directPidPath) {
+    $directPid = 0
+    if ([int]::TryParse(([System.IO.File]::ReadAllText($directPidPath).Trim()), [ref]$directPid)) {
+        $directProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $directPid" -ErrorAction SilentlyContinue
+        if ($directProcess.CommandLine -match '(?i)(^|\s)--forward-proxy(\s|$)') {
+            throw 'VS Code direct mode is running. Close VS Code and start Browser Bridge mode before updating the Native Host.'
+        }
+    }
+}
+
 if ($registryWasPresent) {
     try {
         $previousManifestPath = Get-ItemPropertyValue -LiteralPath $registryPath -Name '(default)'

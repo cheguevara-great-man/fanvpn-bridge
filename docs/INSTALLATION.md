@@ -156,6 +156,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\update_native_host.p
 如果更新脚本仍报告 `WinError 5`，通常表示上一次切换后没有重开 Chrome，旧进程仍占用本次目标目录。
 关闭 Chrome 并等待所有 `browser-ai-bridge.exe` 退出后重试。
 
+如果已经安装可选的 VS Code 直连模式，更新前还要关闭全部 VS Code 窗口并点击一次
+“VS Code - Browser Bridge”。更新脚本检测到 `18889` 直连进程时会拒绝继续并给出提示，避免覆盖
+正在运行的 A/B 槽位。
+
 ## 日志
 
 ```text
@@ -164,6 +168,36 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\update_native_host.p
 ```
 
 运行日志按 2 MiB 轮转并保留三个历史文件。日志不记录请求正文、Token、Cookie 或请求头值。
+
+## 可选：安装 VS Code 直连模式
+
+只有已经部署配套 Browser Gateway HTTPS 代理，并希望 VS Code 可绕过 Chrome 直接使用它时，
+才需要执行本节。普通浏览器桥接用户可以跳过。
+
+部署服务器的电脑默认已有：
+
+```text
+C:\Users\<Windows 用户名>\.browser-gateway\deployment.local.json
+```
+
+在仓库根目录运行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  .\tools\install_vscode_direct_mode.ps1
+```
+
+如果凭据文件来自另一台电脑，先用安全的离线方式把它放到本机，再明确指定路径：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  .\tools\install_vscode_direct_mode.ps1 `
+  -CredentialPath 'D:\安全位置\deployment.local.json'
+```
+
+脚本会校验并复制凭据到 `%LOCALAPPDATA%\FanVPNBridge\direct-proxy.json`，限制为当前
+Windows 用户可读，并在桌面建立“VS Code - Browser Bridge”和
+“VS Code - Direct US Proxy”两个按钮。它不会设置 Windows 全局代理，也不会自动启用直连模式。
 
 ## 卸载
 
