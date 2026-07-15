@@ -1,5 +1,6 @@
 param(
-    [switch]$KeepStartupTask
+    [switch]$KeepStartupTask,
+    [switch]$KeepDirectMode
 )
 
 $ErrorActionPreference = 'Stop'
@@ -9,6 +10,27 @@ if (Test-Path -LiteralPath $registryPath) {
     Write-Host 'FanVPN Bridge Native Messaging registration removed.' -ForegroundColor Green
 } else {
     Write-Host 'FanVPN Bridge was not registered for Google Chrome.'
+}
+
+if (-not $KeepDirectMode) {
+    $runtimeDirectory = Join-Path $env:LOCALAPPDATA 'FanVPNBridge'
+    $pidPath = Join-Path $runtimeDirectory 'direct-proxy.pid'
+    if (Test-Path -LiteralPath $pidPath) {
+        $directPid = 0
+        if ([int]::TryParse(([System.IO.File]::ReadAllText($pidPath).Trim()), [ref]$directPid)) {
+            $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $directPid" -ErrorAction SilentlyContinue
+            if ($processInfo.CommandLine -match '(?i)(^|\s)--forward-proxy(\s|$)') {
+                Stop-Process -Id $directPid -Force -ErrorAction SilentlyContinue
+            }
+        }
+        Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
+    }
+    Remove-Item -LiteralPath (Join-Path $runtimeDirectory 'direct-proxy.json') -Force -ErrorAction SilentlyContinue
+    $desktop = [Environment]::GetFolderPath('Desktop')
+    foreach ($name in @('VS Code - Browser Bridge.lnk', 'VS Code - Direct US Proxy.lnk')) {
+        Remove-Item -LiteralPath (Join-Path $desktop $name) -Force -ErrorAction SilentlyContinue
+    }
+    Write-Host 'Optional VS Code direct mode removed.' -ForegroundColor Green
 }
 
 if (-not $KeepStartupTask) {

@@ -6,7 +6,8 @@
 不需要 Clash、系统 VPN，也不要求 FanVPN 提供本地代理端口。
 
 > 当前项目面向 Google Chrome 116+ 和 Windows。Chrome 中需要已安装并启用
-> FanVPN；Bridge 本身不是通用 HTTP、SOCKS 或 CONNECT 代理。
+> FanVPN。默认的 `18888` 浏览器桥接不是通用 HTTP、SOCKS 或 CONNECT 代理；
+> 另有一个默认关闭、需要单独配置凭据的 VS Code 直连模式。
 
 ## 工作方式
 
@@ -41,6 +42,7 @@ Claude Code 使用 Gemini 时，由 CC Switch 转换 Anthropic Messages 与 Gemi
 - A/B 事务式更新，切换前自动冒烟测试，失败时恢复旧注册。
 - Windows 登录后自动启动 Chrome 并等待 Bridge ready。
 - VS Code Claude Code 可在 Anthropic 官方模式和 Gemini 模式之间切换，且不接管全局 Claude 配置。
+- 可选的 VS Code 直连模式通过本机 `18889` 连接自有 HTTPS 代理，并提供两个桌面启动按钮随时切换。
 
 ## 快速开始
 
@@ -71,6 +73,10 @@ Invoke-RestMethod http://127.0.0.1:18888/ready -Proxy $null
 
 返回 HTTP 200 且 `ready=true` 后，再按[客户端使用指南](docs/USAGE.md)配置
 Codex、Claude Code 或 CC Switch。
+
+如果还部署了配套的自有 HTTPS 代理，可按[安装文档](docs/INSTALLATION.md#可选安装-vs-code-直连模式)
+安装可选直连模式，再按[客户端使用指南](docs/USAGE.md#可选的-vs-code-网络模式切换)选择入口。
+浏览器桥接仍是默认方式。
 
 ## 路由
 

@@ -100,4 +100,21 @@ Get-Content "$env:LOCALAPPDATA\FanVPNBridge\fanvpn-bridge.log" -Tail 500 |
 响应数据的时间，`total_ms` 表示流结束时间。这样可以区分代理/TLS 建连慢、认证刷新慢和模型首段
 输出慢；日志不会包含 Token 或提示词。
 
+## VS Code 直连模式无法启动
+
+先确认已关闭全部 VS Code 窗口，再检查可选配置和端口：
+
+```powershell
+Test-Path "$env:LOCALAPPDATA\FanVPNBridge\direct-proxy.json"
+Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort 18889 -ErrorAction SilentlyContinue
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\diagnose.ps1
+```
+
+点击“Direct US Proxy”后 `direct_mode_configured` 和 `direct_proxy_running` 应为 `true`。
+如果配置不存在，重新运行 `install_vscode_direct_mode.ps1`；如果端口被其他程序占用，先确认
+占用进程再处理，不要结束未知进程。直连失败不会自动改走本机公网。
+
+如果 VS Code 已打开，启动器会主动拒绝切换。这不是故障：VS Code 后开的窗口会继承首个
+实例的环境，必须完全退出后才能可靠选择另一模式。
+
 开发问题的根因和修复背景见[问题与解决记录](PROBLEM_SOLVING.md)。
