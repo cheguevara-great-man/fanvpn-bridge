@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import select
@@ -33,12 +34,23 @@ _HOP_BY_HOP = {
 }
 _BROWSER_MANAGED_REQUEST_HEADERS = {"host", "content-length"}
 _BROWSER_DECODED_RESPONSE_HEADERS = {"content-encoding", "content-length"}
+_LOG = logging.getLogger("fanvpn_bridge.http")
+_LOG.addHandler(logging.NullHandler())
 
 
 @dataclass(frozen=True, slots=True)
 class _ResponseEvent:
     kind: str
     value: object = None
+
+
+@dataclass(frozen=True, slots=True)
+class _RelayMetrics:
+    status: int
+    response_head_ms: int
+    first_body_ms: int | None
+    total_ms: int
+    complete: bool
 
 
 class QueueResponseSink(ResponseSink):
@@ -130,6 +142,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
     def _handle(self, method: str) -> None:
         server = cast(BridgeHTTPServer, self.server)
         request_id = uuid.uuid4().hex
+        request_started = time.monotonic()
+        route_name: str | None = None
         try:
             self._validate_local_request(server)
         except BridgeError as error:
@@ -169,6 +183,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
 
         try:
             route = server.routes.resolve_local_target(self.path)
+            route_name = route.name
             route_config = server.bridge_config.routes[route.name]
             headers = self._request_headers(route_config.request_header_allowlist)
             body = self._request_body(
@@ -184,13 +199,33 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 headers=headers,
             )
             server.dispatcher.submit(request, body, sink)
-            self._relay_response(
+            metrics = self._relay_response(
                 sink,
                 request_id,
                 timeout=server.bridge_config.protocol.request_timeout_seconds,
                 head_only=method == "HEAD",
+                started_at=request_started,
+            )
+            _LOG.info(
+                "request_complete route=%s method=%s status=%s response_head_ms=%s "
+                "first_body_ms=%s total_ms=%s complete=%s",
+                route_name,
+                method,
+                metrics.status,
+                metrics.response_head_ms,
+                metrics.first_body_ms if metrics.first_body_ms is not None else "none",
+                metrics.total_ms,
+                metrics.complete,
             )
         except BridgeError as error:
+            if route_name is not None:
+                _LOG.warning(
+                    "request_failed route=%s method=%s code=%s elapsed_ms=%s",
+                    route_name,
+                    method,
+                    error.code,
+                    _elapsed_ms(request_started),
+                )
             self._send_bridge_error(error, request_id, head_only=method == "HEAD")
         except (BrokenPipeError, ConnectionResetError):
             server.dispatcher.cancel(request_id)
@@ -314,9 +349,14 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         *,
         timeout: float,
         head_only: bool,
-    ) -> None:
+        started_at: float | None = None,
+    ) -> _RelayMetrics:
         server = cast(BridgeHTTPServer, self.server)
+        started_at = started_at if started_at is not None else time.monotonic()
         response_started = False
+        response_status: int | None = None
+        response_head_ms: int | None = None
+        first_body_ms: int | None = None
         idle_deadline = time.monotonic() + timeout
         while True:
             remaining = idle_deadline - time.monotonic()
@@ -335,6 +375,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 if response_started:
                     raise BridgeError(ErrorCode.PROTOCOL_VIOLATION, "Duplicate response head")
                 status, headers = cast(tuple[int, list[Header]], event.value)
+                response_status = status
+                response_head_ms = _elapsed_ms(started_at)
                 self.send_response(status)
                 excluded = _HOP_BY_HOP | _BROWSER_DECODED_RESPONSE_HEADERS
                 for header in headers:
@@ -356,6 +398,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                     event.value,
                 )
                 if data and not head_only:
+                    if first_body_ms is None:
+                        first_body_ms = _elapsed_ms(started_at)
                     self._write_chunk(data)
                 if on_consumed is not None:
                     on_consumed()
@@ -365,12 +409,26 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                     raise BridgeError(ErrorCode.PROTOCOL_VIOLATION, "Response ended before head")
                 if not head_only:
                     self._write_chunk(b"")
-                return
+                assert response_status is not None and response_head_ms is not None
+                return _RelayMetrics(
+                    status=response_status,
+                    response_head_ms=response_head_ms,
+                    first_body_ms=first_body_ms,
+                    total_ms=_elapsed_ms(started_at),
+                    complete=True,
+                )
             if event.kind == "error":
                 error = event.value
                 if response_started:
                     self.close_connection = True
-                    return
+                    assert response_status is not None and response_head_ms is not None
+                    return _RelayMetrics(
+                        status=response_status,
+                        response_head_ms=response_head_ms,
+                        first_body_ms=first_body_ms,
+                        total_ms=_elapsed_ms(started_at),
+                        complete=False,
+                    )
                 if isinstance(error, BridgeError):
                     raise error
                 raise BridgeError(ErrorCode.INTERNAL_ERROR, str(error))
@@ -465,6 +523,10 @@ def _socket_disconnected(connection: socket.socket) -> bool:
         return connection.recv(1, socket.MSG_PEEK) == b""
     except (OSError, ValueError):
         return True
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return max(0, round((time.monotonic() - started_at) * 1000))
 
 
 def _is_allowed_host(value: str | None, listen_port: int) -> bool:

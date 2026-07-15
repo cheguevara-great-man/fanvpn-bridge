@@ -165,6 +165,21 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertNotIn("access-control-allow-origin", {name.lower() for name in headers})
 
+    def test_logs_secret_free_route_timings(self) -> None:
+        with self.assertLogs("fanvpn_bridge.http", level="INFO") as captured:
+            status, _headers, _payload = self.request(
+                "GET",
+                "/openai/v1/models?sensitive=secret-query",
+                headers={"Authorization": "Bearer test-secret"},
+            )
+        self.assertEqual(status, 200)
+        line = "\n".join(captured.output)
+        self.assertIn("request_complete route=openai method=GET status=200", line)
+        self.assertIn("response_head_ms=", line)
+        self.assertIn("first_body_ms=", line)
+        self.assertNotIn("secret-query", line)
+        self.assertNotIn("test-secret", line)
+
     def test_disconnected_client_cancels_pending_browser_request(self) -> None:
         client = socket.create_connection(("127.0.0.1", self.port), timeout=2)
         client.sendall(
