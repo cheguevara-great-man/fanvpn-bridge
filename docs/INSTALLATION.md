@@ -97,6 +97,7 @@ Invoke-RestMethod http://127.0.0.1:18888/routes -Proxy $null
 ```text
 anthropic
 auth-openai
+chatgpt-backend
 chatgpt-codex
 gemini
 gemini-openai

@@ -88,12 +88,28 @@ Start-ScheduledTask -TaskName 'FanVPN Bridge Bootstrap'
 
 ## Codex 第一条消息明显较慢
 
+旧版只把模型请求和模型目录配置为 `chatgpt-codex` route。Codex 启动时还会初始化 Apps MCP、
+插件目录和产品元数据；这些请求由 `chatgpt_base_url` 控制。没有 Clash 时，它们曾直接访问
+`chatgpt.com` 并等待超时，因此第一条消息慢，而同一进程中的后续消息因初始化已经结束而较快。
+
+当前版本的 Browser 模式会同时配置：
+
+```toml
+chatgpt_base_url = "http://127.0.0.1:18888/chatgpt-backend/"
+```
+
+更新 Native Host 后，确认 `/routes` 包含 `chatgpt-backend`，再完全退出并重开 VS Code。
+如果仍慢，再根据分段耗时判断剩余延迟发生在浏览器出口还是模型生成。
+
+VS Code 界面自身的 `/wham/...` 请求不受 Codex `chatgpt_base_url` 控制；它们可能影响侧栏或账号信息，
+但不属于模型流式请求。不要把这类界面错误和本节的首条对话延迟混在一起判断。
+
 Native Host 会为真实上游请求记录不含 URL、query、正文和认证信息的分段耗时。先复现一条慢消息，
 再在 PowerShell 中查看最近的 Codex 请求：
 
 ```powershell
 Get-Content "$env:LOCALAPPDATA\FanVPNBridge\fanvpn-bridge.log" -Tail 500 |
-  Select-String 'request_(complete|failed) route=(chatgpt-codex|auth-openai)'
+  Select-String 'request_(complete|failed) route=(chatgpt-backend|chatgpt-codex|auth-openai)'
 ```
 
 `response_head_ms` 表示浏览器取得上游 HTTP 响应头的时间，`first_body_ms` 表示收到第一段

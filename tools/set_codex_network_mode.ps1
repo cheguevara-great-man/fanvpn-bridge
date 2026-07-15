@@ -21,6 +21,59 @@ $beginMarker = '# BEGIN Browser AI Bridge managed network providers'
 $endMarker = '# END Browser AI Bridge managed network providers'
 $managedPattern = '(?ms)^' + [regex]::Escape($beginMarker) + '.*?^' + [regex]::Escape($endMarker) + '\s*'
 $content = [regex]::Replace($content, $managedPattern, '')
+
+$chatgptBeginMarker = '# BEGIN Browser AI Bridge managed ChatGPT base URL'
+$chatgptEndMarker = '# END Browser AI Bridge managed ChatGPT base URL'
+$chatgptManagedPattern = '(?ms)^' + [regex]::Escape($chatgptBeginMarker) + '.*?^' + [regex]::Escape($chatgptEndMarker) + '\s*'
+$chatgptManagedMatch = [regex]::Match($content, $chatgptManagedPattern)
+$previousChatgptLine = $null
+if ($chatgptManagedMatch.Success) {
+    $savedMatch = [regex]::Match(
+        $chatgptManagedMatch.Value,
+        '(?m)^# previous-chatgpt-base-url-base64: (?<value>[A-Za-z0-9+/=]+|absent)\s*$'
+    )
+    if (-not $savedMatch.Success) {
+        throw 'Managed ChatGPT base URL block is missing its restore metadata.'
+    }
+    if ($savedMatch.Groups['value'].Value -ne 'absent') {
+        try {
+            $bytes = [Convert]::FromBase64String($savedMatch.Groups['value'].Value)
+            $previousChatgptLine = [Text.Encoding]::UTF8.GetString($bytes)
+        } catch {
+            throw 'Managed ChatGPT base URL restore metadata is invalid.'
+        }
+    }
+    $content = [regex]::Replace($content, $chatgptManagedPattern, '', 1)
+}
+
+$browserChatgptBaseUrl = 'http://127.0.0.1:18888/chatgpt-backend/'
+$chatgptTopLevelPattern = '(?m)^chatgpt_base_url\s*=.*$'
+$browserChatgptLinePattern = '(?m)^chatgpt_base_url\s*=\s*["'']' +
+    [regex]::Escape($browserChatgptBaseUrl) + '["'']\s*(?:#.*)?$'
+$firstTable = [regex]::Match($content, '(?m)^\s*\[')
+$topLevelLength = if ($firstTable.Success) { $firstTable.Index } else { $content.Length }
+$topLevel = $content.Substring(0, $topLevelLength)
+$tables = $content.Substring($topLevelLength)
+$existingChatgptMatch = [regex]::Match($topLevel, $chatgptTopLevelPattern)
+
+if ($Mode -eq 'Browser') {
+    if (-not $chatgptManagedMatch.Success -and $existingChatgptMatch.Success) {
+        if (-not [regex]::IsMatch($existingChatgptMatch.Value, $browserChatgptLinePattern)) {
+            $previousChatgptLine = $existingChatgptMatch.Value.Trim()
+        }
+        $topLevel = [regex]::Replace($topLevel, $chatgptTopLevelPattern, '', 1)
+    }
+} elseif ($chatgptManagedMatch.Success) {
+    if ($previousChatgptLine) {
+        $topLevel = $previousChatgptLine + "`r`n" + $topLevel.TrimStart()
+    }
+} elseif ($existingChatgptMatch.Success -and
+    [regex]::IsMatch($existingChatgptMatch.Value, $browserChatgptLinePattern)) {
+    # Upgrade an older browser-mode config that predates the managed marker.
+    $topLevel = [regex]::Replace($topLevel, $chatgptTopLevelPattern, '', 1)
+}
+$content = $topLevel + $tables
+
 $provider = if ($Mode -eq 'Direct') { 'browser_ai_direct' } else { 'browser_ai_bridge' }
 $topLevelPattern = '(?m)^model_provider\s*=\s*"[^"]*"\s*$'
 $firstTable = [regex]::Match($content, '(?m)^\s*\[')
@@ -32,6 +85,21 @@ if ([regex]::IsMatch($topLevel, $topLevelPattern)) {
     $content = $topLevel + $tables
 } else {
     $content = "model_provider = `"$provider`"`r`n" + $content
+}
+
+if ($Mode -eq 'Browser') {
+    $restoreValue = if ($previousChatgptLine) {
+        [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($previousChatgptLine))
+    } else {
+        'absent'
+    }
+    $chatgptManaged = @"
+$chatgptBeginMarker
+# previous-chatgpt-base-url-base64: $restoreValue
+chatgpt_base_url = "$browserChatgptBaseUrl"
+$chatgptEndMarker
+"@
+    $content = $chatgptManaged.Trim() + "`r`n" + $content.TrimStart()
 }
 
 $managed = @"

@@ -30,6 +30,8 @@ ChatGPT 登录。
 示例位于 [`config/codex-fanvpn-chatgpt.example.toml`](../config/codex-fanvpn-chatgpt.example.toml)：
 
 ```toml
+chatgpt_base_url = "http://127.0.0.1:18888/chatgpt-backend/"
+
 [model_providers.fanvpn_chatgpt]
 base_url = "http://127.0.0.1:18888/chatgpt-codex"
 requires_openai_auth = true
@@ -37,8 +39,10 @@ wire_api = "responses"
 supports_websockets = false
 ```
 
-该 route 固定转发到 ChatGPT Codex backend。Bridge 不读取浏览器 Cookie，而是转发
-Codex 自己已有的认证请求头。Bridge 当前不传输 WebSocket，因此必须关闭 WebSocket。
+`model_providers` route 固定转发模型请求和模型目录；`chatgpt_base_url` 让 Apps MCP、插件目录和
+产品元数据等启动请求也经过 Chrome。缺少后一项时，对话仍可能成功，但没有 Clash 的电脑会在
+首条消息前等待若干直连请求超时。Bridge 不读取浏览器 Cookie，而是转发 Codex 自己已有的
+认证请求头。Bridge 当前不传输 WebSocket，因此必须关闭 WebSocket。
 
 ### 在当前电脑独立登录
 
@@ -88,6 +92,7 @@ Copy-Item ".\config\codex-fanvpn-chatgpt.example.toml" "$HOME\.codex\config.toml
 
 ```toml
 model_provider = "fanvpn_chatgpt"
+chatgpt_base_url = "http://127.0.0.1:18888/chatgpt-backend/"
 
 [model_providers.fanvpn_chatgpt]
 base_url = "http://127.0.0.1:18888/chatgpt-codex"
@@ -109,8 +114,9 @@ supports_websockets = false
 
 切换前必须关闭所有 VS Code 窗口并等待几秒，再点击所需按钮。VS Code 的第一个进程会
 决定后续窗口继承的环境；在已有窗口未退出时启动另一模式，无法可靠切换。两个按钮都会
-保留 `~/.codex/config.toml` 中的其他内容，只更新受管 provider 和顶层 `model_provider`；
-第一次修改前还会保留 `config.toml.before-network-mode.bak`。
+保留 `~/.codex/config.toml` 中的其他内容，只更新受管 provider、顶层 `model_provider` 和浏览器模式
+所需的 `chatgpt_base_url`；切回 Direct 时会恢复原来的 `chatgpt_base_url`。第一次修改前还会保留
+`config.toml.before-network-mode.bak`。
 
 Claude Code 处于 Anthropic 官方模式时，按钮也会同步切换它：直连模式移除本地
 `ANTHROPIC_BASE_URL` 覆盖，让官方请求继承 `18889`；浏览器模式恢复 `18888/anthropic`。

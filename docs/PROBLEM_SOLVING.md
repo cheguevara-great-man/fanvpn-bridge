@@ -233,3 +233,22 @@ fetch 和 Promise waiter。
 
 **经验**：网络模式应当是显式、进程级且失败关闭的状态；不要用用户级 `HTTP_PROXY` 或系统代理
 实现单个应用的选择功能。
+
+## 浏览器链路中 Codex 第一条消息慢、后续消息快
+
+**现象**：VS Code Codex 的模型对话已能通过 `127.0.0.1:18888/chatgpt-codex` 完成，但新开
+VS Code 后第一条消息明显慢，后续消息恢复正常。Bridge 日志中的实际模型请求通常只有约一两秒，
+不足以解释全部等待时间。
+
+**根因**：自定义 `model_provider` 只改变模型请求和模型目录地址。Codex 启动时还会访问 Apps MCP、
+插件目录和产品元数据等 ChatGPT 后端接口，这些请求由独立的 `chatgpt_base_url` 控制。旧配置没有修改该项，
+因此在无 Clash 的电脑上仍由本地进程直连 `chatgpt.com`，直到超时后才继续；同一进程内初始化结果会
+缓存或进入失败状态，所以后续消息较快。
+
+**解决**：新增固定上游 `chatgpt-backend` route，并让 Browser 模式把 `chatgpt_base_url` 指向
+`http://127.0.0.1:18888/chatgpt-backend/`。Direct 模式不需要该 route，切换脚本会保存并恢复用户原来的
+`chatgpt_base_url`。产品后端请求经过 Chrome 的同时也会提前建立 ChatGPT 的 DNS/TLS 连接，模型请求
+无需额外常驻预热任务。
+
+**经验**：客户端的“模型 API 地址”和“产品后端地址”是两组配置。只看到模型流量成功，不能证明启动阶段
+的所有网络请求都走了同一条链路；应同时检查 Codex 日志中的直连失败和 Bridge 各 route 的分段耗时。
