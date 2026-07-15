@@ -146,9 +146,10 @@ body 字节透明。
 **根因**：浏览器授权页面使用 Chrome/FanVPN，而授权码换 Token 的 POST 请求由
 本地 Codex 进程直接发送到 `auth.openai.com`；`chatgpt_base_url` 不控制 OAuth issuer。
 
-**解决**：新增固定的 `auth-openai` route，用于已登录凭据的刷新和注销。首次部署
-可以使用官方 API Key，或通过用户自己控制的离线介质迁移已有 `auth.json`；后者
-必须按密码保护，不能进入仓库或聊天记录。
+**解决**：先新增固定的 `auth-openai` route，再实现一次性 Codex 登录助手。助手使用
+Codex 官方 OAuth 参数生成 PKCE 和 `state`，让 Chrome 完成授权页面，并把授权码交换
+请求通过 `auth-openai` 送出。成功后原子写入当前电脑自己的 `auth.json`，旧文件自动
+备份，因此无需在电脑之间复制长期刷新凭据。后续刷新和注销继续使用相同 route。
 
 **经验**：浏览器 OAuth 包含浏览器授权、localhost callback、本地 Token Exchange
 和后续刷新四段网络路径；只验证登录网页不足以证明整个流程使用了同一出口。

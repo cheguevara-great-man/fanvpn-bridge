@@ -30,7 +30,7 @@ Invoke-RestMethod http://127.0.0.1:18888/routes -Proxy $null
 | 扩展显示 Native Host 未连接 | 注册路径、构建目录或扩展 ID 不一致 | 运行 `diagnose.ps1`，重新构建并注册 |
 | `/health` 正常但 `/ready` 失败 | Offscreen 尚未就绪或扩展通道断开 | 刷新 FanVPN AI Bridge，查看扩展错误 |
 | ChatGPT 网页可开，但 Codex route 返回 502 | Chrome 扣留 Bridge 的站点权限 | 将 FanVPN AI Bridge 的网站访问设为“在所有网站上” |
-| Codex 登录 Token Exchange 返回地区 403 | Token Exchange 由本地 Codex 进程直连 `auth.openai.com` | 使用 API Key，或按使用指南安全迁移已有登录缓存并配置认证刷新路由 |
+| Codex 登录 Token Exchange 返回地区 403 | Token Exchange 由本地 Codex 进程直连 `auth.openai.com` | 关闭 VS Code，按使用指南运行一次性 Codex 登录助手 |
 | 更新后新路由没有出现 | Chrome 仍在运行切换前的 Host，或扩展尚未刷新 | 刷新扩展并重开 Chrome，再检查 `/ready` 和 `/routes` |
 | `source_matches_registered` 为 `false` | 当前注册的 route 配置与仓库源码不同 | 确认本地改动后运行 A/B 更新脚本，刷新扩展并重开 Chrome |
 | `registered_matches_running` 为 `false` | 注册已切换，但 Chrome 仍保持旧 Host 进程 | 关闭并重新打开 Chrome |

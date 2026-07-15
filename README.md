@@ -37,6 +37,7 @@ Claude Code 使用 Gemini 时，由 CC Switch 转换 Anthropic Messages 与 Gemi
 - 流式响应、分片、按请求隔离的背压、并发上限、超时和客户端取消。
 - 仅监听 `127.0.0.1`，校验本地 Host/Origin，上游由静态 allowlist 限制。
 - Chrome 出口不可用时失败关闭，不回退到系统直连。
+- Codex 首次登录可通过一次性助手完成，无需复制其他电脑的 `auth.json`。
 - A/B 事务式更新，切换前自动冒烟测试，失败时恢复旧注册。
 - Windows 登录后自动启动 Chrome 并等待 Bridge ready。
 - VS Code Claude Code 可在 Anthropic 官方模式和 Gemini 模式之间切换，且不接管全局 Claude 配置。
@@ -77,7 +78,7 @@ Codex、Claude Code 或 CC Switch。
 |---|---|
 | OpenAI Responses API | `http://127.0.0.1:18888/openai/v1` |
 | ChatGPT Codex backend | `http://127.0.0.1:18888/chatgpt-codex` |
-| Codex authentication refresh | `http://127.0.0.1:18888/auth-openai` |
+| Codex 登录 Token Exchange、刷新和注销 | `http://127.0.0.1:18888/auth-openai` |
 | Anthropic Messages API | `http://127.0.0.1:18888/anthropic` |
 | Gemini Native | `http://127.0.0.1:18888/gemini` |
 | Gemini OpenAI compatibility | `http://127.0.0.1:18888/gemini-openai/v1` |

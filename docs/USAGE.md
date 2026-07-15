@@ -25,7 +25,7 @@ supports_websockets = false
 不要直接覆盖正常的 `~/.codex/config.toml`，除非明确希望 API Key 模式替代当前
 ChatGPT 登录。
 
-## Codex 使用现有 ChatGPT 登录
+## Codex 使用 ChatGPT 登录
 
 示例位于 [`config/codex-fanvpn-chatgpt.example.toml`](../config/codex-fanvpn-chatgpt.example.toml)：
 
@@ -40,45 +40,43 @@ supports_websockets = false
 该 route 固定转发到 ChatGPT Codex backend。Bridge 不读取浏览器 Cookie，而是转发
 Codex 自己已有的认证请求头。Bridge 当前不传输 WebSocket，因此必须关闭 WebSocket。
 
-### 在另一台电脑复用现有 ChatGPT 登录
+### 在当前电脑独立登录
 
-Codex IDE 与 CLI 共用本机的登录缓存。首次 OAuth 登录的 Token Exchange 固定访问
-`auth.openai.com`，不会使用 `chatgpt_base_url`。如果目标电脑无法直接完成这一步，
-可以通过用户自己控制的离线介质，将已登录电脑上的 `~/.codex/auth.json` 复制到
-目标电脑相同位置。在 Windows 中，它的实际位置是：
+Codex IDE 与 CLI 共用本机的登录缓存。普通登录会让本地 Codex 进程直接执行 Token
+Exchange；在受地区限制的网络中，即使 Chrome 登录网页能够打开，这一步仍可能返回
+403。项目提供一次性登录助手，让授权网页和 Token Exchange 都使用 Chrome 当前出口，
+不需要复制另一台电脑的登录文件。
+
+先确认 Chrome 中的代理扩展已连接，并关闭所有 VS Code 窗口。然后在仓库目录的
+PowerShell 中运行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  .\tools\codex_login_via_bridge.ps1
+```
+
+脚本会打开 Chrome 官方登录页。完成登录后，浏览器回到只监听本机的临时回调端口，
+助手校验 PKCE 和 `state`，再通过 `127.0.0.1:18888/auth-openai/oauth/token`
+换取凭据。成功后它会：
+
+- 把凭据写入当前 Windows 用户的 `~/.codex/auth.json`；
+- 如果原文件存在，先在同一目录创建带时间戳的备份；
+- 自动设置后续刷新和注销所需的两个用户环境变量；
+- 不在控制台或 Bridge 日志中打印 Token。
+
+Windows 中 `~/.codex/auth.json` 实际位于：
 
 ```text
-C:\Users\<Windows 用户名>\.codex\auth.json
+C:\Users\<你的 Windows 用户名>\.codex\auth.json
 ```
 
-可以在两台电脑的 PowerShell 中分别运行下面的命令，直接打开该文件所在目录：
+只需查看位置时可运行 `explorer.exe "$HOME\.codex"`。该文件等同密码，不要复制到
+项目、提交到 Git、上传网盘或粘贴到聊天中。登录助手完成后重新打开 VS Code。
 
-```powershell
-explorer.exe "$HOME\.codex"
-```
+如果脚本提示当前 Host 不包含 `auth-openai`，先按[安装文档](INSTALLATION.md)更新
+Native Host，并刷新 Chrome 扩展。
 
-`$HOME` 会自动对应当前用户的 `C:\Users\<Windows 用户名>`。该文件包含访问和刷新凭据，
-必须像密码一样保护：不要提交到 Git、上传网盘、粘贴到聊天或放入项目目录。
-
-目标电脑还应设置以下用户环境变量，使后续 Token 刷新和注销经 Bridge 访问认证服务：
-
-```powershell
-[Environment]::SetEnvironmentVariable(
-  'CODEX_REFRESH_TOKEN_URL_OVERRIDE',
-  'http://127.0.0.1:18888/auth-openai/oauth/token',
-  'User'
-)
-[Environment]::SetEnvironmentVariable(
-  'CODEX_REVOKE_TOKEN_URL_OVERRIDE',
-  'http://127.0.0.1:18888/auth-openai/oauth/revoke',
-  'User'
-)
-```
-
-设置后完全退出并重新打开 VS Code。`auth-openai` 仅转发 Codex 自己发送的 OAuth
-请求；Bridge 不读取、保存或打印 Token。
-
-目标电脑的 `~/.codex/config.toml` 需要选择 ChatGPT Bridge provider。建议先备份原文件，再复制
+当前电脑的 `~/.codex/config.toml` 需要选择 ChatGPT Bridge provider。建议先备份原文件，再复制
 [`config/codex-fanvpn-chatgpt.example.toml`](../config/codex-fanvpn-chatgpt.example.toml)：
 
 ```powershell
@@ -98,8 +96,9 @@ wire_api = "responses"
 supports_websockets = false
 ```
 
-完成后关闭所有 VS Code 窗口再重新打开。不要再次点击 OAuth 登录；Codex IDE 会读取已安全迁移到
-`~/.codex/auth.json` 的凭据。已验证的成功判据是：Codex 直接进入聊天页，并能在关闭 Clash 的情况下完成一次真实对话。
+完成登录和配置后关闭所有 VS Code 窗口再重新打开。Codex IDE 会读取
+`~/.codex/auth.json`。成功判据是：Codex 直接进入聊天页，并能在关闭 Clash 的情况下
+完成一次真实对话。
 
 ## VS Code Claude Code：Anthropic 官方模式
 
