@@ -26,17 +26,30 @@ if (-not $Python) {
 }
 $Python = [System.IO.Path]::GetFullPath($Python)
 
-& $Python -c "import sys; raise SystemExit(0 if sys.version_info >= ($requiredPythonMajor, $requiredPythonMinor) else 2)"
-if ($LASTEXITCODE -ne 0) {
+$savedErrorActionPreference = $ErrorActionPreference
+try {
+    # Windows PowerShell 5.1 turns native stderr into ErrorRecord objects.  A
+    # failed probe is expected, so inspect its exit code without letting the
+    # global Stop preference terminate the script first.
+    $ErrorActionPreference = 'Continue'
+    & $Python -c "import sys; raise SystemExit(0 if sys.version_info >= ($requiredPythonMajor, $requiredPythonMinor) else 2)" 2>$null
+    $pythonProbeExitCode = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $savedErrorActionPreference
+}
+if ($pythonProbeExitCode -ne 0) {
     throw "Python $requiredPythonMajor.$requiredPythonMinor+ is required. '$Python' is missing, too old, or a Windows Store alias. Pass -Python with a working interpreter path."
 }
 
 $oldPythonPath = $env:PYTHONPATH
 try {
     $env:PYTHONPATH = $toolDirectory
+    $savedErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     & $Python -c "import PyInstaller; raise SystemExit(0 if PyInstaller.__version__ == '$requiredPyInstallerVersion' else 3)" 2>$null
     $toolAvailable = $LASTEXITCODE -eq 0
 } finally {
+    $ErrorActionPreference = $savedErrorActionPreference
     $env:PYTHONPATH = $oldPythonPath
 }
 
