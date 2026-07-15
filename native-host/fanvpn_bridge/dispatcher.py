@@ -28,7 +28,7 @@ from .protocol import (
 )
 
 
-HOST_VERSION = "2.1.0"
+HOST_VERSION = "2.1.1"
 _LOG = logging.getLogger("fanvpn_bridge.dispatcher")
 _LOG.addHandler(logging.NullHandler())
 

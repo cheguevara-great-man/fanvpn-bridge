@@ -86,4 +86,18 @@ Start-ScheduledTask -TaskName 'FanVPN Bridge Bootstrap'
 - **转换层**：只有 Claude→Gemini 工具调用失败，检查 CC Switch。
 - **客户端层**：Bridge 请求成功但 UI/侧栏异常，检查 Codex 或 Claude 客户端；Bridge 不管理聊天列表。
 
+## Codex 第一条消息明显较慢
+
+Native Host 会为真实上游请求记录不含 URL、query、正文和认证信息的分段耗时。先复现一条慢消息，
+再在 PowerShell 中查看最近的 Codex 请求：
+
+```powershell
+Get-Content "$env:LOCALAPPDATA\FanVPNBridge\fanvpn-bridge.log" -Tail 500 |
+  Select-String 'request_(complete|failed) route=(chatgpt-codex|auth-openai)'
+```
+
+`response_head_ms` 表示浏览器取得上游 HTTP 响应头的时间，`first_body_ms` 表示收到第一段
+响应数据的时间，`total_ms` 表示流结束时间。这样可以区分代理/TLS 建连慢、认证刷新慢和模型首段
+输出慢；日志不会包含 Token 或提示词。
+
 开发问题的根因和修复背景见[问题与解决记录](PROBLEM_SOLVING.md)。
