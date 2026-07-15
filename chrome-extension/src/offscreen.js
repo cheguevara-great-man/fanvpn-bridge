@@ -12,6 +12,15 @@ import {
 import { pumpResponseBody } from "./stream.js";
 
 const requests = new Map();
+const METHODS_WITHOUT_BODY = new Set(["GET", "HEAD"]);
+const BROWSER_DECODED_HEADERS = new Set([
+  "content-length",
+  "content-encoding",
+  "transfer-encoding",
+]);
+
+let negotiatedMaxChunkBytes = MAX_CHUNK_BYTES;
+let negotiatedMaxInFlight = MAX_IN_FLIGHT;
 
 function postBackground(message) {
   return chrome.runtime.sendMessage({ target: "background", envelope: message });
@@ -29,9 +38,19 @@ function protocolError(id, message) {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.target !== "offscreen" || !isProtocolEnvelope(message.envelope)) {
+  if (message?.target !== "offscreen") {
     return false;
   }
+  if (message.kind === "configure" || message.kind === "reset") {
+    try {
+      handleControlMessage(message);
+      sendResponse({ ok: true });
+    } catch (error) {
+      sendResponse({ ok: false, error: error?.message || String(error) });
+    }
+    return false;
+  }
+  if (!isProtocolEnvelope(message.envelope)) return false;
   handleEnvelope(message.envelope)
     .then(() => sendResponse({ ok: true }))
     .catch(async (error) => {
@@ -60,6 +79,8 @@ async function handleEnvelope(message) {
       requestBytes: 0,
       expectedRequestSeq: 0,
       controller: new AbortController(),
+      maxChunkBytes: negotiatedMaxChunkBytes,
+      maxInFlight: negotiatedMaxInFlight,
       responseAcked: -1,
       responseWaiters: [],
     });
@@ -68,17 +89,24 @@ async function handleEnvelope(message) {
   if (message.type === MessageType.REQUEST_BODY) {
     const state = requests.get(message.id);
     if (!state || message.seq !== state.expectedRequestSeq) {
+      if (state) {
+        requests.delete(message.id);
+        abortRequestState(state, "request_body_sequence_mismatch");
+      }
       await protocolError(message.id, "Request body sequence mismatch");
       return;
     }
     const bytes = base64ToBytes(message.data);
-    if (bytes.byteLength > MAX_CHUNK_BYTES) {
+    if (bytes.byteLength > state.maxChunkBytes) {
+      requests.delete(message.id);
+      abortRequestState(state, "request_chunk_too_large");
       await protocolError(message.id, "Request body chunk exceeds negotiated size");
       return;
     }
     state.requestBytes += bytes.byteLength;
     if (state.requestBytes > MAX_REQUEST_BODY_BYTES) {
       requests.delete(message.id);
+      abortRequestState(state, "request_body_too_large");
       await postBackground(
         envelope(MessageType.ERROR, {
           id: message.id,
@@ -106,14 +134,14 @@ async function handleEnvelope(message) {
     if (!state) return;
     state.responseAcked = Math.max(state.responseAcked, message.seq);
     const waiters = state.responseWaiters.splice(0);
-    for (const resolve of waiters) resolve();
+    for (const waiter of waiters) waiter.resolve();
     return;
   }
   if (message.type === MessageType.REQUEST_ABORT) {
     const state = requests.get(message.id);
     if (state) {
-      state.controller.abort(message.reason || "request aborted");
       requests.delete(message.id);
+      abortRequestState(state, message.reason || "request_aborted");
     }
     return;
   }
@@ -129,17 +157,20 @@ async function executeRequest(id, state) {
     const options = {
       method: state.head.method,
       headers,
-      redirect: "follow",
+      // Routes are an origin allowlist. Automatic redirects could escape the
+      // configured upstream and replay credentials or request bodies there.
+      redirect: "error",
       signal: state.controller.signal,
       cache: "no-store",
     };
-    if (!new Set(["GET", "HEAD"]).has(state.head.method)) {
-      options.body = await new Blob(state.requestChunks).arrayBuffer();
+    if (!METHODS_WITHOUT_BODY.has(state.head.method)) {
+      options.body = new Blob(state.requestChunks);
     }
+    state.requestChunks.length = 0;
     const response = await fetch(state.head.url, options);
     const responseHeaders = [];
     for (const [name, value] of response.headers.entries()) {
-      if (!new Set(["content-length", "content-encoding", "transfer-encoding"]).has(name.toLowerCase())) {
+      if (!BROWSER_DECODED_HEADERS.has(name.toLowerCase())) {
         responseHeaders.push([name, value]);
       }
     }
@@ -151,7 +182,7 @@ async function executeRequest(id, state) {
       }),
     );
     await pumpResponseBody(response.body, {
-      maxChunkBytes: MAX_CHUNK_BYTES,
+      maxChunkBytes: state.maxChunkBytes,
       sendFrame: (sequence, bytes, end) =>
         sendResponseFrame(id, state, sequence, bytes, end),
     });
@@ -167,14 +198,17 @@ async function executeRequest(id, state) {
       }),
     );
   } finally {
-    requests.delete(id);
+    state.requestChunks.length = 0;
+    if (requests.get(id) === state) requests.delete(id);
   }
 }
 
 async function sendResponseFrame(id, state, sequence, bytes, end) {
-  while (sequence - state.responseAcked > MAX_IN_FLIGHT) {
-    await new Promise((resolve) => state.responseWaiters.push(resolve));
+  while (sequence - state.responseAcked > state.maxInFlight) {
+    throwIfAborted(state);
+    await new Promise((resolve, reject) => state.responseWaiters.push({ resolve, reject }));
   }
+  throwIfAborted(state);
   await postBackground(
     envelope(MessageType.RESPONSE_BODY, {
       id,
@@ -183,6 +217,52 @@ async function sendResponseFrame(id, state, sequence, bytes, end) {
       end,
     }),
   );
+}
+
+function handleControlMessage(message) {
+  if (message.kind === "reset") {
+    abortAllRequests(message.reason || "native_session_reset");
+    return;
+  }
+  if (
+    !Number.isInteger(message.maxChunkBytes) ||
+    message.maxChunkBytes < 1 ||
+    message.maxChunkBytes > MAX_CHUNK_BYTES ||
+    !Number.isInteger(message.maxInFlight) ||
+    message.maxInFlight < 1 ||
+    message.maxInFlight > MAX_IN_FLIGHT
+  ) {
+    throw new Error("Invalid negotiated protocol limits");
+  }
+  abortAllRequests("native_session_reconfigured");
+  negotiatedMaxChunkBytes = message.maxChunkBytes;
+  negotiatedMaxInFlight = message.maxInFlight;
+}
+
+function abortAllRequests(reason) {
+  const active = [...requests.values()];
+  requests.clear();
+  for (const state of active) abortRequestState(state, reason);
+}
+
+function abortRequestState(state, reason) {
+  const error = abortError(reason);
+  if (!state.controller.signal.aborted) state.controller.abort(reason);
+  state.requestChunks.length = 0;
+  const waiters = state.responseWaiters.splice(0);
+  for (const waiter of waiters) waiter.reject(error);
+}
+
+function throwIfAborted(state) {
+  if (state.controller.signal.aborted) {
+    throw abortError(state.controller.signal.reason || "request_aborted");
+  }
+}
+
+function abortError(reason) {
+  const error = new Error(typeof reason === "string" ? reason : "Request aborted");
+  error.name = "AbortError";
+  return error;
 }
 
 function classifyFetchError(error) {

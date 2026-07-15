@@ -18,6 +18,8 @@ LOOPBACK_HOST = "127.0.0.1"
 class ProtocolConfig:
     max_chunk_bytes: int = 256 * 1024
     max_in_flight: int = 4
+    max_active_requests: int = 16
+    max_request_body_bytes: int = 32 * 1024 * 1024
     request_timeout_seconds: float = 600.0
 
 
@@ -66,7 +68,13 @@ def parse_config(raw: object) -> BridgeConfig:
     protocol_raw = _require_object(root.get("protocol", {}), "protocol")
     _reject_unknown(
         protocol_raw,
-        {"max_chunk_bytes", "max_in_flight", "request_timeout_seconds"},
+        {
+            "max_chunk_bytes",
+            "max_in_flight",
+            "max_active_requests",
+            "max_request_body_bytes",
+            "request_timeout_seconds",
+        },
         "protocol",
     )
     protocol = ProtocolConfig(
@@ -83,6 +91,20 @@ def parse_config(raw: object) -> BridgeConfig:
             4,
             minimum=1,
             maximum=16,
+        ),
+        max_active_requests=_optional_int(
+            protocol_raw,
+            "max_active_requests",
+            16,
+            minimum=1,
+            maximum=64,
+        ),
+        max_request_body_bytes=_optional_int(
+            protocol_raw,
+            "max_request_body_bytes",
+            32 * 1024 * 1024,
+            minimum=1024 * 1024,
+            maximum=32 * 1024 * 1024,
         ),
         request_timeout_seconds=float(
             _optional_number(
@@ -231,6 +253,7 @@ def _optional_header_allowlist(value: object, field: str) -> frozenset[str] | No
         if (
             not isinstance(item, str)
             or not item
+            or not item.isascii()
             or any(not (character.isalnum() or character in "!#$%&'*+-.^_`|~") for character in item)
         ):
             raise BridgeError(ErrorCode.CONFIG_INVALID, f"{field} contains an invalid HTTP header name")

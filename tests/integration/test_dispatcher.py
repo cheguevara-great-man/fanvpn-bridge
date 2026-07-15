@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import unittest
 
 from fanvpn_bridge.config import RouteConfig
 from fanvpn_bridge.contracts import EgressRequest, Header
 from fanvpn_bridge.dispatcher import NativeDispatcher
+from fanvpn_bridge.errors import BridgeError, ErrorCode
+from fanvpn_bridge.http_server import QueueResponseSink
 from fanvpn_bridge.routing import RouteTable
 from tests.helpers import CollectingSink, FakeExtension, channel_pair
 
@@ -16,6 +19,10 @@ class DispatcherIntegrationTests(unittest.TestCase):
         self.host_channel, extension_channel = channel_pair()
 
         def responder(head: dict[str, object], body: bytes):
+            if str(head["url"]).endswith("/slow"):
+                return 200, [["content-type", "application/octet-stream"]], [
+                    b"x" * 100_000 for _ in range(12)
+                ]
             payload = json.dumps(
                 {
                     "method": head["method"],
@@ -91,6 +98,51 @@ class DispatcherIntegrationTests(unittest.TestCase):
         self.assertEqual(failures, [])
         self.assertEqual(results, {index: 300_000 + index for index in range(4)})
         self.assertEqual(self.dispatcher.snapshot().active_requests, 0)
+
+    def test_slow_consumer_does_not_block_another_request(self) -> None:
+        slow_route = self.routes.resolve("openai", "/slow")
+        slow_request = EgressRequest(
+            request_id="slow_consumer_0001",
+            method="GET",
+            route=slow_route,
+            headers=[],
+        )
+        slow_sink = QueueResponseSink(max_in_flight=4)
+        self.dispatcher.submit(slow_request, (), slow_sink)
+
+        deadline = time.monotonic() + 2
+        while slow_sink.events.qsize() < 5 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(slow_sink.events.qsize(), 5)
+
+        fast_sink = self.make_request("fast_request_0001", b"fast")
+        self.assertEqual(json.loads(fast_sink.body)["body_bytes"], 4)
+        self.dispatcher.cancel("slow_consumer_0001")
+
+    def test_failed_request_body_sends_browser_abort(self) -> None:
+        route = self.routes.resolve("openai", "/v1/responses")
+        request = EgressRequest(
+            request_id="failed_upload_0001",
+            method="POST",
+            route=route,
+            headers=[],
+        )
+
+        def broken_body():
+            yield b"partial"
+            raise BridgeError(ErrorCode.REQUEST_BODY_INVALID, "body ended early")
+
+        with self.assertRaises(BridgeError):
+            self.dispatcher.submit(request, broken_body(), CollectingSink())
+        deadline = time.monotonic() + 1
+        while request.request_id not in self.extension.aborted_ids and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertIn(request.request_id, self.extension.aborted_ids)
+
+    def test_rejects_response_header_injection(self) -> None:
+        with self.assertRaises(BridgeError) as caught:
+            NativeDispatcher._parse_headers([["x-test", "safe\r\ninjected: true"]])
+        self.assertEqual(caught.exception.code, ErrorCode.PROTOCOL_VIOLATION)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,9 @@
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\diagnose.ps1
 ```
 
+诊断结果会比较源码、Chrome 注册产物和当前运行进程的 EXE 路径、route 名称与 route 文件 SHA-256，
+只输出不含凭据的元数据。自动化检查可加 `-Strict`；发现缺失文件、版本错位或 Bridge 不可用时返回非零退出码。
+
 再检查三个本地端点：
 
 ```powershell
@@ -29,6 +32,8 @@ Invoke-RestMethod http://127.0.0.1:18888/routes -Proxy $null
 | ChatGPT 网页可开，但 Codex route 返回 502 | Chrome 扣留 Bridge 的站点权限 | 将 FanVPN AI Bridge 的网站访问设为“在所有网站上” |
 | Codex 登录 Token Exchange 返回地区 403 | Token Exchange 由本地 Codex 进程直连 `auth.openai.com` | 使用 API Key，或按使用指南安全迁移已有登录缓存并配置认证刷新路由 |
 | 更新后新路由没有出现 | Chrome 仍在运行切换前的 Host，或扩展尚未刷新 | 刷新扩展并重开 Chrome，再检查 `/ready` 和 `/routes` |
+| `source_matches_registered` 为 `false` | 当前注册的 route 配置与仓库源码不同 | 确认本地改动后运行 A/B 更新脚本，刷新扩展并重开 Chrome |
+| `registered_matches_running` 为 `false` | 注册已切换，但 Chrome 仍保持旧 Host 进程 | 关闭并重新打开 Chrome |
 | A/B 更新报 `WinError 5` 或 `libcrypto-3.dll` 拒绝访问 | 上次切换后未重开 Chrome，旧进程仍占用本次目标槽位 | 关闭 Chrome，确认所有 Host 进程退出后重新运行更新脚本 |
 | `Failed to fetch` / `UPSTREAM_CONNECTION_FAILED` | FanVPN 未开启、节点失效或目标被节点限制 | 在同一 Chrome profile 检查 FanVPN 并切换节点 |
 | 本地请求被发送到 Clash/系统代理 | `NO_PROXY` 未包含 loopback，或应用未重启 | 添加 `127.0.0.1,localhost` 后重启 VS Code |

@@ -75,9 +75,10 @@ def main() -> int:
 
             deadline = time.monotonic() + 5
             health = None
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
             while time.monotonic() < deadline:
                 try:
-                    with urllib.request.urlopen(
+                    with opener.open(
                         f"http://127.0.0.1:{port}/ready",
                         timeout=0.5,
                     ) as response:

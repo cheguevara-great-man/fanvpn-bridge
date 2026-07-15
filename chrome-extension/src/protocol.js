@@ -7,7 +7,7 @@
 
 export const PROTOCOL_VERSION = 1;
 export const MAX_CHUNK_BYTES = 256 * 1024;
-export const MAX_IN_FLIGHT = 4;
+export const MAX_IN_FLIGHT = 16;
 export const MAX_REQUEST_BODY_BYTES = 32 * 1024 * 1024;
 
 export const MessageType = Object.freeze({

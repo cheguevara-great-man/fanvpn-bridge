@@ -125,7 +125,14 @@
             "v": { "$ref": "#/$defs/protocolVersion" },
             "type": { "const": "request.abort" },
             "id": { "$ref": "#/$defs/requestId" },
-            "reason": { "enum": ["client_cancelled", "timeout", "host_shutdown"] }
+            "reason": {
+              "enum": [
+                "client_cancelled",
+                "client_disconnected",
+                "timeout",
+                "host_shutdown"
+              ]
+            }
           },
           "additionalProperties": false
         }

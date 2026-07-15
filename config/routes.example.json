@@ -6,6 +6,8 @@
   "protocol": {
     "max_chunk_bytes": 262144,
     "max_in_flight": 4,
+    "max_active_requests": 16,
+    "max_request_body_bytes": 33554432,
     "request_timeout_seconds": 600
   },
   "routes": {

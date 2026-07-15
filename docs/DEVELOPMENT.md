@@ -43,6 +43,9 @@ node .\tools\check_offscreen.mjs
 npm --prefix .\chrome-extension test
 ```
 
+GitHub Actions 会在 Windows 上运行同一组 Python/Node 检查、构建独立 EXE、执行真实 Native Messaging
+冒烟测试，并上传 `browser-ai-bridge-windows` 构建产物。
+
 架构约束与打包产物：
 
 ```powershell
@@ -63,7 +66,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\update_native_host.p
 ```
 
 脚本根据当前 Native Messaging 注册自动在 `dist-a` 和 `dist-b` 之间切换。刷新扩展、重开 Chrome，
-再检查 `/ready`。首次安装仍按[安装文档](INSTALLATION.md)使用默认 `dist`。
+再检查 `/ready`。切换前会自动运行打包 EXE 冒烟测试，安装失败会恢复旧注册；可用 `-Rollback`
+切回另一槽位。首次安装仍按[安装文档](INSTALLATION.md)使用默认 `dist`。
 
 ## 改动原则
 

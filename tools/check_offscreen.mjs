@@ -22,7 +22,11 @@ globalThis.fetch = async (url, options) => {
   observedFetch = {
     url,
     authorization: options.headers.get("authorization"),
-    body: new Uint8Array(options.body || new ArrayBuffer()),
+    body: options.body
+      ? new Uint8Array(await options.body.arrayBuffer())
+      : new Uint8Array(),
+    bodyIsBlob: options.body instanceof Blob,
+    redirect: options.redirect,
   };
   return new Response(new TextEncoder().encode("data: hello\n\n"), {
     status: 200,
@@ -46,6 +50,19 @@ async function dispatch(envelope) {
 }
 
 const id = "extension_check_0001";
+await new Promise((resolve, reject) => {
+  const keepAlive = listener(
+    {
+      target: "offscreen",
+      kind: "configure",
+      maxChunkBytes: 64 * 1024,
+      maxInFlight: 2,
+    },
+    {},
+    (response) => (response?.ok ? resolve(response) : reject(new Error(response?.error))),
+  );
+  assert.equal(keepAlive, false);
+});
 await dispatch(
   protocol.envelope(protocol.MessageType.REQUEST_HEAD, {
     id,
@@ -76,6 +93,8 @@ while (
 assert.equal(observedFetch.url, "https://api.example.test/v1/responses");
 assert.equal(observedFetch.authorization, "Bearer extension-test");
 assert.equal(new TextDecoder().decode(observedFetch.body), "request-body");
+assert.equal(observedFetch.bodyIsBlob, true);
+assert.equal(observedFetch.redirect, "error");
 assert.equal(outbound[0].type, protocol.MessageType.FLOW_ACK);
 const head = outbound.find((message) => message.type === protocol.MessageType.RESPONSE_HEAD);
 const bodies = outbound.filter((message) => message.type === protocol.MessageType.RESPONSE_BODY);

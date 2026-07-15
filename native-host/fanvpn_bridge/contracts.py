@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Iterable, Mapping, Protocol, Sequence, runtime_checkable
+from typing import Callable, Iterable, Mapping, Protocol, Sequence, runtime_checkable
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,8 +84,8 @@ class ResponseSink(Protocol):
     def start(self, status: int, headers: Sequence[Header]) -> None:
         """Write response status and end-to-end headers exactly once."""
 
-    def write(self, data: bytes) -> None:
-        """Write one body chunk while applying downstream backpressure."""
+    def write(self, data: bytes, on_consumed: Callable[[], None] | None = None) -> None:
+        """Queue one body chunk and acknowledge it after downstream consumption."""
 
     def finish(self) -> None:
         """Finish the response successfully."""

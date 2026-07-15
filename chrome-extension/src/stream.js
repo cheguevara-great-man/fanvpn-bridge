@@ -10,7 +10,10 @@ export async function pumpResponseBody(body, { maxChunkBytes, sendFrame }) {
     const { done, value } = await reader.read();
     if (done) break;
     for (let offset = 0; offset < value.byteLength; offset += maxChunkBytes) {
-      const piece = value.slice(offset, Math.min(offset + maxChunkBytes, value.byteLength));
+      const end = Math.min(offset + maxChunkBytes, value.byteLength);
+      const piece = offset === 0 && end === value.byteLength
+        ? value
+        : value.subarray(offset, end);
       await sendFrame(sequence, piece, false);
       sequence += 1;
     }

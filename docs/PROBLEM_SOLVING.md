@@ -183,3 +183,40 @@ PyInstaller 无法先删除再重建该目录。
 **后续改进**：固定的 `dist-next` 在再次更新时也会成为正在使用的目录，因此最终采用 `dist-a` / `dist-b`
 双槽轮换。`update_native_host.ps1` 读取当前 Native Messaging manifest，自动构建并注册非活动槽位；
 每次切换后重开 Chrome，上一槽位就会被释放，供下次更新使用。
+
+## 慢客户端阻塞所有并发请求
+
+**现象**：一个本地客户端停止读取较大的流式响应后，其他 Codex 或 Claude 请求也无法继续收到响应。
+
+**根因**：唯一的 Native Messaging reader 在线程内同步写入单个请求的有界队列；队列填满时 reader
+被阻塞，无法再分发其他 request id 的 frame。
+
+**解决**：reader 只做非阻塞分发，`flow.ack` 延迟到对应 HTTP 客户端实际消费 frame 后发送。浏览器的
+协商窗口限制每个慢请求最多占用少量待消费 frame，同时 reader 可以继续处理其他请求。
+
+**经验**：背压必须限定在单条流内；不能让一个消费者的背压占用全局复用通道的读取线程。
+
+## 取消请求后 Offscreen 仍保留内存
+
+**现象**：上传中断或响应在等待 ACK 时取消，请求已经从客户端消失，但 Offscreen 中仍可能保留正文 chunk、
+fetch 和 Promise waiter。
+
+**根因**：Host 的上传失败路径没有发送 `request.abort`；Offscreen 删除 Map 项时也没有唤醒等待流控 ACK
+的 Promise。Native Port 断开同样没有批量取消在途请求。
+
+**解决**：所有上传失败路径发送 best-effort abort；单请求取消、协议错误、重新握手和 Native Port 断开
+都调用统一清理逻辑，终止 fetch、清空 chunk 并拒绝全部 waiter。
+
+**经验**：从索引中删除对象不等于释放异步任务；必须显式终止持有该对象的等待链。
+
+## 注册构建与运行进程发生版本错位
+
+**现象**：仓库配置已经包含新 route，但 `/routes` 仍返回旧列表；旧诊断只显示各组件存在，没有报警。
+
+**根因**：源码、Native Messaging 注册目录和 Chrome 已经拉起的进程属于三个不同状态，原诊断没有比较
+它们。构建成功也没有证明新 EXE 能启动。
+
+**解决**：诊断现在比较三组 route、注册与运行 EXE 路径及 route 文件哈希；A/B 更新在切换注册前执行
+打包 EXE 冒烟测试，安装异常时恢复旧注册，并提供显式 `-Rollback`。
+
+**经验**：部署健康不能只检查“文件存在”和“端口可达”，还必须证明源码、注册目标和实际进程一致。

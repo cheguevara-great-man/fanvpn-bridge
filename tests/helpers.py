@@ -62,8 +62,10 @@ class CollectingSink:
         self.status = status
         self.headers = headers
 
-    def write(self, data: bytes) -> None:
+    def write(self, data: bytes, on_consumed: Callable[[], None] | None = None) -> None:
         self.chunks.append(data)
+        if on_consumed is not None:
+            on_consumed()
 
     def finish(self) -> None:
         self.done.set()
@@ -92,6 +94,10 @@ class FakeExtension:
         self.requests: dict[str, dict[str, object]] = {}
         self.bodies: dict[str, bytearray] = {}
         self.expected_seq: dict[str, int] = {}
+        self.response_frames: dict[str, list[dict[str, object]]] = {}
+        self.response_next_seq: dict[str, int] = {}
+        self.response_acked_seq: dict[str, int] = {}
+        self.aborted_ids: set[str] = set()
         self.thread = threading.Thread(target=self._run, name="fake-extension", daemon=True)
 
     def start(self) -> None:
@@ -135,7 +141,18 @@ class FakeExtension:
                 if end:
                     self._respond(request_id)
                 continue
-            if message_type in {"flow.ack", "request.abort", "pong"}:
+            if message_type == "flow.ack" and message.get("stream") == "response":
+                request_id = str(message["id"])
+                self.response_acked_seq[request_id] = max(
+                    self.response_acked_seq.get(request_id, -1),
+                    int(message["seq"]),
+                )
+                self._send_available_response_frames(request_id)
+                continue
+            if message_type == "request.abort":
+                self.aborted_ids.add(str(message["id"]))
+                continue
+            if message_type in {"flow.ack", "pong"}:
                 continue
             raise AssertionError(f"Unexpected host message: {message_type}")
 
@@ -150,5 +167,24 @@ class FakeExtension:
         self.channel.send(
             envelope("response.head", id=request_id, status=status, headers=headers)
         )
-        for frame in iter_body_frames("response.body", request_id, chunks):
-            self.channel.send(frame)
+        self.response_frames[request_id] = list(
+            iter_body_frames("response.body", request_id, chunks)
+        )
+        self.response_next_seq[request_id] = 0
+        self.response_acked_seq[request_id] = -1
+        self._send_available_response_frames(request_id)
+
+    def _send_available_response_frames(self, request_id: str) -> None:
+        frames = self.response_frames.get(request_id)
+        if frames is None:
+            return
+        next_sequence = self.response_next_seq[request_id]
+        acknowledged = self.response_acked_seq[request_id]
+        while next_sequence < len(frames) and next_sequence - acknowledged <= 4:
+            self.channel.send(frames[next_sequence])
+            next_sequence += 1
+        self.response_next_seq[request_id] = next_sequence
+        if next_sequence == len(frames) and acknowledged >= len(frames) - 1:
+            self.response_frames.pop(request_id, None)
+            self.response_next_seq.pop(request_id, None)
+            self.response_acked_seq.pop(request_id, None)

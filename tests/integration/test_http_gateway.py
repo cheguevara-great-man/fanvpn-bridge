@@ -70,7 +70,10 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
                 },
                 separators=(",", ":"),
             ).encode()
-            return 200, [["content-type", "application/json"]], [payload[:17], payload[17:]]
+            return 200, [
+                ["content-type", "application/json"],
+                ["access-control-allow-origin", "*"],
+            ], [payload[:17], payload[17:]]
 
         self.extension = FakeExtension(extension_channel, responder)
         self.extension.start()
@@ -157,6 +160,11 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
         ):
             self.assertIn(required, header_names)
 
+    def test_does_not_forward_upstream_cors_headers_to_loopback(self) -> None:
+        status, headers, _payload = self.request("GET", "/openai/v1/models")
+        self.assertEqual(status, 200)
+        self.assertNotIn("access-control-allow-origin", {name.lower() for name in headers})
+
     def test_disconnected_client_cancels_pending_browser_request(self) -> None:
         client = socket.create_connection(("127.0.0.1", self.port), timeout=2)
         client.sendall(
@@ -196,6 +204,40 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
         status, _headers, payload = self.request("POST", "/evil/v1/responses", b"{}")
         self.assertEqual(status, 404)
         self.assertEqual(json.loads(payload)["error"]["code"], "ROUTE_NOT_FOUND")
+
+    def test_rejects_non_loopback_host_header(self) -> None:
+        status, _headers, payload = self.request(
+            "GET",
+            "/health",
+            headers={"Host": "attacker.example"},
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(json.loads(payload)["error"]["code"], "LOCAL_ACCESS_DENIED")
+
+    def test_rejects_browser_origin(self) -> None:
+        status, _headers, payload = self.request(
+            "POST",
+            "/openai/v1/responses",
+            b"{}",
+            {
+                "Content-Type": "text/plain",
+                "Origin": "https://attacker.example",
+            },
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(json.loads(payload)["error"]["code"], "LOCAL_ACCESS_DENIED")
+
+    def test_rejects_oversized_body_before_dispatch(self) -> None:
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        connection.putrequest("POST", "/openai/v1/responses")
+        connection.putheader("Content-Length", str(32 * 1024 * 1024 + 1))
+        connection.endheaders()
+        response = connection.getresponse()
+        payload = response.read()
+        connection.close()
+        self.assertEqual(response.status, 413)
+        self.assertEqual(json.loads(payload)["error"]["code"], "MESSAGE_TOO_LARGE")
+        self.assertEqual(self.dispatcher.snapshot().active_requests, 0)
 
     def test_route_header_allowlist_removes_cross_origin_client_metadata(self) -> None:
         status, _headers, payload = self.request(
