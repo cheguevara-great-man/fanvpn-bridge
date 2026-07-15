@@ -1,5 +1,7 @@
 # FanVPN Bridge
 
+[![Windows CI](https://github.com/cheguevara-great-man/fanvpn-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/cheguevara-great-man/fanvpn-bridge/actions/workflows/ci.yml)
+
 让 Windows 开发工具借助 Chrome 中的 FanVPN 访问 OpenAI、Anthropic 和 Gemini，
 不需要 Clash、系统 VPN，也不要求 FanVPN 提供本地代理端口。
 
@@ -32,9 +34,10 @@ Claude Code 使用 Gemini 时，由 CC Switch 转换 Anthropic Messages 与 Gemi
 
 - 单一 Native Host 同时提供本地 HTTP 网关和 Chrome 通道。
 - OpenAI、ChatGPT Codex、Anthropic、Gemini Native 等显式路由。
-- 流式响应、分片、背压、并发、超时和客户端取消。
-- 仅监听 `127.0.0.1`，上游由静态 allowlist 限制。
+- 流式响应、分片、按请求隔离的背压、并发上限、超时和客户端取消。
+- 仅监听 `127.0.0.1`，校验本地 Host/Origin，上游由静态 allowlist 限制。
 - Chrome 出口不可用时失败关闭，不回退到系统直连。
+- A/B 事务式更新，切换前自动冒烟测试，失败时恢复旧注册。
 - Windows 登录后自动启动 Chrome 并等待 Bridge ready。
 - VS Code Claude Code 可在 Anthropic 官方模式和 Gemini 模式之间切换，且不接管全局 Claude 配置。
 
@@ -97,6 +100,7 @@ Codex、Claude Code 或 CC Switch。
 
 - 只监听 IPv4 loopback，不向局域网开放。
 - 客户端不能通过 URL、query 或 header 指定任意上游。
+- 自动重定向被禁止，避免请求逃逸到未配置的上游。
 - 认证头只在内存中转发，诊断输出不打印 Token、Cookie 或 API Key。
 - 浏览器执行器不可用时返回错误，不尝试绕过 FanVPN。
 - Bridge 不读取或修改 Codex 的任务、项目、侧栏或本地数据库。

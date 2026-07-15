@@ -6,7 +6,7 @@ import time
 import unittest
 
 from fanvpn_bridge.errors import BridgeError, ErrorCode
-from fanvpn_bridge.framing import encode_message, read_message
+from fanvpn_bridge.framing import CHROME_TO_HOST_MAX_BYTES, encode_message, read_message
 from fanvpn_bridge.protocol import FlowWindow, decode_body_frame, iter_body_frames
 
 
@@ -29,6 +29,12 @@ class FramingTests(unittest.TestCase):
     def test_rejects_truncated_length_prefix(self) -> None:
         with self.assertRaises(BridgeError):
             read_message(io.BytesIO(b"\x05\x00"))
+
+    def test_rejects_oversized_browser_frame_before_allocating_payload(self) -> None:
+        prefix = (CHROME_TO_HOST_MAX_BYTES + 1).to_bytes(4, "little")
+        with self.assertRaises(BridgeError) as caught:
+            read_message(io.BytesIO(prefix))
+        self.assertEqual(caught.exception.code, ErrorCode.MESSAGE_TOO_LARGE)
 
 
 class ProtocolTests(unittest.TestCase):

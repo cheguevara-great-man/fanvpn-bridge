@@ -22,6 +22,37 @@ if (-not (Test-Path -LiteralPath $routesPath -PathType Leaf)) {
     throw "Route configuration not found: $routesPath"
 }
 
+$startupTaskName = 'FanVPN Bridge Bootstrap'
+$taskDefinition = $null
+if (-not $SkipStartupTask) {
+    $startupScript = Join-Path $PSScriptRoot 'tools\startup_bridge.ps1'
+    $chromeCandidates = @(
+        (Join-Path $env:ProgramFiles 'Google\Chrome\Application\chrome.exe'),
+        (Join-Path ${env:ProgramFiles(x86)} 'Google\Chrome\Application\chrome.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Google\Chrome\Application\chrome.exe')
+    )
+    $chromePath = $chromeCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
+    if (-not $chromePath) {
+        throw 'Google Chrome executable was not found; no installation changes were made.'
+    }
+    $powershellCommand = Get-Command powershell.exe -ErrorAction SilentlyContinue
+    if (-not $powershellCommand) {
+        throw 'Windows PowerShell executable was not found; no installation changes were made.'
+    }
+    $arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$startupScript`" -ChromePath `"$chromePath`""
+    $taskDefinition = [ordered]@{
+        Action = New-ScheduledTaskAction -Execute $powershellCommand.Source -Argument $arguments
+        Trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+        Principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
+        Settings = New-ScheduledTaskSettingsSet `
+            -StartWhenAvailable `
+            -MultipleInstances IgnoreNew `
+            -RestartCount 5 `
+            -RestartInterval (New-TimeSpan -Minutes 1) `
+            -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+    }
+}
+
 $manifest = [ordered]@{
     name = 'com.fanvpn.bridge'
     description = 'FanVPN Bridge v2 Native Messaging Host'
@@ -32,10 +63,6 @@ $manifest = [ordered]@{
 $manifestJson = $manifest | ConvertTo-Json -Depth 4
 $utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText($manifestPath, $manifestJson, $utf8WithoutBom)
-
-$registryPath = 'HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.fanvpn.bridge'
-New-Item -Path $registryPath -Force | Out-Null
-Set-Item -Path $registryPath -Value $manifestPath
 
 if (-not $SkipNoProxy) {
     $currentNoProxy = [Environment]::GetEnvironmentVariable('NO_PROXY', 'User')
@@ -48,38 +75,21 @@ if (-not $SkipNoProxy) {
     [Environment]::SetEnvironmentVariable('NO_PROXY', ($entries -join ','), 'User')
 }
 
-$startupTaskName = 'FanVPN Bridge Bootstrap'
 if (-not $SkipStartupTask) {
-    $startupScript = Join-Path $PSScriptRoot 'tools\startup_bridge.ps1'
-    $chromeCandidates = @(
-        (Join-Path $env:ProgramFiles 'Google\Chrome\Application\chrome.exe'),
-        (Join-Path ${env:ProgramFiles(x86)} 'Google\Chrome\Application\chrome.exe'),
-        (Join-Path $env:LOCALAPPDATA 'Google\Chrome\Application\chrome.exe')
-    )
-    $chromePath = $chromeCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
-    if (-not $chromePath) {
-        throw 'Google Chrome executable was not found; startup task was not installed.'
-    }
-    $powershellPath = Join-Path $PSHOME 'powershell.exe'
-    $arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$startupScript`" -ChromePath `"$chromePath`""
-    $action = New-ScheduledTaskAction -Execute $powershellPath -Argument $arguments
-    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-    $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
-    $settings = New-ScheduledTaskSettingsSet `
-        -StartWhenAvailable `
-        -MultipleInstances IgnoreNew `
-        -RestartCount 5 `
-        -RestartInterval (New-TimeSpan -Minutes 1) `
-        -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
     Register-ScheduledTask `
         -TaskName $startupTaskName `
-        -Action $action `
-        -Trigger $trigger `
-        -Principal $principal `
-        -Settings $settings `
+        -Action $taskDefinition.Action `
+        -Trigger $taskDefinition.Trigger `
+        -Principal $taskDefinition.Principal `
+        -Settings $taskDefinition.Settings `
         -Description 'Starts Chrome in the background and waits for FanVPN Bridge readiness.' `
         -Force | Out-Null
 }
+
+# Switch Chrome only after every prerequisite and side effect above succeeded.
+$registryPath = 'HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.fanvpn.bridge'
+New-Item -Path $registryPath -Force | Out-Null
+Set-Item -Path $registryPath -Value $manifestPath
 
 Write-Host 'FanVPN Bridge v2 registered for Google Chrome.' -ForegroundColor Green
 Write-Host "Extension ID: $ExtensionId"

@@ -30,7 +30,7 @@ Set-Location .\fanvpn-bridge
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_native_host.ps1
 ```
 
-脚本会自动使用 `python` 命令对应的解释器，安装构建依赖，并将产物写入
+脚本会验证 `python` 确实是 Python 3.12+，按固定版本安装并缓存 PyInstaller，然后将产物写入
 `dist\browser-ai-bridge\`。成功时最后一行类似：
 
 ```text
@@ -126,7 +126,8 @@ Start-ScheduledTask -TaskName 'FanVPN Bridge Bootstrap'
 ## 更新
 
 项目使用 `dist-a` 和 `dist-b` 两套构建目录交替更新。更新脚本会读取 Chrome 当前注册的 Host，
-自动构建到另一套目录并切换注册；首次从默认的 `dist` 更新时选择 `dist-a`。
+自动构建到另一套目录，先启动新 EXE 完成冒烟测试，再切换注册；首次从默认的 `dist` 更新时选择
+`dist-a`。构建、测试或安装失败时不会留下指向坏产物的注册。
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\update_native_host.ps1
@@ -143,6 +144,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\update_native_host.p
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\update_native_host.ps1 -WhatIf
 ```
+
+如果新槽位在重开 Chrome 后出现问题，可以切回另一套已经存在的 A/B 产物：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\update_native_host.ps1 -Rollback
+```
+
+回滚同样会先冒烟测试目标 EXE。当前注册尚未进入 `dist-a` / `dist-b` 时不能使用 `-Rollback`。
 
 如果更新脚本仍报告 `WinError 5`，通常表示上一次切换后没有重开 Chrome，旧进程仍占用本次目标目录。
 关闭 Chrome 并等待所有 `browser-ai-bridge.exe` 退出后重试。

@@ -12,7 +12,8 @@ import time
 import uuid
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Iterable, Sequence, cast
+from typing import Callable, Iterable, Sequence, cast
+from urllib.parse import urlsplit
 
 from .config import BridgeConfig
 from .contracts import EgressRequest, Header, HealthSnapshotProvider, RequestDispatcher, ResponseSink
@@ -48,19 +49,16 @@ class QueueResponseSink(ResponseSink):
         self._closed = threading.Event()
 
     def start(self, status: int, headers: Sequence[Header]) -> None:
-        self.events.put(_ResponseEvent("head", (status, list(headers))))
+        self._put_nowait(_ResponseEvent("head", (status, list(headers))))
 
-    def write(self, data: bytes) -> None:
-        while not self._closed.is_set():
-            try:
-                self.events.put(_ResponseEvent("body", data), timeout=0.1)
-                return
-            except queue.Full:
-                continue
+    def write(self, data: bytes, on_consumed: Callable[[], None] | None = None) -> None:
+        if self._closed.is_set():
+            raise BridgeError(ErrorCode.CLIENT_CANCELLED, "Local HTTP response is closed")
+        self._put_nowait(_ResponseEvent("body", (data, on_consumed)))
 
     def finish(self) -> None:
         if not self._closed.is_set():
-            self.events.put(_ResponseEvent("end"))
+            self._put_nowait(_ResponseEvent("end"))
 
     def fail(self, error: Exception) -> None:
         self._closed.set()
@@ -70,6 +68,15 @@ class QueueResponseSink(ResponseSink):
         except queue.Empty:
             pass
         self.events.put_nowait(_ResponseEvent("error", error))
+
+    def _put_nowait(self, event: _ResponseEvent) -> None:
+        try:
+            self.events.put_nowait(event)
+        except queue.Full as exc:
+            raise BridgeError(
+                ErrorCode.PROTOCOL_VIOLATION,
+                "Browser exceeded the negotiated response flow-control window",
+            ) from exc
 
 
 class BridgeHTTPServer(ThreadingHTTPServer):
@@ -122,6 +129,13 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
 
     def _handle(self, method: str) -> None:
         server = cast(BridgeHTTPServer, self.server)
+        request_id = uuid.uuid4().hex
+        try:
+            self._validate_local_request(server)
+        except BridgeError as error:
+            self.close_connection = True
+            self._send_bridge_error(error, request_id, head_only=method == "HEAD")
+            return
         if self.path in {"/health", "/__bridge/health"}:
             self._send_health(server)
             return
@@ -153,12 +167,15 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._handle_probe(server, self.path.removeprefix("/__bridge/probe/"))
             return
 
-        request_id = uuid.uuid4().hex
         try:
             route = server.routes.resolve_local_target(self.path)
             route_config = server.bridge_config.routes[route.name]
             headers = self._request_headers(route_config.request_header_allowlist)
-            body = self._request_body(server.bridge_config.protocol.max_chunk_bytes)
+            body = self._request_body(
+                server.bridge_config.protocol.max_chunk_bytes,
+                max_body_bytes=server.bridge_config.protocol.max_request_body_bytes,
+                timeout=server.bridge_config.protocol.request_timeout_seconds,
+            )
             sink = QueueResponseSink(server.bridge_config.protocol.max_in_flight)
             request = EgressRequest(
                 request_id=request_id,
@@ -223,7 +240,26 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             and (allowlist is None or name.lower() in allowlist)
         ]
 
-    def _request_body(self, chunk_size: int) -> Iterable[bytes]:
+    def _validate_local_request(self, server: BridgeHTTPServer) -> None:
+        host = self.headers.get("Host")
+        if not _is_allowed_host(host, server.server_address[1]):
+            raise BridgeError(
+                ErrorCode.LOCAL_ACCESS_DENIED,
+                "Host header must identify the loopback Bridge endpoint",
+            )
+        if self.headers.get("Origin"):
+            raise BridgeError(
+                ErrorCode.LOCAL_ACCESS_DENIED,
+                "Browser-originated requests are not accepted by the local Bridge",
+            )
+
+    def _request_body(
+        self,
+        chunk_size: int,
+        *,
+        max_body_bytes: int,
+        timeout: float,
+    ) -> Iterable[bytes]:
         transfer_encoding = self.headers.get("Transfer-Encoding")
         if transfer_encoding and transfer_encoding.lower() != "identity":
             raise BridgeError(
@@ -239,15 +275,35 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             raise BridgeError(ErrorCode.REQUEST_BODY_INVALID, "Invalid Content-Length") from exc
         if remaining < 0:
             raise BridgeError(ErrorCode.REQUEST_BODY_INVALID, "Negative Content-Length")
+        if remaining > max_body_bytes:
+            raise BridgeError(
+                ErrorCode.MESSAGE_TOO_LARGE,
+                f"Request body exceeds the {max_body_bytes} byte limit",
+            )
 
         def chunks() -> Iterable[bytes]:
             nonlocal remaining
-            while remaining:
-                data = self.rfile.read(min(chunk_size, remaining))
-                if not data:
-                    raise BridgeError(ErrorCode.REQUEST_BODY_INVALID, "Request body ended early")
-                remaining -= len(data)
-                yield data
+            previous_timeout = self.connection.gettimeout()
+            deadline = time.monotonic() + timeout
+            try:
+                while remaining:
+                    time_left = deadline - time.monotonic()
+                    if time_left <= 0:
+                        raise BridgeError(ErrorCode.REQUEST_TIMEOUT, "Timed out reading request body")
+                    self.connection.settimeout(time_left)
+                    try:
+                        data = self.rfile.read(min(chunk_size, remaining))
+                    except (TimeoutError, socket.timeout) as exc:
+                        raise BridgeError(
+                            ErrorCode.REQUEST_TIMEOUT,
+                            "Timed out reading request body",
+                        ) from exc
+                    if not data:
+                        raise BridgeError(ErrorCode.REQUEST_BODY_INVALID, "Request body ended early")
+                    remaining -= len(data)
+                    yield data
+            finally:
+                self.connection.settimeout(previous_timeout)
 
         return chunks()
 
@@ -282,7 +338,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 self.send_response(status)
                 excluded = _HOP_BY_HOP | _BROWSER_DECODED_RESPONSE_HEADERS
                 for header in headers:
-                    if header.name.lower() not in excluded:
+                    header_name = header.name.lower()
+                    if header_name not in excluded and not header_name.startswith("access-control-"):
                         self.send_header(header.name, header.value)
                 if not head_only:
                     self.send_header("Transfer-Encoding", "chunked")
@@ -294,9 +351,14 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             if event.kind == "body":
                 if not response_started:
                     raise BridgeError(ErrorCode.PROTOCOL_VIOLATION, "Response body before head")
-                data = cast(bytes, event.value)
+                data, on_consumed = cast(
+                    tuple[bytes, Callable[[], None] | None],
+                    event.value,
+                )
                 if data and not head_only:
                     self._write_chunk(data)
+                if on_consumed is not None:
+                    on_consumed()
                 continue
             if event.kind == "end":
                 if not response_started:
@@ -353,6 +415,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             ErrorCode.UPSTREAM_NOT_ALLOWED: 400,
             ErrorCode.REQUEST_BODY_INVALID: 400,
             ErrorCode.REQUEST_BODY_UNSUPPORTED: 501,
+            ErrorCode.LOCAL_ACCESS_DENIED: 403,
+            ErrorCode.TOO_MANY_REQUESTS: 429,
             ErrorCode.MESSAGE_TOO_LARGE: 413,
             ErrorCode.NATIVE_CHANNEL_UNAVAILABLE: 503,
             ErrorCode.REQUEST_TIMEOUT: 504,
@@ -401,6 +465,25 @@ def _socket_disconnected(connection: socket.socket) -> bool:
         return connection.recv(1, socket.MSG_PEEK) == b""
     except (OSError, ValueError):
         return True
+
+
+def _is_allowed_host(value: str | None, listen_port: int) -> bool:
+    if not value:
+        return False
+    try:
+        parsed = urlsplit(f"//{value}")
+        port = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.hostname in {"127.0.0.1", "localhost"}
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.path
+        and not parsed.query
+        and not parsed.fragment
+        and port in {None, listen_port}
+    )
 
 
 def create_http_server(

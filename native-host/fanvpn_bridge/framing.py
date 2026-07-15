@@ -12,7 +12,7 @@ from .errors import BridgeError, ErrorCode
 
 
 HOST_TO_CHROME_MAX_BYTES = 1024 * 1024
-CHROME_TO_HOST_MAX_BYTES = 64 * 1024 * 1024
+CHROME_TO_HOST_MAX_BYTES = 8 * 1024 * 1024
 _LENGTH = struct.Struct("=I")
 
 

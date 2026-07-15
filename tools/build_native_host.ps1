@@ -5,6 +5,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$requiredPythonMajor = 3
+$requiredPythonMinor = 12
+$requiredPyInstallerVersion = '6.21.0'
 $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $toolDirectory = Join-Path $root 'build\pyinstaller'
 $workDirectory = Join-Path $root 'build\pyinstaller-work'
@@ -23,10 +26,42 @@ if (-not $Python) {
 }
 $Python = [System.IO.Path]::GetFullPath($Python)
 
-if (-not $SkipToolInstall) {
+$savedErrorActionPreference = $ErrorActionPreference
+try {
+    # Windows PowerShell 5.1 turns native stderr into ErrorRecord objects.  A
+    # failed probe is expected, so inspect its exit code without letting the
+    # global Stop preference terminate the script first.
+    $ErrorActionPreference = 'Continue'
+    & $Python -c "import sys; raise SystemExit(0 if sys.version_info >= ($requiredPythonMajor, $requiredPythonMinor) else 2)" 2>$null
+    $pythonProbeExitCode = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $savedErrorActionPreference
+}
+if ($pythonProbeExitCode -ne 0) {
+    throw "Python $requiredPythonMajor.$requiredPythonMinor+ is required. '$Python' is missing, too old, or a Windows Store alias. Pass -Python with a working interpreter path."
+}
+
+$oldPythonPath = $env:PYTHONPATH
+try {
+    $env:PYTHONPATH = $toolDirectory
+    $savedErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    & $Python -c "import PyInstaller; raise SystemExit(0 if PyInstaller.__version__ == '$requiredPyInstallerVersion' else 3)" 2>$null
+    $toolAvailable = $LASTEXITCODE -eq 0
+} finally {
+    $ErrorActionPreference = $savedErrorActionPreference
+    $env:PYTHONPATH = $oldPythonPath
+}
+
+if (-not $toolAvailable -and $SkipToolInstall) {
+    throw "Cached PyInstaller $requiredPyInstallerVersion was not found. Run without -SkipToolInstall once."
+}
+if (-not $toolAvailable) {
     New-Item -ItemType Directory -Path $toolDirectory -Force | Out-Null
-    & $Python -m pip install --disable-pip-version-check --target $toolDirectory 'pyinstaller>=6.0,<7.0'
+    & $Python -m pip install --disable-pip-version-check --upgrade --target $toolDirectory "pyinstaller==$requiredPyInstallerVersion"
     if ($LASTEXITCODE -ne 0) { throw 'Failed to install PyInstaller build dependency.' }
+} else {
+    Write-Host "Using cached PyInstaller $requiredPyInstallerVersion."
 }
 
 $oldPythonPath = $env:PYTHONPATH

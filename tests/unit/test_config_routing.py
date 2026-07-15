@@ -32,6 +32,8 @@ class ConfigTests(unittest.TestCase):
         config = parse_config(valid_config())
         self.assertEqual(config.listen_host, "127.0.0.1")
         self.assertEqual(config.protocol.max_chunk_bytes, 262144)
+        self.assertEqual(config.protocol.max_active_requests, 16)
+        self.assertEqual(config.protocol.max_request_body_bytes, 32 * 1024 * 1024)
         self.assertEqual(set(config.routes), {"openai", "gemini"})
         self.assertEqual(
             config.routes["gemini"].request_header_allowlist,
@@ -66,6 +68,16 @@ class ConfigTests(unittest.TestCase):
         gemini = routes["gemini"]
         assert isinstance(gemini, dict)
         gemini["request_header_allowlist"] = ["valid", "bad header"]
+        with self.assertRaises(BridgeError):
+            parse_config(raw)
+
+    def test_rejects_unicode_header_allowlist_name(self) -> None:
+        raw = valid_config()
+        routes = raw["routes"]
+        assert isinstance(routes, dict)
+        gemini = routes["gemini"]
+        assert isinstance(gemini, dict)
+        gemini["request_header_allowlist"] = ["内容类型"]
         with self.assertRaises(BridgeError):
             parse_config(raw)
 

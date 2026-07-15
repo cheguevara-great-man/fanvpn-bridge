@@ -28,7 +28,7 @@ from .protocol import (
 )
 
 
-HOST_VERSION = "0.2.0-dev"
+HOST_VERSION = "2.1.0"
 _LOG = logging.getLogger("fanvpn_bridge.dispatcher")
 _LOG.addHandler(logging.NullHandler())
 
@@ -51,10 +51,12 @@ class NativeDispatcher:
         max_chunk_bytes: int,
         max_in_flight: int,
         request_timeout_seconds: float,
+        max_active_requests: int = 16,
     ) -> None:
         self._channel = channel
         self._max_chunk_bytes = max_chunk_bytes
         self._max_in_flight = max_in_flight
+        self._max_active_requests = max_active_requests
         self._request_timeout = request_timeout_seconds
         self._pending: dict[str, _PendingRequest] = {}
         self._pending_lock = threading.Lock()
@@ -117,6 +119,12 @@ class NativeDispatcher:
         with self._pending_lock:
             if request.request_id in self._pending:
                 raise BridgeError(ErrorCode.PROTOCOL_VIOLATION, "Duplicate request id")
+            if len(self._pending) >= self._max_active_requests:
+                raise BridgeError(
+                    ErrorCode.TOO_MANY_REQUESTS,
+                    f"Bridge is already handling {self._max_active_requests} active requests",
+                    retryable=True,
+                )
             self._pending[request.request_id] = pending
 
         try:
@@ -144,6 +152,10 @@ class NativeDispatcher:
                 self._channel.send(frame)
         except Exception as exc:
             error = self._as_bridge_error(exc)
+            self._best_effort_abort(
+                request.request_id,
+                "timeout" if error.code == ErrorCode.REQUEST_TIMEOUT else "client_cancelled",
+            )
             self._fail_request(request.request_id, error)
             raise error
 
@@ -287,14 +299,10 @@ class NativeDispatcher:
                 expected_seq=pending.response_seq,
                 max_chunk_bytes=self._max_chunk_bytes,
             )
-            pending.sink.write(data)
-            self._channel.send(
-                envelope(
-                    "flow.ack",
-                    id=request_id,
-                    stream="response",
-                    seq=pending.response_seq,
-                )
+            sequence = pending.response_seq
+            pending.sink.write(
+                data,
+                lambda: self._acknowledge_response(request_id, sequence),
             )
             pending.response_seq += 1
             if end:
@@ -329,6 +337,15 @@ class NativeDispatcher:
                 or len(pair) != 2
                 or not isinstance(pair[0], str)
                 or not isinstance(pair[1], str)
+                or not 1 <= len(pair[0]) <= 256
+                or len(pair[1]) > 16384
+                or not pair[0].isascii()
+                or any(
+                    not (character.isalnum() or character in "!#$%&'*+-.^_`|~")
+                    for character in pair[0]
+                )
+                or "\r" in pair[1]
+                or "\n" in pair[1]
             ):
                 raise BridgeError(ErrorCode.PROTOCOL_VIOLATION, "Invalid response header pair")
             headers.append(Header(pair[0], pair[1]))
@@ -349,6 +366,29 @@ class NativeDispatcher:
         self._record_error(error)
         pending.request_window.close(error)
         pending.sink.fail(error)
+
+    def _acknowledge_response(self, request_id: str, sequence: int) -> None:
+        if self._closed.is_set():
+            return
+        try:
+            self._channel.send(
+                envelope(
+                    "flow.ack",
+                    id=request_id,
+                    stream="response",
+                    seq=sequence,
+                )
+            )
+        except Exception as exc:
+            self._record_error(self._as_bridge_error(exc))
+
+    def _best_effort_abort(self, request_id: str, reason: str) -> None:
+        if self._closed.is_set():
+            return
+        try:
+            self._channel.send(envelope("request.abort", id=request_id, reason=reason))
+        except Exception:
+            return
 
     def _record_error(self, error: BridgeError) -> None:
         self._last_error_code = str(error.code)

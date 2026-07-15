@@ -1,0 +1,59 @@
+name: Windows CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-package:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Run Python tests
+        run: python .\tools\run_v2_tests.py
+
+      - name: Run extension tests and checks
+        run: |
+          node --test .\chrome-extension\test\*.test.js
+          node .\tools\check_extension.mjs
+          node .\tools\check_extension_identity.mjs
+          node .\tools\check_offscreen.mjs
+
+      - name: Check architecture
+        run: python .\tools\check_architecture.py
+
+      - name: Build packaged Native Host
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_native_host.ps1 `
+            -Python (Get-Command python).Source `
+            -DistRoot .\dist-ci
+
+      - name: Smoke-test packaged Native Host
+        run: python .\tools\smoke_native_exe.py .\dist-ci\browser-ai-bridge\browser-ai-bridge.exe
+
+      - name: Upload Windows Native Host artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-ai-bridge-windows
+          path: .\dist-ci\browser-ai-bridge
+          if-no-files-found: error

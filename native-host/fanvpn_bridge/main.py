@@ -27,6 +27,7 @@ def run(config_path: Path) -> int:
         channel,
         max_chunk_bytes=config.protocol.max_chunk_bytes,
         max_in_flight=config.protocol.max_in_flight,
+        max_active_requests=config.protocol.max_active_requests,
         request_timeout_seconds=config.protocol.request_timeout_seconds,
     )
     dispatcher.start()
