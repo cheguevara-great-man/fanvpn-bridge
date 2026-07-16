@@ -121,14 +121,16 @@ if ($Mode -eq 'Direct') {
         '--proxy-server=http://127.0.0.1:18889',
         '--proxy-bypass-list=127.0.0.1;localhost',
         '--new-window'
-    ) + @($CodeArguments)
+    ) + @($CodeArguments | Where-Object { $null -ne $_ -and $_ -ne '' })
 } else {
     Stop-DirectProxy
     & (Join-Path $PSScriptRoot 'set_codex_network_mode.ps1') -Mode $Mode
     & (Join-Path $PSScriptRoot 'set_vscode_claude_network_mode.ps1') -Mode $claudeMode
     $env:CODEX_REFRESH_TOKEN_URL_OVERRIDE = 'http://127.0.0.1:18888/auth-openai/oauth/token'
     $env:CODEX_REVOKE_TOKEN_URL_OVERRIDE = 'http://127.0.0.1:18888/auth-openai/oauth/revoke'
-    $launchArguments = @('--new-window') + @($CodeArguments)
+    $launchArguments = @('--new-window') + @(
+        $CodeArguments | Where-Object { $null -ne $_ -and $_ -ne '' }
+    )
 }
 $noProxy = @($env:NO_PROXY -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 foreach ($entry in @('127.0.0.1', 'localhost')) {
