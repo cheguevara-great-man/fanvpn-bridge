@@ -18,6 +18,14 @@ from urllib.parse import urlsplit
 
 from .config import BridgeConfig
 from .contracts import EgressRequest, Header, HealthSnapshotProvider, RequestDispatcher, ResponseSink
+from .diagnostics import (
+    DiagnosticOptions,
+    diagnostic_body_preview,
+    diagnostic_headers,
+    diagnostic_url,
+    load_diagnostic_options,
+    request_family,
+)
 from .errors import BridgeError, ErrorCode
 from .routing import RouteTable
 
@@ -51,6 +59,7 @@ class _RelayMetrics:
     first_body_ms: int | None
     total_ms: int
     complete: bool
+    response_preview: bytes = b""
 
 
 class QueueResponseSink(ResponseSink):
@@ -105,11 +114,13 @@ class BridgeHTTPServer(ThreadingHTTPServer):
         routes: RouteTable,
         dispatcher: RequestDispatcher,
         health: HealthSnapshotProvider,
+        diagnostics: DiagnosticOptions,
     ) -> None:
         self.bridge_config = config
         self.routes = routes
         self.dispatcher = dispatcher
         self.health = health
+        self.diagnostics = diagnostics
         super().__init__(server_address, BridgeRequestHandler)
 
 
@@ -144,9 +155,11 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         request_id = uuid.uuid4().hex
         request_started = time.monotonic()
         route_name: str | None = None
+        family = "none"
         try:
             self._validate_local_request(server)
         except BridgeError as error:
+            self._discard_small_rejected_body()
             self.close_connection = True
             self._send_bridge_error(error, request_id, head_only=method == "HEAD")
             return
@@ -184,8 +197,19 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         try:
             route = server.routes.resolve_local_target(self.path)
             route_name = route.name
+            family = request_family(route)
             route_config = server.bridge_config.routes[route.name]
             headers = self._request_headers(route_config.request_header_allowlist)
+            if server.diagnostics.enabled and route_name == "chatgpt-backend":
+                _LOG.info(
+                    "request_diagnostic request_id=%s route=%s family=%s method=%s upstream=%s headers=%s",
+                    request_id,
+                    route_name,
+                    family,
+                    method,
+                    diagnostic_url(route, server.diagnostics),
+                    diagnostic_headers(headers, server.diagnostics),
+                )
             body = self._request_body(
                 server.bridge_config.protocol.max_chunk_bytes,
                 max_body_bytes=server.bridge_config.protocol.max_request_body_bytes,
@@ -205,11 +229,16 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 timeout=server.bridge_config.protocol.request_timeout_seconds,
                 head_only=method == "HEAD",
                 started_at=request_started,
+                capture_error_preview=(
+                    server.diagnostics.level == "full" and route_name == "chatgpt-backend"
+                ),
             )
             _LOG.info(
-                "request_complete route=%s method=%s status=%s response_head_ms=%s "
+                "request_complete request_id=%s route=%s family=%s method=%s status=%s response_head_ms=%s "
                 "first_body_ms=%s total_ms=%s complete=%s",
+                request_id,
                 route_name,
+                family,
                 method,
                 metrics.status,
                 metrics.response_head_ms,
@@ -217,11 +246,22 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 metrics.total_ms,
                 metrics.complete,
             )
+            if metrics.response_preview:
+                _LOG.info(
+                    "response_diagnostic request_id=%s route=%s family=%s status=%s preview=%s",
+                    request_id,
+                    route_name,
+                    family,
+                    metrics.status,
+                    diagnostic_body_preview(metrics.response_preview),
+                )
         except BridgeError as error:
             if route_name is not None:
                 _LOG.warning(
-                    "request_failed route=%s method=%s code=%s elapsed_ms=%s",
+                    "request_failed request_id=%s route=%s family=%s method=%s code=%s elapsed_ms=%s",
+                    request_id,
                     route_name,
+                    family,
                     method,
                     error.code,
                     _elapsed_ms(request_started),
@@ -350,6 +390,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         timeout: float,
         head_only: bool,
         started_at: float | None = None,
+        capture_error_preview: bool = False,
     ) -> _RelayMetrics:
         server = cast(BridgeHTTPServer, self.server)
         started_at = started_at if started_at is not None else time.monotonic()
@@ -357,6 +398,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         response_status: int | None = None
         response_head_ms: int | None = None
         first_body_ms: int | None = None
+        response_preview = bytearray()
         idle_deadline = time.monotonic() + timeout
         while True:
             remaining = idle_deadline - time.monotonic()
@@ -400,6 +442,10 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 if data and not head_only:
                     if first_body_ms is None:
                         first_body_ms = _elapsed_ms(started_at)
+                    if capture_error_preview and response_status is not None and response_status >= 400:
+                        remaining = 4096 - len(response_preview)
+                        if remaining > 0:
+                            response_preview.extend(data[:remaining])
                     self._write_chunk(data)
                 if on_consumed is not None:
                     on_consumed()
@@ -416,6 +462,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                     first_body_ms=first_body_ms,
                     total_ms=_elapsed_ms(started_at),
                     complete=True,
+                    response_preview=bytes(response_preview),
                 )
             if event.kind == "error":
                 error = event.value
@@ -428,6 +475,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                         first_body_ms=first_body_ms,
                         total_ms=_elapsed_ms(started_at),
                         complete=False,
+                        response_preview=bytes(response_preview),
                     )
                 if isinstance(error, BridgeError):
                     raise error
@@ -442,6 +490,31 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         else:
             self.wfile.write(b"0\r\n\r\n")
         self.wfile.flush()
+
+    def _discard_small_rejected_body(self) -> None:
+        """Avoid a Windows TCP reset when rejecting a small request body early."""
+
+        raw_length = self.headers.get("Content-Length")
+        if raw_length is None:
+            return
+        try:
+            remaining = int(raw_length, 10)
+        except ValueError:
+            return
+        if remaining <= 0 or remaining > 65536:
+            return
+        previous_timeout = self.connection.gettimeout()
+        try:
+            self.connection.settimeout(0.25)
+            while remaining:
+                chunk = self.rfile.read(min(remaining, 8192))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+        except (OSError, TimeoutError):
+            pass
+        finally:
+            self.connection.settimeout(previous_timeout)
 
     def _send_health(self, server: BridgeHTTPServer, *, readiness: bool = False) -> None:
         snapshot = server.health.snapshot()
@@ -560,4 +633,5 @@ def create_http_server(
         routes=routes,
         dispatcher=dispatcher,
         health=health,
+        diagnostics=load_diagnostic_options(),
     )

@@ -21,6 +21,11 @@
       "remove_path_prefix": "",
       "probe_path": "/models"
     },
+    "chatgpt-backend": {
+      "upstream_base_url": "https://chatgpt.com/backend-api",
+      "remove_path_prefix": "",
+      "probe_path": "/codex/models"
+    },
     "auth-openai": {
       "upstream_base_url": "https://auth.openai.com",
       "remove_path_prefix": "",

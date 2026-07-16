@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('Browser', 'Direct')]
+    [ValidateSet('Browser', 'BrowserLean', 'BrowserFull', 'Direct')]
     [string]$Mode,
 
     [Parameter(ValueFromRemainingArguments)]
@@ -9,6 +9,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$claudeMode = if ($Mode -eq 'Direct') { 'Direct' } else { 'Browser' }
 $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $runtimeDirectory = Join-Path $env:LOCALAPPDATA 'FanVPNBridge'
 $credentialPath = Join-Path $runtimeDirectory 'direct-proxy.json'
@@ -106,7 +107,7 @@ if ($Mode -eq 'Direct') {
     Start-DirectProxy
     try {
         & (Join-Path $PSScriptRoot 'set_codex_network_mode.ps1') -Mode $Mode
-        & (Join-Path $PSScriptRoot 'set_vscode_claude_network_mode.ps1') -Mode $Mode
+        & (Join-Path $PSScriptRoot 'set_vscode_claude_network_mode.ps1') -Mode $claudeMode
     } catch {
         Stop-DirectProxy
         throw
@@ -124,7 +125,7 @@ if ($Mode -eq 'Direct') {
 } else {
     Stop-DirectProxy
     & (Join-Path $PSScriptRoot 'set_codex_network_mode.ps1') -Mode $Mode
-    & (Join-Path $PSScriptRoot 'set_vscode_claude_network_mode.ps1') -Mode $Mode
+    & (Join-Path $PSScriptRoot 'set_vscode_claude_network_mode.ps1') -Mode $claudeMode
     $env:CODEX_REFRESH_TOKEN_URL_OVERRIDE = 'http://127.0.0.1:18888/auth-openai/oauth/token'
     $env:CODEX_REVOKE_TOKEN_URL_OVERRIDE = 'http://127.0.0.1:18888/auth-openai/oauth/revoke'
     $launchArguments = @('--new-window') + @($CodeArguments)

@@ -9,6 +9,7 @@ import unittest
 
 from fanvpn_bridge.config import parse_config
 from fanvpn_bridge.dispatcher import NativeDispatcher
+from fanvpn_bridge.diagnostics import DiagnosticOptions
 from fanvpn_bridge.http_server import create_http_server
 from fanvpn_bridge.routing import RouteTable
 from tests.helpers import FakeExtension, channel_pair
@@ -32,6 +33,10 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
                     "upstream_base_url": "https://chatgpt.com/backend-api/codex",
                     "probe_path": "/models",
                 },
+                "chatgpt-backend": {
+                    "upstream_base_url": "https://chatgpt.com/backend-api",
+                    "probe_path": "/codex/models",
+                },
                 "gemini": {
                     "upstream_base_url": "https://generativelanguage.googleapis.com",
                     "probe_path": "/v1beta/models",
@@ -49,6 +54,10 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
         def responder(head: dict[str, object], body: bytes):
             if str(head["url"]).endswith("/v1/hang"):
                 return None
+            if "/backend-api/ps/plugins/missing" in str(head["url"]):
+                return 404, [["content-type", "application/json"]], [
+                    b'{"detail":"missing endpoint","private":"diagnostic-value"}'
+                ]
             authorization = next(
                 (
                     pair[1]
@@ -118,7 +127,10 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
         self.assertEqual(health["executor"], "offscreen")
         self.assertTrue(health["ready"])
         self.assertEqual(health["mode"], "native-host-http-server")
-        self.assertEqual(health["routes"], ["chatgpt-codex", "gemini", "openai"])
+        self.assertEqual(
+            health["routes"],
+            ["chatgpt-backend", "chatgpt-codex", "gemini", "openai"],
+        )
 
     def test_root_health_ready_and_routes_are_local_diagnostics(self) -> None:
         status, _headers, payload = self.request("GET", "/health")
@@ -131,8 +143,44 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(
             json.loads(payload)["routes"],
-            ["chatgpt-codex", "gemini", "openai"],
+            ["chatgpt-backend", "chatgpt-codex", "gemini", "openai"],
         )
+
+    def test_chatgpt_backend_preserves_product_path_and_account_headers(self) -> None:
+        status, _headers, payload = self.request(
+            "GET",
+            "/chatgpt-backend/ps/plugins/installed?scope=GLOBAL",
+            headers={
+                "Accept": "application/json",
+                "Authorization": "Bearer test-secret",
+                "ChatGPT-Account-ID": "test-account",
+            },
+        )
+        self.assertEqual(status, 200)
+        value = json.loads(payload)
+        self.assertEqual(
+            value["url"],
+            "https://chatgpt.com/backend-api/ps/plugins/installed?scope=GLOBAL",
+        )
+        self.assertTrue(value["authorization_forwarded"])
+        self.assertIn("chatgpt-account-id", value["header_names"])
+
+    def test_full_diagnostics_correlate_url_status_and_failed_response(self) -> None:
+        self.server.diagnostics = DiagnosticOptions("full")
+        with self.assertLogs("fanvpn_bridge.http", level="INFO") as captured:
+            status, _headers, _payload = self.request(
+                "GET",
+                "/chatgpt-backend/ps/plugins/missing?scope=GLOBAL",
+                headers={"Authorization": "Bearer test-secret"},
+            )
+        self.assertEqual(status, 404)
+        rendered = "\n".join(captured.output)
+        self.assertIn("request_diagnostic", rendered)
+        self.assertIn("scope=GLOBAL", rendered)
+        self.assertIn("status=404", rendered)
+        self.assertIn("response_diagnostic", rendered)
+        self.assertIn("missing endpoint", rendered)
+        self.assertNotIn("Bearer test-secret", rendered)
 
     def test_chatgpt_codex_preserves_required_end_to_end_headers(self) -> None:
         status, _headers, payload = self.request(
@@ -174,7 +222,8 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
             )
         self.assertEqual(status, 200)
         line = "\n".join(captured.output)
-        self.assertIn("request_complete route=openai method=GET status=200", line)
+        self.assertIn("route=openai", line)
+        self.assertIn("method=GET status=200", line)
         self.assertIn("response_head_ms=", line)
         self.assertIn("first_body_ms=", line)
         self.assertNotIn("secret-query", line)

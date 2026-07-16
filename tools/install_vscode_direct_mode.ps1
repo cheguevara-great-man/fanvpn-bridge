@@ -31,7 +31,8 @@ if (-not $SkipShortcuts) {
     $desktop = [Environment]::GetFolderPath('Desktop')
     $shell = New-Object -ComObject WScript.Shell
     foreach ($definition in @(
-        @{ Name = 'VS Code - Browser Bridge.lnk'; Mode = 'Browser' },
+        @{ Name = 'VS Code - Browser Bridge.lnk'; Mode = 'BrowserLean' },
+        @{ Name = 'VS Code - Browser Full (Experimental).lnk'; Mode = 'BrowserFull' },
         @{ Name = 'VS Code - Direct US Proxy.lnk'; Mode = 'Direct' }
     )) {
         $shortcut = $shell.CreateShortcut((Join-Path $desktop $definition.Name))
@@ -53,5 +54,5 @@ if (-not $SkipShortcuts) {
 Write-Host 'Optional VS Code direct mode is installed.' -ForegroundColor Green
 Write-Host "Credentials: $destination"
 if (-not $SkipShortcuts) {
-    Write-Host 'Desktop buttons: VS Code - Browser Bridge / VS Code - Direct US Proxy'
+    Write-Host 'Desktop buttons: Browser Lean / Browser Full (Experimental) / Direct US Proxy'
 }

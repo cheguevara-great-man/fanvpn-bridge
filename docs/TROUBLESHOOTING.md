@@ -92,7 +92,7 @@ Codex 的自定义 `model_provider` 只控制模型目录和 Responses 对话。
 Apps、已安装插件同步、远程插件目录和分析服务；没有系统代理时，这些产品后端请求会先超时，
 所以第一条消息慢，而同一进程中的后续消息较快。
 
-2.2.2 的 Browser 模式采用精简配置：
+默认 Browser Lean 采用精简配置：
 
 ```toml
 [features]
@@ -104,19 +104,18 @@ remote_plugin = false
 enabled = false
 ```
 
-使用模式切换脚本时这些值会自动写入，并在切回 Direct 时恢复原值。更新后确认 `/routes` **不包含**
-`chatgpt-backend`，`~/.codex/config.toml` 也没有指向该路由的 `chatgpt_base_url`，然后完全退出并
-重开 VS Code。个人 Skills、本地脚本和手工配置的本地 MCP 不受影响；账号侧 Apps、插件和部分
-产品元数据在精简模式下不可用。
+使用模式切换脚本时这些值会自动写入，并在切换到 Browser Full 或 Direct 时恢复原值。Lean 下
+`~/.codex/config.toml` 不应指向 `chatgpt-backend`。个人 Skills、本地脚本和手工配置的本地 MCP
+不受影响；账号侧 Apps、插件和部分产品元数据在 Lean 中不可用。
 
-2.2.1 曾把整个产品后端指向单一 `chatgpt-backend` route。真实部署中该方案产生约 21 秒的并发失败、
-连续重试并拖慢模型请求，因此已撤回。不要通过手工保留旧配置来“修复”首条延迟。
+Browser Full 会把产品后端指向固定的 `chatgpt-backend` route。此前一次失败测试发生时，Chrome
+代理扩展实际未开启，因此不能据此断定该路由不可行。代理开启后的日志证明链路能够收到真实 HTTP
+响应，但部分插件和账号接口仍返回上游 404；Full 目前是诊断模式，不是稳定模式。
 
 VS Code 界面自身的 `/wham/...` 请求不受 Codex `chatgpt_base_url` 控制；它们可能影响侧栏或账号信息，
 但不属于模型流式请求。不要把这类界面错误和本节的首条对话延迟混在一起判断。
 
-Native Host 会为真实上游请求记录不含 URL、query、正文和认证信息的分段耗时。先复现一条慢消息，
-再在 PowerShell 中查看最近的 Codex 请求：
+Native Host 默认只记录不含 URL、query、正文和认证信息的分段耗时。先复现一条慢消息，再查看：
 
 ```powershell
 Get-Content "$env:LOCALAPPDATA\FanVPNBridge\fanvpn-bridge.log" -Tail 500 |
@@ -126,6 +125,36 @@ Get-Content "$env:LOCALAPPDATA\FanVPNBridge\fanvpn-bridge.log" -Tail 500 |
 `response_head_ms` 表示浏览器取得上游 HTTP 响应头的时间，`first_body_ms` 表示收到第一段
 响应数据的时间，`total_ms` 表示流结束时间。这样可以区分代理/TLS 建连慢、认证刷新慢和模型首段
 输出慢；日志不会包含 Token 或提示词。
+
+### Browser Full 产品后端诊断
+
+先切换 Full 并启用诊断，再完全退出 Chrome 和 VS Code 后重开：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  .\tools\set_codex_network_mode.ps1 -Mode BrowserFull
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  .\tools\set_product_diagnostics.ps1 -Mode Full
+```
+
+复现一次问题后查看同一 `request_id` 对应的请求、结果与失败响应摘要：
+
+```powershell
+Get-Content "$env:LOCALAPPDATA\FanVPNBridge\fanvpn-bridge.log" -Tail 1000 |
+  Select-String 'request_diagnostic|request_complete|request_failed|response_diagnostic'
+```
+
+Full 会在本机日志记录完整 URL、非敏感请求头值，以及 HTTP 4xx/5xx 响应的前 4 KiB。Token、Cookie、
+API Key、Authorization 和账号 ID 始终自动遮盖；模型请求正文和用户输入不会记录。URL/query 与失败
+响应仍可能包含私人标识，收集完成后关闭诊断：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  .\tools\set_product_diagnostics.ps1 -Mode Off
+```
+
+关闭后完全重开 Chrome，使 Native Host 重新读取设置。需要较低风险的路径统计时可用 `-Mode Safe`：
+它只保留路径、query 参数名称和 header 名称，query 值会被遮盖。
 
 ## VS Code 直连模式无法启动
 

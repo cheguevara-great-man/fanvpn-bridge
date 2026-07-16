@@ -98,13 +98,15 @@ Invoke-RestMethod http://127.0.0.1:18888/routes -Proxy $null
 anthropic
 auth-openai
 chatgpt-codex
+chatgpt-backend
 gemini
 gemini-openai
 openai
 ```
 
-2.2.2 起不再包含 `chatgpt-backend`。如果仍看到该路由，说明 Chrome 当前连接的还是 2.2.1 Host，
-请核对安装输出中的 Native Host 路径并完全重开 Chrome。
+`chatgpt-backend` 的存在不代表默认会使用它：Browser Lean 不设置产品后端地址，只有显式选择
+Browser Full 才会发起这类请求。如果该路由缺失，说明运行中的 Host 不是当前版本，请核对安装输出中的
+Native Host 路径并完全重开 Chrome。
 
 如需完整诊断，可运行：
 
