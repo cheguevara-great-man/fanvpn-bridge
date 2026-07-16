@@ -108,12 +108,22 @@ enabled = false
 `~/.codex/config.toml` 不应指向 `chatgpt-backend`。个人 Skills、本地脚本和手工配置的本地 MCP
 不受影响；账号侧 Apps、插件和部分产品元数据在 Lean 中不可用。
 
-Browser Full 会把产品后端指向固定的 `chatgpt-backend` route。此前一次失败测试发生时，Chrome
-代理扩展实际未开启，因此不能据此断定该路由不可行。代理开启后的日志证明链路能够收到真实 HTTP
-响应，但部分插件和账号接口仍返回上游 404；Full 目前是诊断模式，不是稳定模式。
+Browser Full 会把 app-server 产品后端指向固定的 `chatgpt-backend` route，同时把 VS Code 扩展
+自身的 `/wham/...` 界面请求切换到 `localhost:8000/api`。后者此前不受 `chatgpt_base_url`
+控制，直接连接失败时会让 Codex 侧栏挂载延迟约一分钟；2.4.0 起由独立的受限 loopback 入口
+接入同一条浏览器链路。
 
-VS Code 界面自身的 `/wham/...` 请求不受 Codex `chatgpt_base_url` 控制；它们可能影响侧栏或账号信息，
-但不属于模型流式请求。不要把这类界面错误和本节的首条对话延迟混在一起判断。
+检查两个本地入口及 VS Code 隐藏设置：
+
+```powershell
+Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort 18888,8000 -ErrorAction SilentlyContinue
+(Get-Content "$env:APPDATA\Code\User\settings.json" -Raw | ConvertFrom-Json).'chatgpt.apiEndpoint'
+Invoke-WebRequest http://localhost:8000/api/wham/accounts/check -Proxy $null -UseBasicParsing
+```
+
+Browser 模式下应显示 `localhost`，账号检查应返回 HTTP 200。Direct 模式会恢复切换前的设置。
+如果 8000 被其他程序占用，Host 会在日志写入 `vscode_product_api_unavailable`，模式启动器也会
+在打开 VS Code 前停止并给出明确错误；先释放该本地端口再重启 Chrome/Host。
 
 Native Host 默认只记录不含 URL、query、正文和认证信息的分段耗时。先复现一条慢消息，再查看：
 

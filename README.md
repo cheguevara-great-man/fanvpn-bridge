@@ -86,6 +86,7 @@ Codex、Claude Code 或 CC Switch。
 | OpenAI Responses API | `http://127.0.0.1:18888/openai/v1` |
 | ChatGPT Codex backend | `http://127.0.0.1:18888/chatgpt-codex` |
 | ChatGPT 产品后端（仅 Browser Full） | `http://127.0.0.1:18888/chatgpt-backend` |
+| VS Code Codex 界面产品接口（Browser 模式自动管理） | `http://127.0.0.1:8000/api` |
 | Codex 登录 Token Exchange、刷新和注销 | `http://127.0.0.1:18888/auth-openai` |
 | Anthropic Messages API | `http://127.0.0.1:18888/anthropic` |
 | Gemini Native | `http://127.0.0.1:18888/gemini` |

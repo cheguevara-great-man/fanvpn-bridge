@@ -6,6 +6,8 @@ import socket
 import threading
 import time
 import unittest
+from pathlib import Path
+import tempfile
 
 from fanvpn_bridge.config import parse_config
 from fanvpn_bridge.dispatcher import NativeDispatcher
@@ -17,6 +19,12 @@ from tests.helpers import FakeExtension, channel_pair
 
 class HttpGatewayIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.auth_path = Path(self.temp.name) / "auth.json"
+        self.auth_path.write_text(
+            json.dumps({"tokens": {"access_token": "bridge-mcp-token", "account_id": "acct-test"}}),
+            encoding="utf-8",
+        )
         config_raw = {
             "listen": {"host": "127.0.0.1", "port": 0},
             "protocol": {
@@ -34,8 +42,8 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
                     "probe_path": "/models",
                 },
                 "chatgpt-backend": {
-                    "upstream_base_url": "https://chatgpt.com/backend-api",
-                    "probe_path": "/codex/models",
+                    "upstream_base_url": "https://chatgpt.com",
+                    "probe_path": "/backend-api/codex/models",
                 },
                 "gemini": {
                     "upstream_base_url": "https://generativelanguage.googleapis.com",
@@ -58,6 +66,11 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
                 return 404, [["content-type", "application/json"]], [
                     b'{"detail":"missing endpoint","private":"diagnostic-value"}'
                 ]
+            if str(head["url"]).endswith("/backend-api/ps/mcp") and b"diagnostic-failure" in body:
+                return 400, [
+                    ["content-type", "text/plain"],
+                    ["www-authenticate", 'Bearer realm="codex-mcp"'],
+                ], [b"Bad Request"]
             authorization = next(
                 (
                     pair[1]
@@ -70,7 +83,7 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
                 {
                     "url": head["url"],
                     "body_bytes": len(body),
-                    "authorization_forwarded": authorization == "Bearer test-secret",
+                    "authorization_forwarded": authorization is not None,
                     "header_names": sorted(
                         pair[0].lower()
                         for pair in head["headers"]
@@ -98,19 +111,48 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
             RouteTable(self.config.routes),
             self.dispatcher,
             self.dispatcher,
+            codex_auth_path=self.auth_path,
         )
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.port = self.server.server_address[1]
+        self.product_server = create_http_server(
+            self.config,
+            RouteTable(self.config.routes),
+            self.dispatcher,
+            self.dispatcher,
+            codex_auth_path=self.auth_path,
+            listen_port=0,
+            product_api_alias=True,
+        )
+        self.product_thread = threading.Thread(
+            target=self.product_server.serve_forever,
+            daemon=True,
+        )
+        self.product_thread.start()
+        self.product_port = self.product_server.server_address[1]
 
     def tearDown(self) -> None:
         self.server.shutdown()
         self.server.server_close()
+        self.product_server.shutdown()
+        self.product_server.server_close()
         self.dispatcher.shutdown()
         self.thread.join(2)
+        self.product_thread.join(2)
+        self.temp.cleanup()
 
     def request(self, method: str, path: str, body: bytes | None = None, headers=None):
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        connection.request(method, path, body=body, headers=headers or {})
+        response = connection.getresponse()
+        payload = response.read()
+        result = (response.status, dict(response.getheaders()), payload)
+        connection.close()
+        return result
+
+    def product_request(self, method: str, path: str, body: bytes | None = None, headers=None):
+        connection = http.client.HTTPConnection("127.0.0.1", self.product_port, timeout=5)
         connection.request(method, path, body=body, headers=headers or {})
         response = connection.getresponse()
         payload = response.read()
@@ -149,7 +191,7 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
     def test_chatgpt_backend_preserves_product_path_and_account_headers(self) -> None:
         status, _headers, payload = self.request(
             "GET",
-            "/chatgpt-backend/ps/plugins/installed?scope=GLOBAL",
+            "/chatgpt-backend/backend-api/ps/plugins/installed?scope=GLOBAL",
             headers={
                 "Accept": "application/json",
                 "Authorization": "Bearer test-secret",
@@ -165,12 +207,44 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
         self.assertTrue(value["authorization_forwarded"])
         self.assertIn("chatgpt-account-id", value["header_names"])
 
+    def test_chatgpt_backend_routes_official_hosted_plugin_mcp_path(self) -> None:
+        status, _headers, payload = self.request(
+            "POST",
+            "/chatgpt-backend/backend-api/ps/mcp",
+            b"{}",
+            {"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 200)
+        value = json.loads(payload)
+        self.assertEqual(value["url"], "https://chatgpt.com/backend-api/ps/mcp")
+        self.assertTrue(value["authorization_forwarded"])
+        self.assertIn("chatgpt-account-id", value["header_names"])
+
+    def test_vscode_product_api_alias_routes_wham_through_fixed_chatgpt_route(self) -> None:
+        status, _headers, payload = self.product_request(
+            "GET",
+            "/api/wham/accounts/check?source=vscode",
+        )
+        self.assertEqual(status, 200)
+        value = json.loads(payload)
+        self.assertEqual(
+            value["url"],
+            "https://chatgpt.com/backend-api/wham/accounts/check?source=vscode",
+        )
+        self.assertTrue(value["authorization_forwarded"])
+        self.assertIn("chatgpt-account-id", value["header_names"])
+
+    def test_vscode_product_api_alias_is_not_an_open_proxy(self) -> None:
+        status, _headers, payload = self.product_request("GET", "/openai/v1/models")
+        self.assertEqual(status, 404)
+        self.assertEqual(json.loads(payload)["error"]["code"], "ROUTE_NOT_FOUND")
+
     def test_full_diagnostics_correlate_url_status_and_failed_response(self) -> None:
         self.server.diagnostics = DiagnosticOptions("full")
         with self.assertLogs("fanvpn_bridge.http", level="INFO") as captured:
             status, _headers, _payload = self.request(
                 "GET",
-                "/chatgpt-backend/ps/plugins/missing?scope=GLOBAL",
+                "/chatgpt-backend/backend-api/ps/plugins/missing?scope=GLOBAL",
                 headers={"Authorization": "Bearer test-secret"},
             )
         self.assertEqual(status, 404)
@@ -181,6 +255,23 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
         self.assertIn("response_diagnostic", rendered)
         self.assertIn("missing endpoint", rendered)
         self.assertNotIn("Bearer test-secret", rendered)
+
+    def test_full_mcp_diagnostics_capture_redacted_request_and_response_headers(self) -> None:
+        self.server.diagnostics = DiagnosticOptions("full")
+        body = b'{"method":"diagnostic-failure","access_token":"must-not-log"}'
+        with self.assertLogs("fanvpn_bridge.http", level="INFO") as captured:
+            status, _headers, _payload = self.request(
+                "POST",
+                "/chatgpt-backend/backend-api/ps/mcp",
+                body,
+                {"Content-Type": "application/json"},
+            )
+        self.assertEqual(status, 400)
+        rendered = "\n".join(captured.output)
+        self.assertIn("request_body_diagnostic", rendered)
+        self.assertIn("diagnostic-failure", rendered)
+        self.assertIn("www-authenticate", rendered)
+        self.assertNotIn("must-not-log", rendered)
 
     def test_chatgpt_codex_preserves_required_end_to_end_headers(self) -> None:
         status, _headers, payload = self.request(
@@ -220,6 +311,9 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
                 "/openai/v1/models?sensitive=secret-query",
                 headers={"Authorization": "Bearer test-secret"},
             )
+            # The client can finish reading just before the handler emits its
+            # post-relay timing line on another thread.
+            time.sleep(0.05)
         self.assertEqual(status, 200)
         line = "\n".join(captured.output)
         self.assertIn("route=openai", line)

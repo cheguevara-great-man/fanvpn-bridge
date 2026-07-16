@@ -69,6 +69,10 @@ class ProductDiagnosticTests(unittest.TestCase):
         self.assertNotIn("secret-token", rendered)
         self.assertNotIn("secret-key", rendered)
 
+    def test_codex_mcp_path_has_its_own_family(self) -> None:
+        route = self.route("/api/codex/ps/mcp")
+        self.assertEqual(request_family(route), "apps-mcp")
+
 
 if __name__ == "__main__":
     unittest.main()

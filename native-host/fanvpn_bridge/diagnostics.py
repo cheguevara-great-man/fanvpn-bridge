@@ -71,6 +71,7 @@ def request_family(route: ResolvedRoute) -> str:
         ("/ps/plugins/list", "plugins-list"),
         ("/ps/plugins/workspace/", "plugins-workspace"),
         ("/ps/mcp", "apps-mcp"),
+        ("/api/codex/ps/mcp", "apps-mcp"),
         ("/codex/analytics-events/", "analytics"),
     )
     for prefix, family in families:

@@ -41,11 +41,33 @@ def run(config_path: Path) -> int:
         daemon=True,
     )
     server_thread.start()
+    product_server = None
+    try:
+        product_server = create_http_server(
+            config,
+            routes,
+            dispatcher,
+            dispatcher,
+            listen_port=8000,
+            product_api_alias=True,
+        )
+    except OSError as error:
+        log.warning("vscode_product_api_unavailable listen=%s:8000 error=%s", config.listen_host, error)
+    if product_server is not None:
+        threading.Thread(
+            target=product_server.serve_forever,
+            name="fanvpn-vscode-product-api",
+            daemon=True,
+        ).start()
+        log.info("vscode_product_api_ready listen=%s:8000", config.listen_host)
     log.info("ready pid=%s listen=%s:%s", os.getpid(), config.listen_host, config.listen_port)
     dispatcher.wait_closed()
     log.info("native_channel_closed pid=%s", os.getpid())
     server.shutdown()
     server.server_close()
+    if product_server is not None:
+        product_server.shutdown()
+        product_server.server_close()
     return 0
 
 

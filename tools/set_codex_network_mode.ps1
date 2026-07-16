@@ -118,7 +118,7 @@ $firstTable = [regex]::Match($content, '(?m)^\s*\[')
 $topLength = if ($firstTable.Success) { $firstTable.Index } else { $content.Length }
 $top = $content.Substring(0, $topLength)
 $tables = $content.Substring($topLength)
-$legacyBackendPattern = '(?m)^chatgpt_base_url\s*=\s*["'']http://127\.0\.0\.1:18888/chatgpt-backend/?["'']\s*(?:#.*)?(?:\r?\n|$)'
+$legacyBackendPattern = '(?m)^chatgpt_base_url\s*=\s*["'']http://127\.0\.0\.1:18888/chatgpt-backend(?:/backend-api)?/?["'']\s*(?:#.*)?(?:\r?\n|$)'
 $top = [regex]::Replace($top, $legacyBackendPattern, '')
 if ($previousChatgptLine -and -not [regex]::IsMatch($top, '(?m)^chatgpt_base_url\s*=')) {
     $top = $previousChatgptLine + "`r`n" + $top.TrimStart()
@@ -148,7 +148,7 @@ if ($effectiveMode -eq 'BrowserFull') {
     $chatgptManaged = @"
 $chatgptBegin
 # previous-chatgpt-base-url-base64: $fullRestoreValue
-chatgpt_base_url = "http://127.0.0.1:18888/chatgpt-backend/"
+chatgpt_base_url = "http://127.0.0.1:18888/chatgpt-backend/backend-api/"
 $chatgptEnd
 "@
     $content = $chatgptManaged.Trim() + "`r`n" + $content.TrimStart()
@@ -199,6 +199,44 @@ if ($effectiveMode -eq 'BrowserLean') {
     foreach ($setting in $settings) {
         $content = Set-TomlKeyLine -Text $content -Table $setting.Table -Key $setting.Key -Line $restore[$setting.Id]
     }
+}
+
+# Current Codex builds still attempt the experimental shell snapshot on
+# Windows PowerShell even though that shell is unsupported. A new thread can
+# wait several seconds before the attempt fails. Browser modes disable only
+# that ineffective experiment and Direct restores the user's original value.
+$snapshotBegin = '# BEGIN Browser AI Bridge managed Windows compatibility'
+$snapshotEnd = '# END Browser AI Bridge managed Windows compatibility'
+$snapshotPattern = '(?ms)^' + [regex]::Escape($snapshotBegin) + '.*?^' +
+    [regex]::Escape($snapshotEnd) + '\s*'
+$snapshotMatch = [regex]::Match($content, $snapshotPattern)
+$previousSnapshotLine = $null
+if ($snapshotMatch.Success) {
+    $saved = [regex]::Match(
+        $snapshotMatch.Value,
+        '(?m)^# previous-shell-snapshot-base64: (?<value>[A-Za-z0-9+/=]+|absent)\s*$'
+    )
+    if (-not $saved.Success) {
+        throw 'Managed Windows compatibility block is missing restore metadata.'
+    }
+    $previousSnapshotLine = ConvertFrom-RestoreValue $saved.Groups['value'].Value
+    $content = [regex]::Replace($content, $snapshotPattern, '', 1)
+}
+
+if ($effectiveMode -ne 'Direct') {
+    if (-not $snapshotMatch.Success) {
+        $previousSnapshotLine = Get-TomlKeyLine -Text $content -Table 'features' -Key 'shell_snapshot'
+    }
+    $encodedSnapshot = ConvertTo-RestoreValue $previousSnapshotLine
+    $content = Set-TomlKeyLine -Text $content -Table 'features' -Key 'shell_snapshot' -Line 'shell_snapshot = false'
+    $snapshotBlock = @(
+        $snapshotBegin,
+        "# previous-shell-snapshot-base64: $encodedSnapshot",
+        $snapshotEnd
+    )
+    $content = ($snapshotBlock -join "`r`n") + "`r`n" + $content.TrimStart()
+} elseif ($snapshotMatch.Success) {
+    $content = Set-TomlKeyLine -Text $content -Table 'features' -Key 'shell_snapshot' -Line $previousSnapshotLine
 }
 
 $provider = if ($effectiveMode -eq 'Direct') { 'browser_ai_direct' } else { 'browser_ai_bridge' }
@@ -252,4 +290,7 @@ if ($effectiveMode -eq 'BrowserLean') {
     Write-Host 'Browser full mode: ChatGPT product backend, Apps, and plugin settings are enabled as configured.'
 } else {
     Write-Host 'Direct mode: previously saved Apps, plugin, and analytics settings are restored.'
+}
+if ($effectiveMode -ne 'Direct') {
+    Write-Host 'Windows compatibility: unsupported PowerShell shell snapshot is disabled.'
 }

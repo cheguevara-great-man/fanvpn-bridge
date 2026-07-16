@@ -13,9 +13,11 @@ import time
 import uuid
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Callable, Iterable, Sequence, cast
 from urllib.parse import urlsplit
 
+from .codex_product_auth import CodexProductAuth
 from .config import BridgeConfig
 from .contracts import EgressRequest, Header, HealthSnapshotProvider, RequestDispatcher, ResponseSink
 from .diagnostics import (
@@ -60,6 +62,7 @@ class _RelayMetrics:
     total_ms: int
     complete: bool
     response_preview: bytes = b""
+    response_headers: tuple[Header, ...] = ()
 
 
 class QueueResponseSink(ResponseSink):
@@ -115,12 +118,16 @@ class BridgeHTTPServer(ThreadingHTTPServer):
         dispatcher: RequestDispatcher,
         health: HealthSnapshotProvider,
         diagnostics: DiagnosticOptions,
+        product_auth: CodexProductAuth,
+        product_api_alias: bool = False,
     ) -> None:
         self.bridge_config = config
         self.routes = routes
         self.dispatcher = dispatcher
         self.health = health
         self.diagnostics = diagnostics
+        self.product_auth = product_auth
+        self.product_api_alias = product_api_alias
         super().__init__(server_address, BridgeRequestHandler)
 
 
@@ -195,11 +202,21 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            route = server.routes.resolve_local_target(self.path)
+            local_target = self.path
+            if server.product_api_alias:
+                if self.path == "/api" or self.path.startswith("/api/"):
+                    local_target = "/chatgpt-backend/backend-api" + self.path[4:]
+                else:
+                    raise BridgeError(
+                        ErrorCode.ROUTE_NOT_FOUND,
+                        "The VS Code product API listener only accepts /api paths",
+                    )
+            route = server.routes.resolve_local_target(local_target)
             route_name = route.name
             family = request_family(route)
             route_config = server.bridge_config.routes[route.name]
             headers = self._request_headers(route_config.request_header_allowlist)
+            headers = server.product_auth.attach(route, headers)
             if server.diagnostics.enabled and route_name == "chatgpt-backend":
                 _LOG.info(
                     "request_diagnostic request_id=%s route=%s family=%s method=%s upstream=%s headers=%s",
@@ -215,6 +232,9 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 max_body_bytes=server.bridge_config.protocol.max_request_body_bytes,
                 timeout=server.bridge_config.protocol.request_timeout_seconds,
             )
+            request_preview = bytearray()
+            if server.diagnostics.level == "full" and family == "apps-mcp":
+                body = _capture_preview(body, request_preview)
             sink = QueueResponseSink(server.bridge_config.protocol.max_in_flight)
             request = EgressRequest(
                 request_id=request_id,
@@ -248,12 +268,21 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             )
             if metrics.response_preview:
                 _LOG.info(
-                    "response_diagnostic request_id=%s route=%s family=%s status=%s preview=%s",
+                    "response_diagnostic request_id=%s route=%s family=%s status=%s headers=%s preview=%s",
                     request_id,
                     route_name,
                     family,
                     metrics.status,
+                    diagnostic_headers(list(metrics.response_headers), server.diagnostics),
                     diagnostic_body_preview(metrics.response_preview),
+                )
+            if metrics.status >= 400 and request_preview:
+                _LOG.info(
+                    "request_body_diagnostic request_id=%s route=%s family=%s preview=%s",
+                    request_id,
+                    route_name,
+                    family,
+                    diagnostic_body_preview(bytes(request_preview)),
                 )
         except BridgeError as error:
             if route_name is not None:
@@ -399,6 +428,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         response_head_ms: int | None = None
         first_body_ms: int | None = None
         response_preview = bytearray()
+        response_headers: tuple[Header, ...] = ()
         idle_deadline = time.monotonic() + timeout
         while True:
             remaining = idle_deadline - time.monotonic()
@@ -418,6 +448,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                     raise BridgeError(ErrorCode.PROTOCOL_VIOLATION, "Duplicate response head")
                 status, headers = cast(tuple[int, list[Header]], event.value)
                 response_status = status
+                response_headers = tuple(headers)
                 response_head_ms = _elapsed_ms(started_at)
                 self.send_response(status)
                 excluded = _HOP_BY_HOP | _BROWSER_DECODED_RESPONSE_HEADERS
@@ -463,6 +494,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                     total_ms=_elapsed_ms(started_at),
                     complete=True,
                     response_preview=bytes(response_preview),
+                    response_headers=response_headers,
                 )
             if event.kind == "error":
                 error = event.value
@@ -476,6 +508,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                         total_ms=_elapsed_ms(started_at),
                         complete=False,
                         response_preview=bytes(response_preview),
+                        response_headers=response_headers,
                     )
                 if isinstance(error, BridgeError):
                     raise error
@@ -602,6 +635,14 @@ def _elapsed_ms(started_at: float) -> int:
     return max(0, round((time.monotonic() - started_at) * 1000))
 
 
+def _capture_preview(body: Iterable[bytes], preview: bytearray) -> Iterable[bytes]:
+    for chunk in body:
+        remaining = 4096 - len(preview)
+        if remaining > 0:
+            preview.extend(chunk[:remaining])
+        yield chunk
+
+
 def _is_allowed_host(value: str | None, listen_port: int) -> bool:
     if not value:
         return False
@@ -626,12 +667,19 @@ def create_http_server(
     routes: RouteTable,
     dispatcher: RequestDispatcher,
     health: HealthSnapshotProvider,
+    *,
+    codex_auth_path: Path | None = None,
+    listen_port: int | None = None,
+    product_api_alias: bool = False,
 ) -> BridgeHTTPServer:
+    auth_path = codex_auth_path or Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "auth.json"
     return BridgeHTTPServer(
-        (config.listen_host, config.listen_port),
+        (config.listen_host, config.listen_port if listen_port is None else listen_port),
         config=config,
         routes=routes,
         dispatcher=dispatcher,
         health=health,
         diagnostics=load_diagnostic_options(),
+        product_auth=CodexProductAuth(auth_path),
+        product_api_alias=product_api_alias,
     )

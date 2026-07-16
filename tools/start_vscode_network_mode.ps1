@@ -107,6 +107,7 @@ if ($Mode -eq 'Direct') {
     Start-DirectProxy
     try {
         & (Join-Path $PSScriptRoot 'set_codex_network_mode.ps1') -Mode $Mode
+        & (Join-Path $PSScriptRoot 'set_vscode_codex_product_endpoint.ps1') -Mode Direct
         & (Join-Path $PSScriptRoot 'set_vscode_claude_network_mode.ps1') -Mode $claudeMode
     } catch {
         Stop-DirectProxy
@@ -125,7 +126,16 @@ if ($Mode -eq 'Direct') {
 } else {
     Stop-DirectProxy
     & (Join-Path $PSScriptRoot 'set_codex_network_mode.ps1') -Mode $Mode
+    & (Join-Path $PSScriptRoot 'set_vscode_codex_product_endpoint.ps1') -Mode Browser
     & (Join-Path $PSScriptRoot 'set_vscode_claude_network_mode.ps1') -Mode $claudeMode
+    try {
+        $productApiReady = Invoke-RestMethod 'http://127.0.0.1:8000/ready' -Proxy $null -TimeoutSec 2
+    } catch {
+        throw 'VS Code product API bridge is not ready on 127.0.0.1:8000. Update/restart the Native Host and verify Chrome is connected.'
+    }
+    if (-not $productApiReady.ready -or $productApiReady.mode -ne 'native-host-http-server') {
+        throw 'The service on 127.0.0.1:8000 is not a ready Browser AI Bridge product endpoint.'
+    }
     $env:CODEX_REFRESH_TOKEN_URL_OVERRIDE = 'http://127.0.0.1:18888/auth-openai/oauth/token'
     $env:CODEX_REVOKE_TOKEN_URL_OVERRIDE = 'http://127.0.0.1:18888/auth-openai/oauth/revoke'
     $launchArguments = @('--new-window') + @(

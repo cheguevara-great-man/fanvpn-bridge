@@ -73,7 +73,15 @@ Exchange、刷新和注销；普通 API 请求不会进入该路由。
 
 账号产品后端属于独立的控制面，包括插件安装状态、Apps/连接器、任务元数据和账号信息。
 Browser Full 通过固定的 `chatgpt-backend` 路由转发这组请求。它与 Lean 共用同一套 Host 和扩展，
-差别只在 Codex 配置；当前 Full 用于确定各接口族的真实路径、请求头、响应与失败语义。
+差别只在 Codex 与 VS Code 配置。Codex app-server 使用 `18888/chatgpt-backend/backend-api/`；
+VS Code 扩展 WebView 使用官方扩展内置的 localhost 开发入口 `127.0.0.1:8000/api/`。Host 将后者
+固定改写为前者对应的 `/backend-api/` 路径，拒绝 8000 端口上的所有非 `/api` 请求，因此不会
+形成开放代理。
+
+官方 Codex 会主动阻止把 ChatGPT MCP 凭据发给非 `chatgpt.com` origin。Host 仅在静态 route
+解析后确认上游仍是 ChatGPT 官方产品后端，且路径属于托管 MCP 或 `/backend-api/wham/` 时，
+从当前 `~/.codex/auth.json` 按请求读取访问令牌和账号 ID 并补齐缺失认证头。客户端自带的认证头
+优先，凭据不会进入配置文件或诊断日志。
 
 产品诊断默认关闭。Safe 模式记录路径、query 名和 header 名；Full 模式记录完整 URL、非敏感 header
 值和 4xx/5xx 响应前 4 KiB。两种模式都有请求 ID，且始终遮盖认证凭据，不记录模型请求正文。
@@ -81,8 +89,8 @@ Browser Full 通过固定的 `chatgpt-backend` 路由转发这组请求。它与
 首次登录使用独立的一次性助手：助手按 Codex 官方 OAuth 参数生成 PKCE 和 `state`，
 打开 Chrome 官方授权页，在 `127.0.0.1` 临时端口接收授权码，然后只把 Token Exchange
 请求送入 `auth-openai`。成功后凭据按 Codex 当前格式原子写入 `~/.codex/auth.json`；
-旧文件先备份。Native Host 的正常网关模式不会读取或保存该文件，日志也不记录授权码
-或 Token。
+旧文件先备份。Native Host 不保存该文件；Browser Full 只会按上述固定产品接口读取现有凭据，
+日志不记录授权码或 Token。
 
 管理端点：
 
@@ -126,6 +134,7 @@ Browser Full 通过固定的 `chatgpt-backend` 路由转发这组请求。它与
 - 上游只能来自静态配置且必须使用 HTTPS；测试 fixture 除外。
 - 浏览器 fetch 不自动跟随重定向，避免凭据或请求体离开静态上游。
 - `18888` 不支持 CONNECT、开放转发、目标 header 覆盖或浏览器 Cookie 复用。
+- `8000` 只接受 loopback 的 `/api` 路径，并固定映射到 `chatgpt-backend/backend-api`。
 - Offscreen 不可用时失败关闭，不回退到 Service Worker 或系统直连。
 - 日志不记录请求正文、认证头、Token、Cookie 或 API Key。
 - 请求完成日志只记录 route、method、HTTP 状态和响应头/首段数据/结束耗时，不记录 URL 或 query。

@@ -23,6 +23,10 @@ def valid_config() -> dict[str, object]:
                 "probe_path": "/v1/models",
                 "request_header_allowlist": ["Accept", "Content-Type", "X-Goog-Api-Key"],
             },
+            "chatgpt-backend": {
+                "upstream_base_url": "https://chatgpt.com",
+                "probe_path": "/backend-api/codex/models",
+            },
         },
     }
 
@@ -34,7 +38,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.protocol.max_chunk_bytes, 262144)
         self.assertEqual(config.protocol.max_active_requests, 16)
         self.assertEqual(config.protocol.max_request_body_bytes, 32 * 1024 * 1024)
-        self.assertEqual(set(config.routes), {"openai", "gemini"})
+        self.assertEqual(set(config.routes), {"openai", "gemini", "chatgpt-backend"})
         self.assertEqual(
             config.routes["gemini"].request_header_allowlist,
             frozenset({"accept", "content-type", "x-goog-api-key"}),
@@ -100,6 +104,18 @@ class RoutingTests(unittest.TestCase):
             resolved.upstream_url,
             "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
         )
+
+    def test_chatgpt_backend_preserves_official_backend_api_shape(self) -> None:
+        plugin = self.table.resolve_local_target(
+            "/chatgpt-backend/backend-api/ps/plugins/list?scope=GLOBAL"
+        )
+        self.assertEqual(
+            plugin.upstream_url,
+            "https://chatgpt.com/backend-api/ps/plugins/list?scope=GLOBAL",
+        )
+        mcp = self.table.resolve_local_target("/chatgpt-backend/backend-api/ps/mcp")
+        self.assertEqual(mcp.upstream_url, "https://chatgpt.com/backend-api/ps/mcp")
+        self.assertEqual(mcp.upstream_base_url, "https://chatgpt.com")
 
     def test_rejects_prefix_mismatch(self) -> None:
         with self.assertRaises(BridgeError) as caught:

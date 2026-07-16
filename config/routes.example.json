@@ -22,9 +22,9 @@
       "probe_path": "/models"
     },
     "chatgpt-backend": {
-      "upstream_base_url": "https://chatgpt.com/backend-api",
+      "upstream_base_url": "https://chatgpt.com",
       "remove_path_prefix": "",
-      "probe_path": "/codex/models"
+      "probe_path": "/backend-api/codex/models"
     },
     "auth-openai": {
       "upstream_base_url": "https://auth.openai.com",
