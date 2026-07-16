@@ -113,6 +113,19 @@ Browser Full 会把 app-server 产品后端指向固定的 `chatgpt-backend` rou
 控制，直接连接失败时会让 Codex 侧栏挂载延迟约一分钟；2.4.0 起由独立的受限 loopback 入口
 接入同一条浏览器链路。
 
+2.5.0 起，MCP 的可选 GET/`.well-known` 探测由 Host 本地快速结束；日志中的正式
+`family=apps-mcp method=POST status=200/204` 才代表协议通信。全局插件目录页面有 10 分钟进程内
+缓存、同键并发合并和一次响应头超时重试。普通插件状态查询限 3 并发，建议/精选可使用第 4 个保留槽，
+全局目录限 1 并发；这些 GET 都会给
+账号初始化及模型/MCP 请求让路。
+看到 `request_cache_wait` 后跟 `request_cache_hit family=plugins-list` 表示并发合并生效；缓存不包含
+Token、Cookie、安装状态、模型内容或 MCP 工具调用。
+
+计划任务先用 Chrome 的无启动窗口模式在后台初始化扩展。部分 Chrome 版本在后台模式关闭、刚升级或
+异常退出后会直接忽略该模式；2.5.0 起若约 10 秒仍未就绪，启动脚本会自动打开一个普通 Chrome 空白页
+作为一次性兜底，并继续复用相同默认配置文件和扩展状态。`startup.log` 中出现 `FALLBACK` 后紧跟
+`READY` 属于预期恢复，不需要重装 Host。
+
 检查两个本地入口及 VS Code 隐藏设置：
 
 ```powershell

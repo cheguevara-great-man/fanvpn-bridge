@@ -19,6 +19,7 @@ from .config import BridgeConfig, ProtocolConfig, RouteConfig, load_config, pars
 from .dispatcher import NativeDispatcher
 from .errors import BridgeError, ErrorCode
 from .http_server import BridgeHTTPServer, create_http_server
+from .product_cache import ProductResponseCache
 from .routing import RouteTable
 
 __all__ = [
@@ -33,6 +34,7 @@ __all__ = [
     "MessageChannel",
     "NativeDispatcher",
     "ProtocolConfig",
+    "ProductResponseCache",
     "RequestDispatcher",
     "ResolvedRoute",
     "RouteConfig",

@@ -149,9 +149,17 @@ enabled = false
 
 Browser Full 启动器还会仅给本次 VS Code 进程传入一个非敏感的
 `CODEX_CONNECTORS_TOKEN=browser-ai-bridge-managed` 标记。它不是 OpenAI Token，也不能单独访问
-任何账号；作用只是阻止 Codex 因本地地址而误走 OAuth 探测。Bridge 只有在静态路由已经确认上游是
+任何账号；作用是让 Codex 为固定 MCP 路由预先携带 Bearer 认证。Bridge 只有在静态路由已经确认上游是
 `https://chatgpt.com` 的固定 MCP/Apps 接口后，才会在内存中把标记替换为当前
 `~/.codex/auth.json` 的有效凭据。Browser Lean 和 Direct 不使用这个标记，也不会修改用户级环境变量。
+
+部分 Codex 版本即使已有 Bearer Token，仍会按 MCP 协议尝试 GET 通知流并探测 OAuth 元数据。2.5.0
+起这些无副作用请求由 Host 在本机立即返回，不再经过 Chrome 和浏览器代理。插件总目录的只读分页
+请求作为单并发后台流量运行，普通插件状态查询最多 3 个并发，建议/精选查询另有第 4 个保留槽；
+两者遇到账号初始化、模型或工具请求都会
+在响应头前安全让路。相同目录页面的并发请求只执行一次上游下载，成功结果按账号隔离缓存 10 分钟。
+固定插件元数据的幂等 GET 可在响应头超时后重试一次；模型、MCP POST、工具调用和插件安装状态均
+不会缓存或自动重试。
 
 当前 Windows PowerShell 不支持 Codex 的实验性 Shell Snapshot，但部分 Codex 版本仍会在新任务
 首轮等待创建后才失败。浏览器模式会临时设置 `features.shell_snapshot = false` 跳过这段无效等待；

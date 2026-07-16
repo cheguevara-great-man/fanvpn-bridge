@@ -10,6 +10,7 @@ import {
   isProtocolEnvelope,
 } from "./protocol.js";
 import { pumpResponseBody } from "./stream.js";
+import { resilientFetch } from "./resilient_fetch.js";
 
 const requests = new Map();
 const METHODS_WITHOUT_BODY = new Set(["GET", "HEAD"]);
@@ -160,14 +161,15 @@ async function executeRequest(id, state) {
       // Routes are an origin allowlist. Automatic redirects could escape the
       // configured upstream and replay credentials or request bodies there.
       redirect: "error",
-      signal: state.controller.signal,
       cache: "no-store",
     };
     if (!METHODS_WITHOUT_BODY.has(state.head.method)) {
       options.body = new Blob(state.requestChunks);
     }
     state.requestChunks.length = 0;
-    const response = await fetch(state.head.url, options);
+    const response = await resilientFetch(state.head.url, options, {
+      parentSignal: state.controller.signal,
+    });
     const responseHeaders = [];
     for (const [name, value] of response.headers.entries()) {
       if (!BROWSER_DECODED_HEADERS.has(name.toLowerCase())) {

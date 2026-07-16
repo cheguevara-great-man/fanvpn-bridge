@@ -13,6 +13,7 @@ from fanvpn_bridge.config import parse_config
 from fanvpn_bridge.dispatcher import NativeDispatcher
 from fanvpn_bridge.diagnostics import DiagnosticOptions
 from fanvpn_bridge.http_server import create_http_server
+from fanvpn_bridge.product_cache import ProductResponseCache
 from fanvpn_bridge.routing import RouteTable
 from tests.helpers import FakeExtension, channel_pair
 
@@ -58,8 +59,15 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
         }
         self.config = parse_config(config_raw)
         host_channel, extension_channel = channel_pair()
+        self.upstream_counts: dict[str, int] = {}
+        self.response_gates: dict[str, threading.Event] = {}
 
         def responder(head: dict[str, object], body: bytes):
+            url = str(head["url"])
+            self.upstream_counts[url] = self.upstream_counts.get(url, 0) + 1
+            gate = self.response_gates.get(url)
+            if gate is not None:
+                gate.wait(2)
             if str(head["url"]).endswith("/v1/hang"):
                 return None
             if "/backend-api/ps/plugins/missing" in str(head["url"]):
@@ -106,12 +114,14 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
             request_timeout_seconds=self.config.protocol.request_timeout_seconds,
         )
         self.dispatcher.start(handshake_timeout=2)
+        self.product_cache = ProductResponseCache()
         self.server = create_http_server(
             self.config,
             RouteTable(self.config.routes),
             self.dispatcher,
             self.dispatcher,
             codex_auth_path=self.auth_path,
+            product_cache=self.product_cache,
         )
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -124,6 +134,7 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
             codex_auth_path=self.auth_path,
             listen_port=0,
             product_api_alias=True,
+            product_cache=self.product_cache,
         )
         self.product_thread = threading.Thread(
             target=self.product_server.serve_forever,
@@ -219,6 +230,79 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
         self.assertEqual(value["url"], "https://chatgpt.com/backend-api/ps/mcp")
         self.assertTrue(value["authorization_forwarded"])
         self.assertIn("chatgpt-account-id", value["header_names"])
+
+    def test_mcp_get_and_unneeded_oauth_discovery_are_resolved_locally(self) -> None:
+        before = sum(self.upstream_counts.values())
+        status, headers, payload = self.request(
+            "GET",
+            "/chatgpt-backend/backend-api/ps/mcp",
+            headers={"Accept": "text/event-stream", "Authorization": "Bearer managed"},
+        )
+        self.assertEqual(status, 405)
+        self.assertEqual(headers["Allow"], "POST")
+        self.assertEqual(json.loads(payload)["error"]["code"], "METHOD_NOT_ALLOWED")
+        status, _headers, payload = self.request(
+            "GET",
+            "/chatgpt-backend/backend-api/ps/mcp/.well-known/oauth-protected-resource",
+        )
+        self.assertEqual(status, 404)
+        self.assertEqual(json.loads(payload)["error"]["code"], "OAUTH_DISCOVERY_NOT_REQUIRED")
+        self.assertEqual(sum(self.upstream_counts.values()), before)
+
+    def test_global_plugin_catalog_is_cached_across_both_loopback_listeners(self) -> None:
+        path = "/chatgpt-backend/backend-api/ps/plugins/list?scope=GLOBAL&limit=200"
+        headers = {
+            "Authorization": "Bearer test-secret",
+            "ChatGPT-Account-ID": "test-account",
+        }
+        status, first_headers, first = self.request("GET", path, headers=headers)
+        self.assertEqual(status, 200)
+        self.assertNotIn("X-FanVPN-Cache", first_headers)
+        status, second_headers, second = self.product_request(
+            "GET",
+            "/api/ps/plugins/list?scope=GLOBAL&limit=200",
+            headers=headers,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(second_headers["X-FanVPN-Cache"], "HIT")
+        self.assertEqual(second, first)
+        upstream = "https://chatgpt.com/backend-api/ps/plugins/list?scope=GLOBAL&limit=200"
+        self.assertEqual(self.upstream_counts[upstream], 1)
+
+    def test_concurrent_identical_catalog_reads_share_one_upstream_request(self) -> None:
+        path = "/chatgpt-backend/backend-api/ps/plugins/list?scope=GLOBAL&limit=100"
+        product_path = "/api/ps/plugins/list?scope=GLOBAL&limit=100"
+        upstream = "https://chatgpt.com/backend-api/ps/plugins/list?scope=GLOBAL&limit=100"
+        headers = {
+            "Authorization": "Bearer concurrent-secret",
+            "ChatGPT-Account-ID": "concurrent-account",
+        }
+        gate = threading.Event()
+        self.response_gates[upstream] = gate
+        results: list[tuple[int, dict[str, str], bytes]] = []
+        first = threading.Thread(
+            target=lambda: results.append(self.request("GET", path, headers=headers))
+        )
+        second = threading.Thread(
+            target=lambda: results.append(
+                self.product_request("GET", product_path, headers=headers)
+            )
+        )
+        first.start()
+        deadline = time.monotonic() + 2
+        while self.upstream_counts.get(upstream, 0) == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        second.start()
+        time.sleep(0.05)
+        gate.set()
+        first.join(3)
+        second.join(3)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual([result[0] for result in results], [200, 200])
+        self.assertEqual(self.upstream_counts[upstream], 1)
+        self.assertEqual(sum("X-FanVPN-Cache" in result[1] for result in results), 1)
 
     def test_vscode_product_api_alias_routes_wham_through_fixed_chatgpt_route(self) -> None:
         status, _headers, payload = self.product_request(

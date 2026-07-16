@@ -16,6 +16,7 @@ from .errors import BridgeError
 from .framing import FramedMessageChannel
 from .forward_proxy import ForwardProxyError, run_forward_proxy
 from .http_server import create_http_server
+from .product_cache import ProductResponseCache
 from .routing import RouteTable
 from .runtime_logging import configure_runtime_logging
 
@@ -34,7 +35,14 @@ def run(config_path: Path) -> int:
     )
     dispatcher.start()
     routes = RouteTable(config.routes)
-    server = create_http_server(config, routes, dispatcher, dispatcher)
+    product_cache = ProductResponseCache()
+    server = create_http_server(
+        config,
+        routes,
+        dispatcher,
+        dispatcher,
+        product_cache=product_cache,
+    )
     server_thread = threading.Thread(
         target=server.serve_forever,
         name="fanvpn-loopback-http",
@@ -50,6 +58,7 @@ def run(config_path: Path) -> int:
             dispatcher,
             listen_port=8000,
             product_api_alias=True,
+            product_cache=product_cache,
         )
     except OSError as error:
         log.warning("vscode_product_api_unavailable listen=%s:8000 error=%s", config.listen_host, error)
