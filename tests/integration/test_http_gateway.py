@@ -32,10 +32,6 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
                     "upstream_base_url": "https://chatgpt.com/backend-api/codex",
                     "probe_path": "/models",
                 },
-                "chatgpt-backend": {
-                    "upstream_base_url": "https://chatgpt.com/backend-api",
-                    "probe_path": "/codex/models",
-                },
                 "gemini": {
                     "upstream_base_url": "https://generativelanguage.googleapis.com",
                     "probe_path": "/v1beta/models",
@@ -122,10 +118,7 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
         self.assertEqual(health["executor"], "offscreen")
         self.assertTrue(health["ready"])
         self.assertEqual(health["mode"], "native-host-http-server")
-        self.assertEqual(
-            health["routes"],
-            ["chatgpt-backend", "chatgpt-codex", "gemini", "openai"],
-        )
+        self.assertEqual(health["routes"], ["chatgpt-codex", "gemini", "openai"])
 
     def test_root_health_ready_and_routes_are_local_diagnostics(self) -> None:
         status, _headers, payload = self.request("GET", "/health")
@@ -138,26 +131,8 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(
             json.loads(payload)["routes"],
-            ["chatgpt-backend", "chatgpt-codex", "gemini", "openai"],
+            ["chatgpt-codex", "gemini", "openai"],
         )
-
-    def test_chatgpt_backend_forwards_codex_startup_requests(self) -> None:
-        status, _headers, payload = self.request(
-            "GET",
-            "/chatgpt-backend/ps/plugins/suggested?scope=GLOBAL",
-            headers={
-                "Accept": "application/json",
-                "Authorization": "Bearer test-secret",
-                "ChatGPT-Account-ID": "test-account",
-            },
-        )
-        self.assertEqual(status, 200)
-        value = json.loads(payload)
-        self.assertEqual(
-            value["url"],
-            "https://chatgpt.com/backend-api/ps/plugins/suggested?scope=GLOBAL",
-        )
-        self.assertTrue(value["authorization_forwarded"])
 
     def test_chatgpt_codex_preserves_required_end_to_end_headers(self) -> None:
         status, _headers, payload = self.request(

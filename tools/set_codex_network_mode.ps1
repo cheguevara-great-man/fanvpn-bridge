@@ -17,95 +17,176 @@ $content = if (Test-Path -LiteralPath $configPath) {
     ''
 }
 
-$beginMarker = '# BEGIN Browser AI Bridge managed network providers'
-$endMarker = '# END Browser AI Bridge managed network providers'
-$managedPattern = '(?ms)^' + [regex]::Escape($beginMarker) + '.*?^' + [regex]::Escape($endMarker) + '\s*'
-$content = [regex]::Replace($content, $managedPattern, '')
+function Get-TomlTableMatch {
+    param([string]$Text, [string]$Table)
+    $pattern = '(?ms)^\s*\[' + [regex]::Escape($Table) + '\]\s*(?:\r?\n|$)(?<body>.*?)(?=^\s*\[|\z)'
+    return [regex]::Match($Text, $pattern)
+}
 
-$chatgptBeginMarker = '# BEGIN Browser AI Bridge managed ChatGPT base URL'
-$chatgptEndMarker = '# END Browser AI Bridge managed ChatGPT base URL'
-$chatgptManagedPattern = '(?ms)^' + [regex]::Escape($chatgptBeginMarker) + '.*?^' + [regex]::Escape($chatgptEndMarker) + '\s*'
-$chatgptManagedMatch = [regex]::Match($content, $chatgptManagedPattern)
+function Get-TomlKeyLine {
+    param([string]$Text, [string]$Table, [string]$Key)
+    $tableMatch = Get-TomlTableMatch -Text $Text -Table $Table
+    if (-not $tableMatch.Success) { return $null }
+    $keyPattern = '(?m)^\s*' + [regex]::Escape($Key) + '\s*=.*$'
+    $keyMatch = [regex]::Match($tableMatch.Groups['body'].Value, $keyPattern)
+    if (-not $keyMatch.Success) { return $null }
+    return $keyMatch.Value.TrimEnd("`r", "`n")
+}
+
+function Set-TomlKeyLine {
+    param(
+        [string]$Text,
+        [string]$Table,
+        [string]$Key,
+        [AllowNull()][string]$Line
+    )
+    $tableMatch = Get-TomlTableMatch -Text $Text -Table $Table
+    if (-not $tableMatch.Success) {
+        if ($null -eq $Line) { return $Text }
+        return $Text.TrimEnd() + "`r`n`r`n[$Table]`r`n$Line`r`n"
+    }
+
+    $body = $tableMatch.Groups['body'].Value
+    $keyPattern = '(?m)^\s*' + [regex]::Escape($Key) + '\s*=.*(?:\r?\n|$)'
+    $keyMatch = [regex]::Match($body, $keyPattern)
+    if ($keyMatch.Success) {
+        $replacement = if ($null -eq $Line) { '' } else { $Line + "`r`n" }
+        $body = $body.Substring(0, $keyMatch.Index) + $replacement +
+            $body.Substring($keyMatch.Index + $keyMatch.Length)
+    } elseif ($null -ne $Line) {
+        $body = $Line + "`r`n" + $body
+    }
+
+    $bodyStart = $tableMatch.Groups['body'].Index
+    return $Text.Substring(0, $bodyStart) + $body +
+        $Text.Substring($bodyStart + $tableMatch.Groups['body'].Length)
+}
+
+function ConvertTo-RestoreValue {
+    param([AllowNull()][string]$Line)
+    if ([string]::IsNullOrEmpty($Line)) { return 'absent' }
+    return [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Line))
+}
+
+function ConvertFrom-RestoreValue {
+    param([string]$Value)
+    if ($Value -eq 'absent') { return $null }
+    try {
+        return [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Value))
+    } catch {
+        throw 'Managed lean-mode restore metadata is invalid.'
+    }
+}
+
+# Remove provider definitions written by an earlier run; fresh definitions are appended below.
+$providerBegin = '# BEGIN Browser AI Bridge managed network providers'
+$providerEnd = '# END Browser AI Bridge managed network providers'
+$providerPattern = '(?ms)^' + [regex]::Escape($providerBegin) + '.*?^' +
+    [regex]::Escape($providerEnd) + '\s*'
+$content = [regex]::Replace($content, $providerPattern, '')
+
+# Version 2.2.1 temporarily routed the whole ChatGPT product backend through one
+# browser route. Restore the user's previous value (or remove the injected value)
+# during upgrade because that route caused long retry storms on real deployments.
+$chatgptBegin = '# BEGIN Browser AI Bridge managed ChatGPT base URL'
+$chatgptEnd = '# END Browser AI Bridge managed ChatGPT base URL'
+$chatgptPattern = '(?ms)^' + [regex]::Escape($chatgptBegin) + '.*?^' +
+    [regex]::Escape($chatgptEnd) + '\s*'
+$chatgptMatch = [regex]::Match($content, $chatgptPattern)
 $previousChatgptLine = $null
-if ($chatgptManagedMatch.Success) {
-    $savedMatch = [regex]::Match(
-        $chatgptManagedMatch.Value,
+if ($chatgptMatch.Success) {
+    $saved = [regex]::Match(
+        $chatgptMatch.Value,
         '(?m)^# previous-chatgpt-base-url-base64: (?<value>[A-Za-z0-9+/=]+|absent)\s*$'
     )
-    if (-not $savedMatch.Success) {
+    if (-not $saved.Success) {
         throw 'Managed ChatGPT base URL block is missing its restore metadata.'
     }
-    if ($savedMatch.Groups['value'].Value -ne 'absent') {
+    if ($saved.Groups['value'].Value -ne 'absent') {
         try {
-            $bytes = [Convert]::FromBase64String($savedMatch.Groups['value'].Value)
-            $previousChatgptLine = [Text.Encoding]::UTF8.GetString($bytes)
+            $previousChatgptLine = [Text.Encoding]::UTF8.GetString(
+                [Convert]::FromBase64String($saved.Groups['value'].Value)
+            )
         } catch {
             throw 'Managed ChatGPT base URL restore metadata is invalid.'
         }
     }
-    $content = [regex]::Replace($content, $chatgptManagedPattern, '', 1)
+    $content = [regex]::Replace($content, $chatgptPattern, '', 1)
 }
 
-$browserChatgptBaseUrl = 'http://127.0.0.1:18888/chatgpt-backend/'
-$chatgptTopLevelPattern = '(?m)^chatgpt_base_url\s*=.*$'
-$browserChatgptLinePattern = '(?m)^chatgpt_base_url\s*=\s*["'']' +
-    [regex]::Escape($browserChatgptBaseUrl) + '["'']\s*(?:#.*)?$'
 $firstTable = [regex]::Match($content, '(?m)^\s*\[')
-$topLevelLength = if ($firstTable.Success) { $firstTable.Index } else { $content.Length }
-$topLevel = $content.Substring(0, $topLevelLength)
-$tables = $content.Substring($topLevelLength)
-$existingChatgptMatch = [regex]::Match($topLevel, $chatgptTopLevelPattern)
+$topLength = if ($firstTable.Success) { $firstTable.Index } else { $content.Length }
+$top = $content.Substring(0, $topLength)
+$tables = $content.Substring($topLength)
+$legacyBackendPattern = '(?m)^chatgpt_base_url\s*=\s*["'']http://127\.0\.0\.1:18888/chatgpt-backend/?["'']\s*(?:#.*)?(?:\r?\n|$)'
+$top = [regex]::Replace($top, $legacyBackendPattern, '')
+if ($previousChatgptLine -and -not [regex]::IsMatch($top, '(?m)^chatgpt_base_url\s*=')) {
+    $top = $previousChatgptLine + "`r`n" + $top.TrimStart()
+}
+$content = $top + $tables
+
+# Browser mode is deliberately lean: only the model Responses API is routed
+# through Chrome. Product-backend initialization is disabled until its endpoint
+# families can be added and tested independently. Direct mode restores the exact
+# values that existed before Browser mode was first enabled.
+$leanBegin = '# BEGIN Browser AI Bridge managed lean mode'
+$leanEnd = '# END Browser AI Bridge managed lean mode'
+$leanPattern = '(?ms)^' + [regex]::Escape($leanBegin) + '.*?^' +
+    [regex]::Escape($leanEnd) + '\s*'
+$leanMatch = [regex]::Match($content, $leanPattern)
+$settings = @(
+    @{ Id = 'features-apps'; Table = 'features'; Key = 'apps' },
+    @{ Id = 'features-plugins'; Table = 'features'; Key = 'plugins' },
+    @{ Id = 'features-remote-plugin'; Table = 'features'; Key = 'remote_plugin' },
+    @{ Id = 'analytics-enabled'; Table = 'analytics'; Key = 'enabled' }
+)
+$restore = @{}
+if ($leanMatch.Success) {
+    foreach ($setting in $settings) {
+        $metadataPattern = '(?m)^# previous-' + [regex]::Escape($setting.Id) +
+            '-base64: (?<value>[A-Za-z0-9+/=]+|absent)\s*$'
+        $saved = [regex]::Match($leanMatch.Value, $metadataPattern)
+        if (-not $saved.Success) {
+            throw "Managed lean-mode block is missing restore metadata for $($setting.Id)."
+        }
+        $restore[$setting.Id] = ConvertFrom-RestoreValue $saved.Groups['value'].Value
+    }
+    $content = [regex]::Replace($content, $leanPattern, '', 1)
+}
 
 if ($Mode -eq 'Browser') {
-    if (-not $chatgptManagedMatch.Success -and $existingChatgptMatch.Success) {
-        if (-not [regex]::IsMatch($existingChatgptMatch.Value, $browserChatgptLinePattern)) {
-            $previousChatgptLine = $existingChatgptMatch.Value.Trim()
+    $metadata = New-Object System.Collections.Generic.List[string]
+    foreach ($setting in $settings) {
+        if (-not $leanMatch.Success) {
+            $restore[$setting.Id] = Get-TomlKeyLine -Text $content -Table $setting.Table -Key $setting.Key
         }
-        $topLevel = [regex]::Replace($topLevel, $chatgptTopLevelPattern, '', 1)
+        $encoded = ConvertTo-RestoreValue $restore[$setting.Id]
+        $metadata.Add("# previous-$($setting.Id)-base64: $encoded")
+        $content = Set-TomlKeyLine -Text $content -Table $setting.Table -Key $setting.Key -Line "$($setting.Key) = false"
     }
-} elseif ($chatgptManagedMatch.Success) {
-    if ($previousChatgptLine) {
-        $topLevel = $previousChatgptLine + "`r`n" + $topLevel.TrimStart()
+    $leanBlock = @($leanBegin) + $metadata.ToArray() + @($leanEnd)
+    $content = ($leanBlock -join "`r`n") + "`r`n" + $content.TrimStart()
+} elseif ($leanMatch.Success) {
+    foreach ($setting in $settings) {
+        $content = Set-TomlKeyLine -Text $content -Table $setting.Table -Key $setting.Key -Line $restore[$setting.Id]
     }
-} elseif ($existingChatgptMatch.Success -and
-    [regex]::IsMatch($existingChatgptMatch.Value, $browserChatgptLinePattern)) {
-    # Upgrade an older browser-mode config that predates the managed marker.
-    $topLevel = [regex]::Replace($topLevel, $chatgptTopLevelPattern, '', 1)
 }
-$content = $topLevel + $tables
 
 $provider = if ($Mode -eq 'Direct') { 'browser_ai_direct' } else { 'browser_ai_bridge' }
-$topLevelPattern = '(?m)^model_provider\s*=\s*"[^"]*"\s*$'
+$modelProviderPattern = '(?m)^model_provider\s*=\s*"[^"]*"\s*$'
 $firstTable = [regex]::Match($content, '(?m)^\s*\[')
-$topLevelLength = if ($firstTable.Success) { $firstTable.Index } else { $content.Length }
-$topLevel = $content.Substring(0, $topLevelLength)
-$tables = $content.Substring($topLevelLength)
-if ([regex]::IsMatch($topLevel, $topLevelPattern)) {
-    $topLevel = [regex]::Replace($topLevel, $topLevelPattern, "model_provider = `"$provider`"", 1)
-    $content = $topLevel + $tables
-} else {
-    $content = "model_provider = `"$provider`"`r`n" + $content
+$topLength = if ($firstTable.Success) { $firstTable.Index } else { $content.Length }
+$top = $content.Substring(0, $topLength)
+$tables = $content.Substring($topLength)
+if ([regex]::IsMatch($top, $modelProviderPattern)) {
+    $top = [regex]::Replace($top, $modelProviderPattern, '', 1)
 }
+$content = "model_provider = `"$provider`"`r`n" + $top.TrimStart() + $tables
 
-if ($Mode -eq 'Browser') {
-    $restoreValue = if ($previousChatgptLine) {
-        [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($previousChatgptLine))
-    } else {
-        'absent'
-    }
-    $chatgptManaged = @"
-$chatgptBeginMarker
-# previous-chatgpt-base-url-base64: $restoreValue
-chatgpt_base_url = "$browserChatgptBaseUrl"
-$chatgptEndMarker
-"@
-    $content = $chatgptManaged.Trim() + "`r`n" + $content.TrimStart()
-}
-
-$managed = @"
-$beginMarker
+$managedProviders = @"
+$providerBegin
 [model_providers.browser_ai_bridge]
-name = "ChatGPT Codex through Browser AI Bridge"
+name = "ChatGPT Codex through Browser AI Bridge (lean)"
 base_url = "http://127.0.0.1:18888/chatgpt-codex"
 requires_openai_auth = true
 wire_api = "responses"
@@ -117,9 +198,9 @@ base_url = "https://chatgpt.com/backend-api/codex"
 requires_openai_auth = true
 wire_api = "responses"
 supports_websockets = false
-$endMarker
+$providerEnd
 "@
-$content = $content.TrimEnd() + "`r`n`r`n" + $managed.Trim() + "`r`n"
+$content = $content.TrimEnd() + "`r`n`r`n" + $managedProviders.Trim() + "`r`n"
 
 if (Test-Path -LiteralPath $configPath) {
     $backupPath = "$configPath.before-network-mode.bak"
@@ -136,3 +217,8 @@ try {
     Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
 }
 Write-Host "Codex network provider: $provider"
+if ($Mode -eq 'Browser') {
+    Write-Host 'Browser lean mode: Apps, plugins, remote plugin catalog, and analytics are disabled.'
+} else {
+    Write-Host 'Direct mode: previously saved Apps, plugin, and analytics settings are restored.'
+}

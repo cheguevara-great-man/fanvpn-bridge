@@ -39,6 +39,7 @@ Claude Code 使用 Gemini 时，由 CC Switch 转换 Anthropic Messages 与 Gemi
 - 仅监听 `127.0.0.1`，校验本地 Host/Origin，上游由静态 allowlist 限制。
 - Chrome 出口不可用时失败关闭，不回退到系统直连。
 - Codex 首次登录可通过一次性助手完成，无需复制其他电脑的 `auth.json`。
+- Codex 浏览器精简模式只转发核心模型接口，自动关闭会导致首条消息超时的产品后端初始化，并可在切回直连时恢复原配置。
 - A/B 事务式更新，切换前自动冒烟测试，失败时恢复旧注册。
 - Windows 登录后自动启动 Chrome 并等待 Bridge ready。
 - VS Code Claude Code 可在 Anthropic 官方模式和 Gemini 模式之间切换，且不接管全局 Claude 配置。
@@ -84,13 +85,15 @@ Codex、Claude Code 或 CC Switch。
 |---|---|
 | OpenAI Responses API | `http://127.0.0.1:18888/openai/v1` |
 | ChatGPT Codex backend | `http://127.0.0.1:18888/chatgpt-codex` |
-| Codex Apps、插件目录与产品元数据 | `http://127.0.0.1:18888/chatgpt-backend` |
 | Codex 登录 Token Exchange、刷新和注销 | `http://127.0.0.1:18888/auth-openai` |
 | Anthropic Messages API | `http://127.0.0.1:18888/anthropic` |
 | Gemini Native | `http://127.0.0.1:18888/gemini` |
 | Gemini OpenAI compatibility | `http://127.0.0.1:18888/gemini-openai/v1` |
 
 路由来自 `config/routes.example.json`。API Key 不应写入路由配置。
+
+当前 Browser 模式是稳定优先的精简模式，不接管 Codex Apps、插件目录和完整账号产品后端。
+个人 Skills、本地脚本及手工配置的本地 MCP 仍可使用。具体边界见[客户端使用](docs/USAGE.md)。
 
 ## 文档
 

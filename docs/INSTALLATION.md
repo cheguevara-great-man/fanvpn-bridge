@@ -97,12 +97,14 @@ Invoke-RestMethod http://127.0.0.1:18888/routes -Proxy $null
 ```text
 anthropic
 auth-openai
-chatgpt-backend
 chatgpt-codex
 gemini
 gemini-openai
 openai
 ```
+
+2.2.2 起不再包含 `chatgpt-backend`。如果仍看到该路由，说明 Chrome 当前连接的还是 2.2.1 Host，
+请核对安装输出中的 Native Host 路径并完全重开 Chrome。
 
 如需完整诊断，可运行：
 

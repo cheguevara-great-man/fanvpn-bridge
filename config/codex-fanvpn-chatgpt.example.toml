@@ -1,5 +1,4 @@
 model_provider = "fanvpn_chatgpt"
-chatgpt_base_url = "http://127.0.0.1:18888/chatgpt-backend/"
 
 [model_providers.fanvpn_chatgpt]
 name = "ChatGPT Codex through FanVPN Bridge"
@@ -7,3 +6,11 @@ base_url = "http://127.0.0.1:18888/chatgpt-codex"
 requires_openai_auth = true
 wire_api = "responses"
 supports_websockets = false
+
+[features]
+apps = false
+plugins = false
+remote_plugin = false
+
+[analytics]
+enabled = false
