@@ -55,6 +55,34 @@ class CodexProductAuthTests(unittest.TestCase):
         headers = [Header("Authorization", "Bearer client-token")]
         self.assertIs(self.auth.attach(self.route("/backend-api/ps/mcp"), headers), headers)
 
+    def test_replaces_only_the_bridge_managed_bearer_sentinel(self) -> None:
+        headers = [
+            Header("Accept", "application/json"),
+            Header("Authorization", "Bearer browser-ai-bridge-managed"),
+        ]
+        attached = self.auth.attach(self.route("/backend-api/ps/mcp"), headers)
+        values = {header.name.lower(): header.value for header in attached}
+        self.assertEqual(values["authorization"], "Bearer test-token")
+        self.assertEqual(values["chatgpt-account-id"], "acct-1")
+
+        duplicate = self.auth.attach(
+            self.route("/backend-api/ps/mcp"),
+            [
+                Header("Authorization", "Bearer browser-ai-bridge-managed"),
+                Header("authorization", "Bearer browser-ai-bridge-managed"),
+            ],
+        )
+        self.assertEqual(
+            [header.value for header in duplicate if header.name.lower() == "authorization"],
+            ["Bearer test-token"],
+        )
+
+        unrelated = [Header("Authorization", "Bearer browser-ai-bridge-managed")]
+        self.assertIs(
+            self.auth.attach(self.route("/backend-api/ps/plugins/list"), unrelated),
+            unrelated,
+        )
+
     def test_missing_or_invalid_auth_file_leaves_request_unchanged(self) -> None:
         self.auth_path.write_text("not-json", encoding="utf-8")
         headers: list[Header] = []

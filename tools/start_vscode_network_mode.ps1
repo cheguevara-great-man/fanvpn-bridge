@@ -15,6 +15,7 @@ $runtimeDirectory = Join-Path $env:LOCALAPPDATA 'FanVPNBridge'
 $credentialPath = Join-Path $runtimeDirectory 'direct-proxy.json'
 $pidPath = Join-Path $runtimeDirectory 'direct-proxy.pid'
 $registryPath = 'HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.fanvpn.bridge'
+$managedConnectorsToken = 'browser-ai-bridge-managed'
 
 if (Get-Process -Name Code -ErrorAction SilentlyContinue) {
     throw 'VS Code is already running. Close every VS Code window, wait a few seconds, then choose the mode again.'
@@ -138,6 +139,14 @@ if ($Mode -eq 'Direct') {
     }
     $env:CODEX_REFRESH_TOKEN_URL_OVERRIDE = 'http://127.0.0.1:18888/auth-openai/oauth/token'
     $env:CODEX_REVOKE_TOKEN_URL_OVERRIDE = 'http://127.0.0.1:18888/auth-openai/oauth/revoke'
+    if ($Mode -eq 'BrowserFull') {
+        # Codex otherwise downgrades its built-in ChatGPT MCP authentication to
+        # OAuth when chatgpt_base_url points at loopback, causing unnecessary
+        # GET/.well-known discovery.  This non-secret sentinel tells Codex that
+        # the fixed MCP route has bearer auth; the Bridge replaces it with the
+        # current auth.json token only after validating the ChatGPT upstream.
+        $env:CODEX_CONNECTORS_TOKEN = $managedConnectorsToken
+    }
     $launchArguments = @('--new-window') + @(
         $CodeArguments | Where-Object { $null -ne $_ -and $_ -ne '' }
     )

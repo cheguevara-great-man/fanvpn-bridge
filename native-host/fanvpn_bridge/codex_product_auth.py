@@ -23,6 +23,7 @@ _AUTHENTICATED_PRODUCT_PATHS = frozenset(
     }
 )
 _AUTHENTICATED_PRODUCT_PREFIXES = ("/backend-api/wham/",)
+_MANAGED_BEARER_TOKEN = "browser-ai-bridge-managed"
 _MAX_AUTH_FILE_BYTES = 1024 * 1024
 
 
@@ -50,14 +51,31 @@ class CodexProductAuth:
         ):
             return headers
         names = {header.name.lower() for header in headers}
-        if "authorization" in names:
+        authorization_headers = [
+            header for header in headers if header.name.lower() == "authorization"
+        ]
+        managed_authorization = bool(authorization_headers) and all(
+            header.value.strip().lower() == f"bearer {_MANAGED_BEARER_TOKEN}"
+            for header in authorization_headers
+        )
+        if authorization_headers and not managed_authorization:
             return headers
 
         credentials = self._load_credentials()
         if credentials is None:
             return headers
         access_token, account_id = credentials
-        attached = [*headers, Header("Authorization", f"Bearer {access_token}")]
+        if managed_authorization:
+            attached = []
+            authorization_added = False
+            for header in headers:
+                if header.name.lower() != "authorization":
+                    attached.append(header)
+                elif not authorization_added:
+                    attached.append(Header(header.name, f"Bearer {access_token}"))
+                    authorization_added = True
+        else:
+            attached = [*headers, Header("Authorization", f"Bearer {access_token}")]
         if account_id and "chatgpt-account-id" not in names:
             attached.append(Header("ChatGPT-Account-ID", account_id))
         return attached

@@ -147,6 +147,12 @@ enabled = false
 浏览器模式还会把隐藏的 VS Code 设置 `chatgpt.apiEndpoint` 临时改为 `localhost`，Direct 模式
 恢复用户原值或“原本不存在”的状态。
 
+Browser Full 启动器还会仅给本次 VS Code 进程传入一个非敏感的
+`CODEX_CONNECTORS_TOKEN=browser-ai-bridge-managed` 标记。它不是 OpenAI Token，也不能单独访问
+任何账号；作用只是阻止 Codex 因本地地址而误走 OAuth 探测。Bridge 只有在静态路由已经确认上游是
+`https://chatgpt.com` 的固定 MCP/Apps 接口后，才会在内存中把标记替换为当前
+`~/.codex/auth.json` 的有效凭据。Browser Lean 和 Direct 不使用这个标记，也不会修改用户级环境变量。
+
 当前 Windows PowerShell 不支持 Codex 的实验性 Shell Snapshot，但部分 Codex 版本仍会在新任务
 首轮等待创建后才失败。浏览器模式会临时设置 `features.shell_snapshot = false` 跳过这段无效等待；
 Direct 模式同样会恢复原值。该设置不会关闭普通 Shell、终端或工具调用。
@@ -171,6 +177,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File `
 powershell -NoProfile -ExecutionPolicy Bypass -File `
   .\tools\start_vscode_network_mode.ps1 -Mode Direct
 ```
+
+Browser Full 必须通过上面的启动脚本或对应桌面入口打开。只运行
+`set_codex_network_mode.ps1` 再手工打开 VS Code 不会带入进程级 MCP 认证标记。
 
 直连模式会按需启动本地 `18889`，并只给这次启动的 VS Code 传入代理参数和环境变量；
 不会改 Windows 全局代理，也不会影响其他已经运行的软件。浏览器模式会停止 `18889`，
