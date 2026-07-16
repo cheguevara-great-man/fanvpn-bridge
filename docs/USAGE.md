@@ -30,19 +30,33 @@ ChatGPT 登录。
 示例位于 [`config/codex-fanvpn-chatgpt.example.toml`](../config/codex-fanvpn-chatgpt.example.toml)：
 
 ```toml
-chatgpt_base_url = "http://127.0.0.1:18888/chatgpt-backend/"
+model_provider = "fanvpn_chatgpt"
 
 [model_providers.fanvpn_chatgpt]
 base_url = "http://127.0.0.1:18888/chatgpt-codex"
 requires_openai_auth = true
 wire_api = "responses"
 supports_websockets = false
+
+[features]
+apps = false
+plugins = false
+remote_plugin = false
+
+[analytics]
+enabled = false
 ```
 
-`model_providers` route 固定转发模型请求和模型目录；`chatgpt_base_url` 让 Apps MCP、插件目录和
-产品元数据等启动请求也经过 Chrome。缺少后一项时，对话仍可能成功，但没有 Clash 的电脑会在
-首条消息前等待若干直连请求超时。Bridge 不读取浏览器 Cookie，而是转发 Codex 自己已有的
-认证请求头。Bridge 当前不传输 WebSocket，因此必须关闭 WebSocket。
+浏览器模式当前采用**精简模式**：只把模型目录和 Responses 对话送入 Chrome，并关闭会访问
+ChatGPT 产品后端的 Apps、插件同步、远程插件目录和分析请求。这样可以避免没有系统代理时，
+Codex 在第一条消息前等待这些请求超时。个人 Skills、本地脚本、Git 和手工配置的本地 MCP
+不依赖插件目录，可以继续使用。
+
+精简模式不提供完整的账号产品功能，例如账号侧插件、Apps/连接器同步、完整云端任务元数据和
+部分账号信息。后续版本会按接口族逐项接入；不要再配置 2.2.1 曾使用的
+`chatgpt_base_url = "http://127.0.0.1:18888/chatgpt-backend/"`，该整包转发方案会造成请求重试风暴。
+Bridge 不读取浏览器 Cookie，而是转发 Codex 自己已有的认证请求头。Bridge 当前不传输
+WebSocket，因此必须关闭 WebSocket。
 
 ### 在当前电脑独立登录
 
@@ -92,13 +106,20 @@ Copy-Item ".\config\codex-fanvpn-chatgpt.example.toml" "$HOME\.codex\config.toml
 
 ```toml
 model_provider = "fanvpn_chatgpt"
-chatgpt_base_url = "http://127.0.0.1:18888/chatgpt-backend/"
 
 [model_providers.fanvpn_chatgpt]
 base_url = "http://127.0.0.1:18888/chatgpt-codex"
 requires_openai_auth = true
 wire_api = "responses"
 supports_websockets = false
+
+[features]
+apps = false
+plugins = false
+remote_plugin = false
+
+[analytics]
+enabled = false
 ```
 
 完成登录和配置后关闭所有 VS Code 窗口再重新打开。Codex IDE 会读取
@@ -114,9 +135,10 @@ supports_websockets = false
 
 切换前必须关闭所有 VS Code 窗口并等待几秒，再点击所需按钮。VS Code 的第一个进程会
 决定后续窗口继承的环境；在已有窗口未退出时启动另一模式，无法可靠切换。两个按钮都会
-保留 `~/.codex/config.toml` 中的其他内容，只更新受管 provider、顶层 `model_provider` 和浏览器模式
-所需的 `chatgpt_base_url`；切回 Direct 时会恢复原来的 `chatgpt_base_url`。第一次修改前还会保留
-`config.toml.before-network-mode.bak`。
+保留 `~/.codex/config.toml` 中的其他内容。Browser 模式会选择精简 provider，并暂时把
+`apps`、`plugins`、`remote_plugin` 和 `analytics.enabled` 设为 `false`；切回 Direct 时会恢复切换前
+每一项的原始值或“原本不存在”的状态。脚本还会清理 2.2.1 遗留的 `chatgpt-backend`
+配置。第一次修改前会保留 `config.toml.before-network-mode.bak`。
 
 Claude Code 处于 Anthropic 官方模式时，按钮也会同步切换它：直连模式移除本地
 `ANTHROPIC_BASE_URL` 覆盖，让官方请求继承 `18889`；浏览器模式恢复 `18888/anthropic`。
