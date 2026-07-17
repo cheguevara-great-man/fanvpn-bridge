@@ -49,7 +49,8 @@ Claude Code 使用 Gemini 时，由 CC Switch 转换 Anthropic Messages 与 Gemi
   VS Code 后点击，Bridge 会事务式更新托管配置并按所选模式启动 VS Code。三种模式都应从按钮启动，
   不能只看上次磁盘配置后再从普通 VS Code 图标打开。
 - A/B 事务式更新，切换前自动冒烟测试，失败时恢复旧注册。
-- Windows 登录后自动启动 Chrome 并等待 Bridge ready。
+- Windows 登录后以无窗口后台模式启动 Chrome，并用隐藏看护任务维持 Bridge ready；关闭最后一个可见
+  Chrome 窗口不会中断 VS Code 浏览器链路，Chrome 被真正结束后也会自动无窗口恢复。
 - VS Code Claude Code 可在 Anthropic 官方模式和 Gemini 模式之间切换，且不接管全局 Claude 配置。
 - 可选的 VS Code 直连模式通过本机 `18889` 连接自有 HTTPS 代理；安装后仍提供 Lean、Full、Direct
   三个桌面启动入口，作为扩展弹窗之外的备用入口。

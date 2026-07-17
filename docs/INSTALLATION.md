@@ -145,6 +145,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\diagnose.ps1
 
 Windows 用户登录时，`FanVPN Bridge Bootstrap` 会在后台启动 Chrome，并等待扩展拉起 Native Host。
 它不会替用户开启 FanVPN、选择节点或授予扩展权限；这些仍由当前 Chrome 配置文件中的扩展管理。
+安装器会为当前用户启用 Chrome 官方后台模式，登录任务则在整个登录会话内隐藏运行并监测 Bridge。
+因此关闭所有可见 Chrome 窗口后，VS Code 浏览器链路仍可继续；如果 Chrome 被真正结束或更新退出，
+看护任务会在约 30 秒内无窗口恢复，不会弹出空白 Chrome 窗口。
 
 如果 Chrome 已经打开，Bridge 通常由扩展自动连接。也可以手动触发登录任务：
 
@@ -165,11 +168,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\update_native_host.p
 脚本完成后：
 
 1. 在 `chrome://extensions` 刷新 FanVPN AI Bridge。
-2. 关闭并重新打开 Chrome，让旧 Host 退出并释放上一套目录。
-3. 重新检查 `/ready` 和 `/routes`。
+2. 扩展刷新会主动断开旧 Host，并按新注册路径启动另一槽位；无需关闭全部 Chrome。
+3. 等待数秒后重新检查 `/ready` 和 `/routes`。
 
 2.6.0 的三模式弹窗依赖打包进 Native Host 目录的固定启动脚本，因此更新时不能只替换
-`chrome-extension`。必须先运行更新脚本切换 Host，再刷新扩展并重开 Chrome，确认弹窗和
+`chrome-extension`。必须先运行更新脚本切换 Host，再刷新扩展，确认弹窗和
 `/ready` 报告的版本一致。
 
 下一次更新会自动使用刚刚释放的另一套目录。可以用 `-WhatIf` 只查看本次将使用哪一套，而不执行构建和注册：
@@ -186,8 +189,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\update_native_host.p
 
 回滚同样会先冒烟测试目标 EXE。当前注册尚未进入 `dist-a` / `dist-b` 时不能使用 `-Rollback`。
 
-如果更新脚本仍报告 `WinError 5`，通常表示上一次切换后没有重开 Chrome，旧进程仍占用本次目标目录。
-关闭 Chrome 并等待所有 `browser-ai-bridge.exe` 退出后重试。
+更新脚本会在构建前自动结束**非活动目标槽**中残留的旧 Host，不影响当前注册槽。如果仍报告
+`WinError 5`，通常是杀毒软件或文件索引器正在扫描目标 DLL；等待数秒后重试，必要时暂时关闭 Chrome。
 
 如果已经安装可选的 VS Code 直连模式，更新前还要关闭全部 VS Code 窗口并点击一次
 “VS Code - Browser Bridge”。更新脚本检测到 `18889` 直连进程时会拒绝继续并给出提示，避免覆盖
@@ -247,4 +250,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\uninstall.ps1
 ```
 
 然后在 `chrome://extensions` 中移除 FanVPN AI Bridge。卸载不会删除 FanVPN、仓库、构建目录、
-Codex/Claude 数据或日志。
+Codex/Claude 数据或日志。卸载登录任务时会恢复安装前的 Chrome 后台模式策略。

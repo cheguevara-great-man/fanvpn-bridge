@@ -2,7 +2,9 @@ param(
     [string]$ChromePath,
     [string]$ReadyUrl = 'http://127.0.0.1:18888/ready',
     [string]$LegacyHealthUrl = 'http://127.0.0.1:18888/__bridge/health',
-    [int]$TimeoutSeconds = 180
+    [int]$TimeoutSeconds = 180,
+    [ValidateRange(5, 300)]
+    [int]$MonitorIntervalSeconds = 15
 )
 
 $ErrorActionPreference = 'Stop'
@@ -33,46 +35,85 @@ if (-not $ChromePath -or -not (Test-Path -LiteralPath $ChromePath -PathType Leaf
     throw 'Google Chrome executable was not found.'
 }
 
-Write-StartupLog "START chrome=$ChromePath timeout_seconds=$TimeoutSeconds"
-Start-Process -FilePath $ChromePath -ArgumentList '--no-first-run', '--no-default-browser-check', '--no-startup-window' -WindowStyle Hidden
+function Start-BackgroundChrome {
+    Write-StartupLog 'STARTING background Chrome.'
+    Start-Process -FilePath $ChromePath `
+        -ArgumentList '--no-first-run', '--no-default-browser-check', '--no-startup-window' `
+        -WindowStyle Hidden
+}
 
-$deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
-$visibleFallbackAt = [DateTime]::UtcNow.AddSeconds([Math]::Min(10, [Math]::Max(3, [Math]::Floor($TimeoutSeconds / 4))))
-$visibleFallbackStarted = $false
-$delaySeconds = 1
-while ([DateTime]::UtcNow -lt $deadline) {
+function Test-BridgeReady {
     try {
         $ready = Invoke-RestMethod -Uri $ReadyUrl -TimeoutSec 3 -Proxy $null
         $readyFlag = ($ready.ready -eq $true) -or (
             $null -eq $ready.PSObject.Properties['ready'] -and $ready.status -eq 'ok'
         )
         if ($readyFlag -and $ready.native_channel_connected -and $ready.executor -eq 'offscreen') {
-            Write-StartupLog "READY pid=$($ready.pid) routes=$($ready.routes -join ',')"
-            exit 0
+            return $ready
         }
-        Write-StartupLog "WAIT status=$($ready.status) native=$($ready.native_channel_connected) executor=$($ready.executor)"
     } catch {
         try {
             $legacy = Invoke-RestMethod -Uri $LegacyHealthUrl -TimeoutSec 3 -Proxy $null
             if ($legacy.status -eq 'ok' -and $legacy.native_channel_connected -and $legacy.executor -eq 'offscreen') {
-                Write-StartupLog 'READY legacy_health=true'
-                exit 0
+                return $legacy
             }
         } catch {
-            Write-StartupLog "WAIT $($_.Exception.Message)"
+            return $null
         }
     }
-    if (-not $visibleFallbackStarted -and [DateTime]::UtcNow -ge $visibleFallbackAt) {
-        # Chrome may ignore --no-startup-window when background mode is disabled
-        # or after an update. A normal window reliably initializes unpacked
-        # extensions and uses the same default Chrome profile.
-        Write-StartupLog 'FALLBACK opening a normal Chrome window to initialize extensions.'
-        Start-Process -FilePath $ChromePath -ArgumentList '--no-first-run', '--no-default-browser-check', 'about:blank'
-        $visibleFallbackStarted = $true
+    return $null
+}
+
+Write-StartupLog "START chrome=$ChromePath timeout_seconds=$TimeoutSeconds monitor_seconds=$MonitorIntervalSeconds"
+Start-BackgroundChrome
+
+$deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+$delaySeconds = 1
+$initialFailures = 0
+while ([DateTime]::UtcNow -lt $deadline) {
+    $ready = Test-BridgeReady
+    if ($ready) {
+        Write-StartupLog "READY pid=$($ready.pid) routes=$($ready.routes -join ',')"
+        break
+    }
+    $initialFailures += 1
+    Write-StartupLog 'WAIT Bridge is not ready.'
+    if ($initialFailures -ge 2) {
+        Start-BackgroundChrome
+        $initialFailures = 0
     }
     Start-Sleep -Seconds $delaySeconds
     $delaySeconds = [Math]::Min($delaySeconds * 2, 15)
 }
 
-Write-StartupLog 'FAILED readiness timeout.'
-exit 1
+if (-not (Test-BridgeReady)) {
+    Write-StartupLog 'FAILED initial readiness timeout; continuing hidden recovery loop.'
+}
+
+# Stay alive for the entire Windows session. Chrome's background-mode policy
+# normally keeps the same process after its final visible window closes. If a
+# user explicitly exits Chrome or an update terminates it, restart it without a
+# visible window and wait for the native channel to return.
+$wasReady = $false
+$consecutiveFailures = 0
+while ($true) {
+    $ready = Test-BridgeReady
+    if ($ready) {
+        if (-not $wasReady) {
+            Write-StartupLog "MONITOR ready pid=$($ready.pid)"
+        }
+        $wasReady = $true
+        $consecutiveFailures = 0
+    } else {
+        $consecutiveFailures += 1
+        if ($wasReady) {
+            Write-StartupLog 'MONITOR Bridge connection was lost.'
+        }
+        $wasReady = $false
+        if ($consecutiveFailures -ge 2) {
+            Start-BackgroundChrome
+            $consecutiveFailures = 0
+        }
+    }
+    Start-Sleep -Seconds $MonitorIntervalSeconds
+}

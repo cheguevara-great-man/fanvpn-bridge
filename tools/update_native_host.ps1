@@ -80,6 +80,37 @@ if (-not $Python) {
 $Python = [System.IO.Path]::GetFullPath($Python)
 
 if (-not $Rollback) {
+    # A crashed or previously superseded Chrome process can leave an executable
+    # from the inactive slot alive. It is safe to stop only that exact target:
+    # Chrome remains registered to the opposite active slot until installation
+    # succeeds below.
+    $targetExecutable = [System.IO.Path]::GetFullPath((Join-Path $targetBuild 'browser-ai-bridge.exe'))
+    $staleTargetProcesses = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.ExecutablePath -and
+        [System.IO.Path]::GetFullPath([string]$_.ExecutablePath).Equals(
+            $targetExecutable,
+            [System.StringComparison]::OrdinalIgnoreCase
+        )
+    }
+    foreach ($process in $staleTargetProcesses) {
+        Write-Host "Stopping stale inactive-slot process PID $($process.ProcessId)."
+        Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
+    }
+    if ($staleTargetProcesses) {
+        $staleProcessIds = @($staleTargetProcesses.ProcessId)
+        $stopDeadline = [DateTime]::UtcNow.AddSeconds(5)
+        do {
+            $remaining = @($staleProcessIds | Where-Object {
+                Get-Process -Id $_ -ErrorAction SilentlyContinue
+            })
+            if ($remaining.Count -eq 0) { break }
+            Start-Sleep -Milliseconds 100
+        } while ([DateTime]::UtcNow -lt $stopDeadline)
+        if ($remaining.Count -gt 0) {
+            throw "Inactive-slot process did not exit: $($remaining -join ', ')"
+        }
+    }
+
     $buildParameters = @{ DistRoot = $targetRoot; Python = $Python }
     if ($SkipToolInstall) { $buildParameters.SkipToolInstall = $true }
     & (Join-Path $PSScriptRoot 'build_native_host.ps1') @buildParameters
@@ -122,5 +153,5 @@ try {
 
 $verb = if ($Rollback) { 'rolled back' } else { 'updated' }
 Write-Host "Native Host $verb to slot $targetSlot." -ForegroundColor Green
-Write-Host 'Refresh FanVPN AI Bridge, then close and reopen Chrome to release the previous slot.' -ForegroundColor Yellow
+Write-Host 'Refresh FanVPN AI Bridge so Chrome disconnects the old Host and starts the newly registered slot.' -ForegroundColor Yellow
 Write-Host 'After Chrome reconnects, run tools\diagnose.ps1 and verify /ready and /routes.'

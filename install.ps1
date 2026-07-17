@@ -49,7 +49,7 @@ if (-not $SkipStartupTask) {
             -MultipleInstances IgnoreNew `
             -RestartCount 5 `
             -RestartInterval (New-TimeSpan -Minutes 1) `
-            -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+            -ExecutionTimeLimit ([TimeSpan]::Zero)
     }
 }
 
@@ -76,14 +76,43 @@ if (-not $SkipNoProxy) {
 }
 
 if (-not $SkipStartupTask) {
+    # Chrome's supported background mode keeps the profile and its extension
+    # network stack alive after the final visible window closes. This is a
+    # per-user policy and does not create a Windows-wide proxy.
+    $chromePolicyPath = 'HKCU:\Software\Policies\Google\Chrome'
+    $bridgeStatePath = 'HKCU:\Software\FanVPNBridge'
+    New-Item -Path $bridgeStatePath -Force | Out-Null
+    $previousRecorded = Get-ItemProperty -LiteralPath $bridgeStatePath -Name BackgroundModePolicyPrevious -ErrorAction SilentlyContinue
+    if (-not $previousRecorded) {
+        # Boolean Chrome policy values are 0/1; 2 is our valid DWORD sentinel
+        # meaning the policy did not exist before Bridge installation.
+        $previousValue = 2
+        try {
+            $previousValue = [int](Get-ItemPropertyValue -LiteralPath $chromePolicyPath -Name BackgroundModeEnabled -ErrorAction Stop)
+        } catch {}
+        New-ItemProperty `
+            -Path $bridgeStatePath `
+            -Name BackgroundModePolicyPrevious `
+            -PropertyType DWord `
+            -Value $previousValue `
+            -Force | Out-Null
+    }
+    New-Item -Path $chromePolicyPath -Force | Out-Null
+    New-ItemProperty -Path $chromePolicyPath -Name BackgroundModeEnabled -PropertyType DWord -Value 1 -Force | Out-Null
+
+    $existingTask = Get-ScheduledTask -TaskName $startupTaskName -ErrorAction SilentlyContinue
+    if ($existingTask -and $existingTask.State -eq 'Running') {
+        Stop-ScheduledTask -TaskName $startupTaskName -ErrorAction SilentlyContinue
+    }
     Register-ScheduledTask `
         -TaskName $startupTaskName `
         -Action $taskDefinition.Action `
         -Trigger $taskDefinition.Trigger `
         -Principal $taskDefinition.Principal `
         -Settings $taskDefinition.Settings `
-        -Description 'Starts Chrome in the background and waits for FanVPN Bridge readiness.' `
+        -Description 'Keeps Chrome and FanVPN Bridge ready in the background without a visible browser window.' `
         -Force | Out-Null
+    Start-ScheduledTask -TaskName $startupTaskName
 }
 
 # Switch Chrome only after every prerequisite and side effect above succeeded.
@@ -102,4 +131,5 @@ Write-Host 'Refresh the unpacked extension in chrome://extensions after installa
 Write-Host 'In the FanVPN AI Bridge extension details, set Site access to On all sites.' -ForegroundColor Yellow
 if (-not $SkipStartupTask) {
     Write-Host "Startup task: $startupTaskName"
+    Write-Host 'Chrome background mode: enabled for the current Windows user.'
 }
