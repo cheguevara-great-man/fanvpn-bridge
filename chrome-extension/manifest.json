@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "FanVPN AI Bridge",
-  "version": "2.2.2",
+  "version": "2.6.2",
   "description": "Provides a loopback AI API bridge through Chrome and FanVPN.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAr24kwvml/+oIG1vM9iz+hJxmy6Y/fzr52SXmm0Z/Y7MtwejxYBmEHVTm0FiTbjwV/lxJy86ORJIblYoQSMCPNEe47H/5DJpptQ+stxUj3bDAJg91S9IzSAjgpjzAs5jueisL/LFTvqIigJ/A5VGrx7U9jTBnTj+vYA6eWOM6EdlGGw2jgr9GmouKi+kpqWdjJpS275aBem+cNiw+09KidrBbNzBlkX7ql0NIrgT2+5XaO/JuFlzLktNHG6PqnpDS7b8yo5DIyHzVmLK3d3iUKE8rEMfA58nQzkc2/LciD+5EknuBW/mYrvHa6MW02boFPXpcaFDopDyPPlCcBGRr2QIDAQAB",
   "minimum_chrome_version": "116",

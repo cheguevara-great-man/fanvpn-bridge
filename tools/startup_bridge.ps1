@@ -37,6 +37,8 @@ Write-StartupLog "START chrome=$ChromePath timeout_seconds=$TimeoutSeconds"
 Start-Process -FilePath $ChromePath -ArgumentList '--no-first-run', '--no-default-browser-check', '--no-startup-window' -WindowStyle Hidden
 
 $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+$visibleFallbackAt = [DateTime]::UtcNow.AddSeconds([Math]::Min(10, [Math]::Max(3, [Math]::Floor($TimeoutSeconds / 4))))
+$visibleFallbackStarted = $false
 $delaySeconds = 1
 while ([DateTime]::UtcNow -lt $deadline) {
     try {
@@ -59,6 +61,14 @@ while ([DateTime]::UtcNow -lt $deadline) {
         } catch {
             Write-StartupLog "WAIT $($_.Exception.Message)"
         }
+    }
+    if (-not $visibleFallbackStarted -and [DateTime]::UtcNow -ge $visibleFallbackAt) {
+        # Chrome may ignore --no-startup-window when background mode is disabled
+        # or after an update. A normal window reliably initializes unpacked
+        # extensions and uses the same default Chrome profile.
+        Write-StartupLog 'FALLBACK opening a normal Chrome window to initialize extensions.'
+        Start-Process -FilePath $ChromePath -ArgumentList '--no-first-run', '--no-default-browser-check', 'about:blank'
+        $visibleFallbackStarted = $true
     }
     Start-Sleep -Seconds $delaySeconds
     $delaySeconds = [Math]::Min($delaySeconds * 2, 15)

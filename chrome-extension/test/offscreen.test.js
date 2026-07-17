@@ -88,6 +88,13 @@ test("uses negotiated limits and aborts a response blocked on flow control", asy
       new TextDecoder().decode(await fetchCalls[0].options.body.arrayBuffer()),
       "request-body",
     );
+    const responseHead = outbound.find(
+      (message) => message.type === protocol.MessageType.RESPONSE_HEAD,
+    );
+    assert.equal(responseHead.timing.attempts, 1);
+    assert.equal(responseHead.timing.preemptions, 0);
+    assert.ok(responseHead.timing.executor_queue_ms >= 0);
+    assert.ok(responseHead.timing.fetch_head_ms >= 0);
 
     const responseFrames = () => outbound.filter(
       (message) => message.type === protocol.MessageType.RESPONSE_BODY,

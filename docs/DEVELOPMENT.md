@@ -73,7 +73,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\update_native_host.p
 
 - Bridge 只做传输；AI wire API 转换留给 CC Switch 或其他适配器。
 - 新上游必须加入静态 route 配置，不能接受客户端指定任意目标。
-- 所有响应类型都使用同一字节流，不按 Content-Type 分叉缓存策略。
+- 所有响应类型都使用同一字节流；只有明确 allowlist 的只读 JSON 产品元数据可以进入受限缓存。
 - 新协议 frame 必须先更新 JSON Schema 和双端校验，再更新测试。
 - 任何 fallback 都必须证明仍经过 FanVPN；未经验证时保持失败关闭。
 - 日志和测试输出不得包含 API Key、Authorization、Cookie 或完整请求正文。

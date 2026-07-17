@@ -13,12 +13,31 @@ import time
 import uuid
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Callable, Iterable, Sequence, cast
 from urllib.parse import urlsplit
 
+from .codex_product_auth import CodexProductAuth
 from .config import BridgeConfig
-from .contracts import EgressRequest, Header, HealthSnapshotProvider, RequestDispatcher, ResponseSink
+from .contracts import (
+    BrowserTiming,
+    EgressRequest,
+    Header,
+    HealthSnapshotProvider,
+    RequestDispatcher,
+    ResolvedRoute,
+    ResponseSink,
+)
+from .diagnostics import (
+    DiagnosticOptions,
+    diagnostic_body_preview,
+    diagnostic_headers,
+    diagnostic_url,
+    load_diagnostic_options,
+    request_family,
+)
 from .errors import BridgeError, ErrorCode
+from .product_cache import CachedResponse, ProductResponseCache
 from .routing import RouteTable
 
 
@@ -51,6 +70,10 @@ class _RelayMetrics:
     first_body_ms: int | None
     total_ms: int
     complete: bool
+    response_preview: bytes = b""
+    response_headers: tuple[Header, ...] = ()
+    response_body: bytes | None = None
+    browser_timing: BrowserTiming | None = None
 
 
 class QueueResponseSink(ResponseSink):
@@ -60,8 +83,13 @@ class QueueResponseSink(ResponseSink):
         self.events: queue.Queue[_ResponseEvent] = queue.Queue(maxsize=max_in_flight + 2)
         self._closed = threading.Event()
 
-    def start(self, status: int, headers: Sequence[Header]) -> None:
-        self._put_nowait(_ResponseEvent("head", (status, list(headers))))
+    def start(
+        self,
+        status: int,
+        headers: Sequence[Header],
+        timing: BrowserTiming | None = None,
+    ) -> None:
+        self._put_nowait(_ResponseEvent("head", (status, list(headers), timing)))
 
     def write(self, data: bytes, on_consumed: Callable[[], None] | None = None) -> None:
         if self._closed.is_set():
@@ -105,11 +133,19 @@ class BridgeHTTPServer(ThreadingHTTPServer):
         routes: RouteTable,
         dispatcher: RequestDispatcher,
         health: HealthSnapshotProvider,
+        diagnostics: DiagnosticOptions,
+        product_auth: CodexProductAuth,
+        product_cache: ProductResponseCache,
+        product_api_alias: bool = False,
     ) -> None:
         self.bridge_config = config
         self.routes = routes
         self.dispatcher = dispatcher
         self.health = health
+        self.diagnostics = diagnostics
+        self.product_auth = product_auth
+        self.product_cache = product_cache
+        self.product_api_alias = product_api_alias
         super().__init__(server_address, BridgeRequestHandler)
 
 
@@ -144,9 +180,13 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         request_id = uuid.uuid4().hex
         request_started = time.monotonic()
         route_name: str | None = None
+        family = "none"
+        cache_policy = None
+        cache_owner = False
         try:
             self._validate_local_request(server)
         except BridgeError as error:
+            self._discard_small_rejected_body()
             self.close_connection = True
             self._send_bridge_error(error, request_id, head_only=method == "HEAD")
             return
@@ -182,15 +222,113 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            route = server.routes.resolve_local_target(self.path)
+            local_target = self.path
+            if server.product_api_alias:
+                if self.path == "/api" or self.path.startswith("/api/"):
+                    local_target = "/chatgpt-backend/backend-api" + self.path[4:]
+                else:
+                    raise BridgeError(
+                        ErrorCode.ROUTE_NOT_FOUND,
+                        "The VS Code product API listener only accepts /api paths",
+                    )
+            route = server.routes.resolve_local_target(local_target)
             route_name = route.name
+            family = request_family(route)
+            local_response = _local_product_response(method, route)
+            if local_response is not None:
+                status, response_headers, response_body = local_response
+                self._send_response_bytes(
+                    status,
+                    response_headers,
+                    response_body,
+                    head_only=method == "HEAD",
+                    extra_headers=(Header("X-FanVPN-Local-Response", "true"),),
+                )
+                _LOG.info(
+                    "request_complete request_id=%s route=%s family=%s method=%s status=%s "
+                    "response_head_ms=%s first_body_ms=%s total_ms=%s complete=True local=True",
+                    request_id,
+                    route_name,
+                    family,
+                    method,
+                    status,
+                    _elapsed_ms(request_started),
+                    "none" if method == "HEAD" or not response_body else _elapsed_ms(request_started),
+                    _elapsed_ms(request_started),
+                )
+                return
             route_config = server.bridge_config.routes[route.name]
             headers = self._request_headers(route_config.request_header_allowlist)
+            headers = server.product_auth.attach(route, headers)
+            if server.diagnostics.enabled and route_name == "chatgpt-backend":
+                _LOG.info(
+                    "request_diagnostic request_id=%s route=%s family=%s method=%s upstream=%s headers=%s",
+                    request_id,
+                    route_name,
+                    family,
+                    method,
+                    diagnostic_url(route, server.diagnostics),
+                    diagnostic_headers(headers, server.diagnostics),
+                )
+            cache_policy = server.product_cache.policy(method, route, headers)
+            if cache_policy is not None:
+                cache_deadline = request_started + server.bridge_config.protocol.request_timeout_seconds
+                while True:
+                    access = server.product_cache.acquire(cache_policy)
+                    if access.cached is not None:
+                        entry = access.cached
+                        age_ms = access.age_ms or 0
+                        self._send_cached_response(entry, head_only=method == "HEAD")
+                        elapsed = _elapsed_ms(request_started)
+                        _LOG.info(
+                            "request_cache_hit request_id=%s route=%s family=%s age_ms=%s bytes=%s",
+                            request_id,
+                            route_name,
+                            family,
+                            age_ms,
+                            len(entry.body),
+                        )
+                        _LOG.info(
+                            "request_complete request_id=%s route=%s family=%s method=%s status=%s "
+                            "response_head_ms=%s first_body_ms=%s total_ms=%s complete=True cache=hit",
+                            request_id,
+                            route_name,
+                            family,
+                            method,
+                            entry.status,
+                            elapsed,
+                            "none" if method == "HEAD" or not entry.body else elapsed,
+                            elapsed,
+                        )
+                        return
+                    if access.owner:
+                        cache_owner = True
+                        break
+                    wait_event = access.wait_event
+                    if wait_event is None:
+                        raise BridgeError(ErrorCode.INTERNAL_ERROR, "Invalid product-cache state")
+                    _LOG.info(
+                        "request_cache_wait request_id=%s route=%s family=%s",
+                        request_id,
+                        route_name,
+                        family,
+                    )
+                    while not wait_event.wait(0.25):
+                        if _socket_disconnected(self.connection):
+                            raise ConnectionResetError("Local HTTP client disconnected")
+                        if time.monotonic() >= cache_deadline:
+                            raise BridgeError(
+                                ErrorCode.REQUEST_TIMEOUT,
+                                "Timed out waiting for an identical product metadata request",
+                            )
             body = self._request_body(
                 server.bridge_config.protocol.max_chunk_bytes,
                 max_body_bytes=server.bridge_config.protocol.max_request_body_bytes,
                 timeout=server.bridge_config.protocol.request_timeout_seconds,
             )
+            request_preview = bytearray()
+            if server.diagnostics.level == "full" and family == "apps-mcp":
+                body = _capture_preview(body, request_preview)
             sink = QueueResponseSink(server.bridge_config.protocol.max_in_flight)
             request = EgressRequest(
                 request_id=request_id,
@@ -205,23 +343,70 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 timeout=server.bridge_config.protocol.request_timeout_seconds,
                 head_only=method == "HEAD",
                 started_at=request_started,
+                capture_error_preview=(
+                    server.diagnostics.level == "full" and route_name == "chatgpt-backend"
+                ),
+                capture_body_limit=(
+                    cache_policy.max_body_bytes if cache_policy is not None else None
+                ),
             )
             _LOG.info(
-                "request_complete route=%s method=%s status=%s response_head_ms=%s "
-                "first_body_ms=%s total_ms=%s complete=%s",
+                "request_complete request_id=%s route=%s family=%s method=%s status=%s response_head_ms=%s "
+                "first_body_ms=%s total_ms=%s complete=%s executor_queue_ms=%s fetch_head_ms=%s "
+                "fetch_attempts=%s fetch_preemptions=%s",
+                request_id,
                 route_name,
+                family,
                 method,
                 metrics.status,
                 metrics.response_head_ms,
                 metrics.first_body_ms if metrics.first_body_ms is not None else "none",
                 metrics.total_ms,
                 metrics.complete,
+                metrics.browser_timing.executor_queue_ms if metrics.browser_timing else "unknown",
+                metrics.browser_timing.fetch_head_ms if metrics.browser_timing else "unknown",
+                metrics.browser_timing.attempts if metrics.browser_timing else "unknown",
+                metrics.browser_timing.preemptions if metrics.browser_timing else "unknown",
             )
+            if metrics.response_preview:
+                _LOG.info(
+                    "response_diagnostic request_id=%s route=%s family=%s status=%s headers=%s preview=%s",
+                    request_id,
+                    route_name,
+                    family,
+                    metrics.status,
+                    diagnostic_headers(list(metrics.response_headers), server.diagnostics),
+                    diagnostic_body_preview(metrics.response_preview),
+                )
+            if metrics.status >= 400 and request_preview:
+                _LOG.info(
+                    "request_body_diagnostic request_id=%s route=%s family=%s preview=%s",
+                    request_id,
+                    route_name,
+                    family,
+                    diagnostic_body_preview(bytes(request_preview)),
+                )
+            if cache_policy is not None and metrics.response_body is not None and metrics.complete:
+                if server.product_cache.put(
+                    cache_policy,
+                    status=metrics.status,
+                    headers=metrics.response_headers,
+                    body=metrics.response_body,
+                ):
+                    _LOG.info(
+                        "request_cache_store request_id=%s route=%s family=%s bytes=%s",
+                        request_id,
+                        route_name,
+                        family,
+                        len(metrics.response_body),
+                    )
         except BridgeError as error:
             if route_name is not None:
                 _LOG.warning(
-                    "request_failed route=%s method=%s code=%s elapsed_ms=%s",
+                    "request_failed request_id=%s route=%s family=%s method=%s code=%s elapsed_ms=%s",
+                    request_id,
                     route_name,
+                    family,
                     method,
                     error.code,
                     _elapsed_ms(request_started),
@@ -233,6 +418,9 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             error = BridgeError(ErrorCode.INTERNAL_ERROR, str(exc) or type(exc).__name__)
             self._send_bridge_error(error, request_id, head_only=method == "HEAD")
+        finally:
+            if cache_owner and cache_policy is not None:
+                server.product_cache.complete(cache_policy)
 
     def _handle_probe(self, server: BridgeHTTPServer, route_name: str) -> None:
         request_id = uuid.uuid4().hex
@@ -350,6 +538,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         timeout: float,
         head_only: bool,
         started_at: float | None = None,
+        capture_error_preview: bool = False,
+        capture_body_limit: int | None = None,
     ) -> _RelayMetrics:
         server = cast(BridgeHTTPServer, self.server)
         started_at = started_at if started_at is not None else time.monotonic()
@@ -357,6 +547,10 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         response_status: int | None = None
         response_head_ms: int | None = None
         first_body_ms: int | None = None
+        response_preview = bytearray()
+        response_headers: tuple[Header, ...] = ()
+        response_body: bytearray | None = bytearray() if capture_body_limit is not None else None
+        browser_timing: BrowserTiming | None = None
         idle_deadline = time.monotonic() + timeout
         while True:
             remaining = idle_deadline - time.monotonic()
@@ -374,8 +568,11 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             if event.kind == "head":
                 if response_started:
                     raise BridgeError(ErrorCode.PROTOCOL_VIOLATION, "Duplicate response head")
-                status, headers = cast(tuple[int, list[Header]], event.value)
+                status, headers, browser_timing = cast(
+                    tuple[int, list[Header], BrowserTiming | None], event.value
+                )
                 response_status = status
+                response_headers = tuple(headers)
                 response_head_ms = _elapsed_ms(started_at)
                 self.send_response(status)
                 excluded = _HOP_BY_HOP | _BROWSER_DECODED_RESPONSE_HEADERS
@@ -400,6 +597,16 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 if data and not head_only:
                     if first_body_ms is None:
                         first_body_ms = _elapsed_ms(started_at)
+                    if capture_error_preview and response_status is not None and response_status >= 400:
+                        remaining = 4096 - len(response_preview)
+                        if remaining > 0:
+                            response_preview.extend(data[:remaining])
+                    if response_body is not None:
+                        assert capture_body_limit is not None
+                        if len(response_body) + len(data) <= capture_body_limit:
+                            response_body.extend(data)
+                        else:
+                            response_body = None
                     self._write_chunk(data)
                 if on_consumed is not None:
                     on_consumed()
@@ -416,6 +623,10 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                     first_body_ms=first_body_ms,
                     total_ms=_elapsed_ms(started_at),
                     complete=True,
+                    response_preview=bytes(response_preview),
+                    response_headers=response_headers,
+                    response_body=bytes(response_body) if response_body is not None else None,
+                    browser_timing=browser_timing,
                 )
             if event.kind == "error":
                 error = event.value
@@ -428,6 +639,10 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                         first_body_ms=first_body_ms,
                         total_ms=_elapsed_ms(started_at),
                         complete=False,
+                        response_preview=bytes(response_preview),
+                        response_headers=response_headers,
+                        response_body=None,
+                        browser_timing=browser_timing,
                     )
                 if isinstance(error, BridgeError):
                     raise error
@@ -442,6 +657,68 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         else:
             self.wfile.write(b"0\r\n\r\n")
         self.wfile.flush()
+
+    def _send_cached_response(self, entry: CachedResponse, *, head_only: bool) -> None:
+        self._send_response_bytes(
+            entry.status,
+            entry.headers,
+            entry.body,
+            head_only=head_only,
+            extra_headers=(Header("X-FanVPN-Cache", "HIT"),),
+        )
+
+    def _send_response_bytes(
+        self,
+        status: int,
+        headers: Sequence[Header],
+        body: bytes,
+        *,
+        head_only: bool,
+        extra_headers: Sequence[Header] = (),
+    ) -> None:
+        self.send_response(status)
+        excluded = _HOP_BY_HOP | _BROWSER_DECODED_RESPONSE_HEADERS | {"set-cookie"}
+        emitted = set()
+        for header in [*headers, *extra_headers]:
+            name = header.name.lower()
+            if (
+                name not in excluded
+                and not name.startswith("access-control-")
+                and name not in emitted
+            ):
+                self.send_header(header.name, header.value)
+                emitted.add(name)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-FanVPN-Bridge", "v2")
+        self.end_headers()
+        if not head_only and body:
+            self.wfile.write(body)
+            self.wfile.flush()
+
+    def _discard_small_rejected_body(self) -> None:
+        """Avoid a Windows TCP reset when rejecting a small request body early."""
+
+        raw_length = self.headers.get("Content-Length")
+        if raw_length is None:
+            return
+        try:
+            remaining = int(raw_length, 10)
+        except ValueError:
+            return
+        if remaining <= 0 or remaining > 65536:
+            return
+        previous_timeout = self.connection.gettimeout()
+        try:
+            self.connection.settimeout(0.25)
+            while remaining:
+                chunk = self.rfile.read(min(remaining, 8192))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+        except (OSError, TimeoutError):
+            pass
+        finally:
+            self.connection.settimeout(previous_timeout)
 
     def _send_health(self, server: BridgeHTTPServer, *, readiness: bool = False) -> None:
         snapshot = server.health.snapshot()
@@ -529,6 +806,49 @@ def _elapsed_ms(started_at: float) -> int:
     return max(0, round((time.monotonic() - started_at) * 1000))
 
 
+def _local_product_response(
+    method: str,
+    route: ResolvedRoute,
+) -> tuple[int, tuple[Header, ...], bytes] | None:
+    if method not in {"GET", "HEAD"}:
+        return None
+    if route.name != "chatgpt-backend":
+        return None
+    upstream = urlsplit(route.upstream_url)
+    if upstream.scheme != "https" or upstream.hostname != "chatgpt.com":
+        return None
+    if upstream.path == "/backend-api/ps/mcp":
+        body = json.dumps(
+            {
+                "error": {
+                    "code": "METHOD_NOT_ALLOWED",
+                    "message": "This MCP endpoint accepts POST and does not expose a server SSE stream.",
+                }
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return 405, (
+            Header("Content-Type", "application/json; charset=utf-8"),
+            Header("Allow", "POST"),
+        ), body
+    if upstream.path in {
+        "/backend-api/ps/mcp/.well-known/oauth-protected-resource",
+        "/backend-api/ps/mcp/.well-known/openid-configuration",
+        "/backend-api/ps/mcp/.well-known/oauth-authorization-server",
+    }:
+        body = b'{"error":{"code":"OAUTH_DISCOVERY_NOT_REQUIRED"}}'
+        return 404, (Header("Content-Type", "application/json; charset=utf-8"),), body
+    return None
+
+
+def _capture_preview(body: Iterable[bytes], preview: bytearray) -> Iterable[bytes]:
+    for chunk in body:
+        remaining = 4096 - len(preview)
+        if remaining > 0:
+            preview.extend(chunk[:remaining])
+        yield chunk
+
+
 def _is_allowed_host(value: str | None, listen_port: int) -> bool:
     if not value:
         return False
@@ -553,11 +873,21 @@ def create_http_server(
     routes: RouteTable,
     dispatcher: RequestDispatcher,
     health: HealthSnapshotProvider,
+    *,
+    codex_auth_path: Path | None = None,
+    listen_port: int | None = None,
+    product_api_alias: bool = False,
+    product_cache: ProductResponseCache | None = None,
 ) -> BridgeHTTPServer:
+    auth_path = codex_auth_path or Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "auth.json"
     return BridgeHTTPServer(
-        (config.listen_host, config.listen_port),
+        (config.listen_host, config.listen_port if listen_port is None else listen_port),
         config=config,
         routes=routes,
         dispatcher=dispatcher,
         health=health,
+        diagnostics=load_diagnostic_options(),
+        product_auth=CodexProductAuth(auth_path),
+        product_cache=product_cache or ProductResponseCache(),
+        product_api_alias=product_api_alias,
     )

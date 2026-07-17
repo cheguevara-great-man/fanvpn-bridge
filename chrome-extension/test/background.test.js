@@ -8,8 +8,8 @@ function eventTarget() {
     addListener(listener) {
       listeners.push(listener);
     },
-    emit(value) {
-      for (const listener of listeners) listener(value);
+    emit(...args) {
+      return listeners.map((listener) => listener(...args));
     },
   };
 }
@@ -120,6 +120,29 @@ test("serializes native messages, caches the offscreen context, retries, and res
       { maxChunkBytes: 64 * 1024, maxInFlight: 2 },
     );
     assert.equal(nativeOutbound[0].type, "hello_ack");
+
+    const modeResponse = new Promise((resolve) => {
+      const handled = chrome.runtime.onMessage.emit(
+        { target: "background", kind: "codex-mode:get" },
+        {},
+        resolve,
+      );
+      assert.deepEqual(handled, [true]);
+    });
+    await waitFor(
+      () => nativeOutbound.some((message) => message.type === "control.mode.get"),
+      "mode control request was not sent",
+    );
+    const modeRequest = nativeOutbound.find((message) => message.type === "control.mode.get");
+    nativeMessages.emit({
+      v: 1,
+      type: "control.mode.result",
+      id: modeRequest.id,
+      ok: true,
+      mode: "browser_full",
+      restart_vscode_required: false,
+    });
+    assert.equal((await modeResponse).mode, "browser_full");
 
     failNextSend = true;
     nativeMessages.emit({

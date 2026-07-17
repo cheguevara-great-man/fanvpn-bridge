@@ -54,6 +54,7 @@ class NetworkModeScriptTests(unittest.TestCase):
             self.assertEqual(browser.count("plugins = false"), 1)
             self.assertEqual(browser.count("remote_plugin = false"), 1)
             self.assertEqual(browser.count("enabled = false"), 1)
+            self.assertEqual(browser.count("shell_snapshot = false"), 1)
             self.assertIn("managed lean mode", browser)
 
             direct = self.run_mode(codex_home, "Direct")
@@ -63,6 +64,7 @@ class NetworkModeScriptTests(unittest.TestCase):
             self.assertIn("plugins = true # custom", direct)
             self.assertIn("enabled = true", direct)
             self.assertNotIn("remote_plugin =", direct)
+            self.assertNotIn("shell_snapshot =", direct)
             self.assertNotIn("managed lean mode", direct)
 
     def test_browser_mode_is_idempotent_and_restores_absent_values(self) -> None:
@@ -83,6 +85,67 @@ class NetworkModeScriptTests(unittest.TestCase):
             self.assertNotIn("plugins =", direct)
             self.assertNotIn("remote_plugin =", direct)
             self.assertNotIn("enabled =", direct)
+
+    def test_full_and_lean_modes_switch_without_losing_user_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            codex_home = Path(directory)
+            config_path = codex_home / "config.toml"
+            original_url = "https://custom.example/backend-api/"
+            config_path.write_text(
+                f'chatgpt_base_url = "{original_url}"\nmodel = "gpt-test"\n\n'
+                "[features]\napps = true\nplugins = true\nremote_plugin = true\n\n"
+                "[analytics]\nenabled = true\n",
+                encoding="utf-8",
+            )
+
+            full = self.run_mode(codex_home, "BrowserFull")
+            self.assertIn(
+                'chatgpt_base_url = "http://127.0.0.1:18888/chatgpt-backend/backend-api/"',
+                full,
+            )
+            self.assertNotIn(original_url, full)
+            self.assertIn("apps = true", full)
+            self.assertIn("plugins = true", full)
+            self.assertIn("shell_snapshot = false", full)
+            self.assertIn("managed ChatGPT base URL", full)
+            full_second = self.run_mode(codex_home, "BrowserFull")
+            self.assertEqual(full_second, self.run_mode(codex_home, "BrowserFull"))
+
+            lean = self.run_mode(codex_home, "BrowserLean")
+            self.assertIn(f'chatgpt_base_url = "{original_url}"', lean)
+            self.assertNotIn("chatgpt-backend", lean)
+            self.assertIn("apps = false", lean)
+            self.assertIn("plugins = false", lean)
+
+            full_again = self.run_mode(codex_home, "BrowserFull")
+            self.assertIn("chatgpt-backend", full_again)
+            self.assertIn("apps = true", full_again)
+            self.assertIn("plugins = true", full_again)
+
+            direct = self.run_mode(codex_home, "Direct")
+            self.assertIn(f'chatgpt_base_url = "{original_url}"', direct)
+            self.assertIn("apps = true", direct)
+            self.assertIn("plugins = true", direct)
+            self.assertNotIn("shell_snapshot =", direct)
+            self.assertNotIn("managed ChatGPT base URL", direct)
+
+    def test_browser_modes_restore_existing_shell_snapshot_value_in_direct(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            codex_home = Path(directory)
+            config_path = codex_home / "config.toml"
+            config_path.write_text(
+                'model = "gpt-test"\n\n[features]\nshell_snapshot = true # user value\n',
+                encoding="utf-8",
+            )
+
+            full = self.run_mode(codex_home, "BrowserFull")
+            self.assertIn("shell_snapshot = false", full)
+            self.assertNotIn("shell_snapshot = true", full)
+            lean = self.run_mode(codex_home, "BrowserLean")
+            self.assertIn("shell_snapshot = false", lean)
+            direct = self.run_mode(codex_home, "Direct")
+            self.assertIn("shell_snapshot = true # user value", direct)
+            self.assertNotIn("managed Windows compatibility", direct)
 
     def test_upgrade_removes_221_backend_route_and_restores_original_url(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

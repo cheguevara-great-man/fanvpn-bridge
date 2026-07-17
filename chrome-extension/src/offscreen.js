@@ -10,6 +10,7 @@ import {
   isProtocolEnvelope,
 } from "./protocol.js";
 import { pumpResponseBody } from "./stream.js";
+import { resilientFetch } from "./resilient_fetch.js";
 
 const requests = new Map();
 const METHODS_WITHOUT_BODY = new Set(["GET", "HEAD"]);
@@ -149,6 +150,7 @@ async function handleEnvelope(message) {
 }
 
 async function executeRequest(id, state) {
+  let browserTiming = null;
   try {
     const headers = new Headers();
     for (const pair of state.head.headers || []) {
@@ -160,14 +162,18 @@ async function executeRequest(id, state) {
       // Routes are an origin allowlist. Automatic redirects could escape the
       // configured upstream and replay credentials or request bodies there.
       redirect: "error",
-      signal: state.controller.signal,
       cache: "no-store",
     };
     if (!METHODS_WITHOUT_BODY.has(state.head.method)) {
       options.body = new Blob(state.requestChunks);
     }
     state.requestChunks.length = 0;
-    const response = await fetch(state.head.url, options);
+    const response = await resilientFetch(state.head.url, options, {
+      parentSignal: state.controller.signal,
+      onTiming: (timing) => {
+        browserTiming = timing;
+      },
+    });
     const responseHeaders = [];
     for (const [name, value] of response.headers.entries()) {
       if (!BROWSER_DECODED_HEADERS.has(name.toLowerCase())) {
@@ -179,6 +185,7 @@ async function executeRequest(id, state) {
         id,
         status: response.status,
         headers: responseHeaders,
+        timing: browserTiming,
       }),
     );
     await pumpResponseBody(response.body, {
@@ -189,13 +196,15 @@ async function executeRequest(id, state) {
   } catch (error) {
     if (state.controller.signal.aborted) return;
     const failure = classifyFetchError(error);
+    const fields = {
+      id,
+      code: failure.code,
+      message: failure.message,
+      retryable: failure.retryable,
+    };
+    if (browserTiming) fields.timing = browserTiming;
     await postBackground(
-      envelope(MessageType.ERROR, {
-        id,
-        code: failure.code,
-        message: failure.message,
-        retryable: failure.retryable,
-      }),
+      envelope(MessageType.ERROR, fields),
     );
   } finally {
     state.requestChunks.length = 0;
@@ -267,6 +276,9 @@ function abortError(reason) {
 
 function classifyFetchError(error) {
   const message = error?.message || String(error);
+  if (error?.code === ErrorCode.REQUEST_TIMEOUT || error?.name === "TimeoutError") {
+    return { code: ErrorCode.REQUEST_TIMEOUT, message, retryable: true };
+  }
   if (error?.name === "AbortError") {
     return { code: ErrorCode.CLIENT_CANCELLED, message: "Request aborted", retryable: false };
   }

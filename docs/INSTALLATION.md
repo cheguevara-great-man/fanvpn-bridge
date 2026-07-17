@@ -37,11 +37,29 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_native_host.ps
 Native Host built at: <仓库路径>\dist\browser-ai-bridge
 ```
 
+PyInstaller 工具、work 和 spec 缓存默认写入：
+
+```text
+%LOCALAPPDATA%\BrowserAIBridge\build-cache
+```
+
+它们不再放在源码仓库的 `build` 目录中，避免 VS Code 文件监视、搜索和语言服务扫描大批第三方
+构建文件。工具缓存按 PyInstaller 版本复用，work/spec 再按仓库绝对路径的摘要隔离；最终可部署
+产物仍写入 `dist`、`dist-a` 或 `dist-b`。如果旧版本曾在仓库内生成 `build\pyinstaller*`，该目录
+已经不参与新构建，可以在确认没有构建进程运行后删除。
+
 如果系统中有多个 Python，可以显式指定解释器：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_native_host.ps1 `
   -Python "C:\path\to\python.exe"
+```
+
+需要把构建缓存放到其他磁盘时，可显式指定：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_native_host.ps1 `
+  -BuildCacheRoot 'D:\BrowserAIBridgeBuildCache'
 ```
 
 ## 3. 加载 Chrome 扩展
@@ -84,6 +102,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 - 协议握手：完成。
 - 浏览器执行器：`offscreen`。
 - ChatGPT 网站权限：已授权。
+- 弹窗下方出现“启动 VS Code 网络模式”，并提供“服务器直连”“浏览器精简”和
+  “浏览器完整（实验）”三个按钮。
+
+第一次选择前，弹窗可能显示“未由 Bridge 管理”；这只表示现有 Codex provider 还不是 2.6.0 的
+托管配置，不代表 Native Messaging 故障。三模式按钮要求 Chrome 扩展和正在运行的 Native Host
+均为 2.6.0；只刷新扩展但仍运行旧 Host 时，模式读取或切换会失败。
 
 在 PowerShell 中运行：
 
@@ -98,13 +122,15 @@ Invoke-RestMethod http://127.0.0.1:18888/routes -Proxy $null
 anthropic
 auth-openai
 chatgpt-codex
+chatgpt-backend
 gemini
 gemini-openai
 openai
 ```
 
-2.2.2 起不再包含 `chatgpt-backend`。如果仍看到该路由，说明 Chrome 当前连接的还是 2.2.1 Host，
-请核对安装输出中的 Native Host 路径并完全重开 Chrome。
+`chatgpt-backend` 的存在不代表默认会使用它：Browser Lean 不设置产品后端地址，只有显式选择
+Browser Full 才会发起这类请求。如果该路由缺失，说明运行中的 Host 不是当前版本，请核对安装输出中的
+Native Host 路径并完全重开 Chrome。
 
 如需完整诊断，可运行：
 
@@ -142,6 +168,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\update_native_host.p
 2. 关闭并重新打开 Chrome，让旧 Host 退出并释放上一套目录。
 3. 重新检查 `/ready` 和 `/routes`。
 
+2.6.0 的三模式弹窗依赖打包进 Native Host 目录的固定启动脚本，因此更新时不能只替换
+`chrome-extension`。必须先运行更新脚本切换 Host，再刷新扩展并重开 Chrome，确认弹窗和
+`/ready` 报告的版本一致。
+
 下一次更新会自动使用刚刚释放的另一套目录。可以用 `-WhatIf` 只查看本次将使用哪一套，而不执行构建和注册：
 
 ```powershell
@@ -170,7 +200,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\update_native_host.p
 %LOCALAPPDATA%\FanVPNBridge\fanvpn-bridge.log
 ```
 
-运行日志按 2 MiB 轮转并保留三个历史文件。日志不记录请求正文、Token、Cookie 或请求头值。
+运行日志按 2 MiB 轮转并保留三个历史文件。常规日志不记录请求正文、Token、Cookie、API Key 或
+认证头值。开启 Full 产品诊断时可以记录非敏感 header 值和失败响应摘要，但认证凭据始终遮盖。
+
+经 Chrome 执行的成功请求会在 `request_complete` 记录 `executor_queue_ms`、`fetch_head_ms`、`fetch_attempts` 和
+`fetch_preemptions`；浏览器在返回响应头前失败时，会先记录带相同字段的 `browser_fetch_failed`，
+随后记录 `request_failed`。本地快速响应和内存缓存命中没有 browser fetch，因此不会带这组时序。
+这些时序只用于区分浏览器排队、实际 fetch 和抢占/重试，不包含 URL、正文或凭据。
 
 ## 可选：安装 VS Code 直连模式
 
@@ -199,8 +235,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File `
 ```
 
 脚本会校验并复制凭据到 `%LOCALAPPDATA%\FanVPNBridge\direct-proxy.json`，限制为当前
-Windows 用户可读，并在桌面建立“VS Code - Browser Bridge”和
-“VS Code - Direct US Proxy”两个按钮。它不会设置 Windows 全局代理，也不会自动启用直连模式。
+Windows 用户可读，并在桌面建立“VS Code - Browser Bridge”、
+“VS Code - Browser Full (Experimental)”和“VS Code - Direct US Proxy”三个入口。
+扩展弹窗中的两个浏览器模式不要求执行本节；只有“服务器直连”需要该凭据文件。安装脚本不会
+设置 Windows 全局代理，也不会自动启用直连模式。
 
 ## 卸载
 

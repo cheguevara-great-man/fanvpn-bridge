@@ -12,6 +12,8 @@ const NATIVE_HOST_NAME = "com.fanvpn.bridge";
 const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 const OFFSCREEN_PATH = "offscreen.html";
+const CONTROL_HANDSHAKE_TIMEOUT_MS = 5000;
+const CONTROL_TIMEOUT_MS = 60000;
 
 let nativePort = null;
 let reconnectTimer = null;
@@ -21,6 +23,7 @@ let offscreenReady = false;
 let lastError = null;
 let handshakeComplete = false;
 let negotiatedLimits = null;
+const pendingControls = new Map();
 
 function setError(code, message) {
   lastError = { code, message, at: new Date().toISOString() };
@@ -74,6 +77,7 @@ function connectNative() {
       nativePort = null;
       handshakeComplete = false;
       negotiatedLimits = null;
+      rejectPendingControls(message);
       setError(ErrorCode.NATIVE_CHANNEL_UNAVAILABLE, message);
       void resetOffscreenRequests("native_host_disconnected");
       scheduleReconnect();
@@ -170,6 +174,21 @@ async function handleNativeMessage(message, port) {
   }
   if (message.type === MessageType.PING) {
     postNative(envelope(MessageType.PONG, { nonce: message.nonce }), port);
+    return;
+  }
+  if (message.type === MessageType.CONTROL_MODE_RESULT) {
+    const pending = pendingControls.get(message.id);
+    if (!pending) return;
+    pendingControls.delete(message.id);
+    clearTimeout(pending.timeout);
+    pending.resolve(message);
+    return;
+  }
+  if (message.type === MessageType.ERROR && pendingControls.has(message.id)) {
+    const pending = pendingControls.get(message.id);
+    pendingControls.delete(message.id);
+    clearTimeout(pending.timeout);
+    pending.reject(new Error(message.message || "Native Host 拒绝了模式操作"));
     return;
   }
   if (!handshakeComplete) {
@@ -277,6 +296,43 @@ function negotiatedProtocolLimits(message) {
   };
 }
 
+async function requestModeControl(kind, mode) {
+  await waitForNativeHandshake();
+  const id = crypto.randomUUID().replaceAll("-", "");
+  const type = kind === "set" ? MessageType.CONTROL_MODE_SET : MessageType.CONTROL_MODE_GET;
+  const message = envelope(type, kind === "set" ? { id, mode } : { id });
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pendingControls.delete(id);
+      reject(new Error("模式切换超时"));
+    }, CONTROL_TIMEOUT_MS);
+    pendingControls.set(id, { resolve, reject, timeout });
+    if (!postNative(message)) {
+      pendingControls.delete(id);
+      clearTimeout(timeout);
+      reject(new Error("Native Host 当前不可用"));
+    }
+  });
+}
+
+async function waitForNativeHandshake() {
+  connectNative();
+  const deadline = Date.now() + CONTROL_HANDSHAKE_TIMEOUT_MS;
+  while (!nativePort || !handshakeComplete) {
+    if (Date.now() >= deadline) throw new Error("Native Host 尚未连接完成");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    connectNative();
+  }
+}
+
+function rejectPendingControls(message) {
+  for (const pending of pendingControls.values()) {
+    clearTimeout(pending.timeout);
+    pending.reject(new Error(message));
+  }
+  pendingControls.clear();
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.target === "background" && isProtocolEnvelope(message.envelope)) {
     postNative(message.envelope);
@@ -293,6 +349,22 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       version: chrome.runtime.getManifest().version,
     });
     return false;
+  }
+  if (message?.target === "background" && message.kind === "codex-mode:get") {
+    requestModeControl("get")
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, mode: "unmanaged", message: error.message }));
+    return true;
+  }
+  if (message?.target === "background" && message.kind === "codex-mode:set") {
+    if (!["direct", "browser_lean", "browser_full"].includes(message.mode)) {
+      sendResponse({ ok: false, mode: "unmanaged", message: "不支持的模式" });
+      return false;
+    }
+    requestModeControl("set", message.mode)
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, mode: "unmanaged", message: error.message }));
+    return true;
   }
   return false;
 });

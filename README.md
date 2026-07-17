@@ -36,14 +36,23 @@ Claude Code 使用 Gemini 时，由 CC Switch 转换 Anthropic Messages 与 Gemi
 - 单一 Native Host 同时提供本地 HTTP 网关和 Chrome 通道。
 - OpenAI、ChatGPT Codex、Anthropic、Gemini Native 等显式路由。
 - 流式响应、分片、按请求隔离的背压、并发上限、超时和客户端取消。
+- Browser Full（浏览器完整，实验）对经过明确允许的只读账号、插件和连接器元数据使用按账号及 Token 摘要隔离的
+  有界内存缓存；可重试的元数据 GET 从进入浏览器调度起最多占用 15 秒。网络失败最多重试一次，
+  因交互请求让路的重启另有 4 次独立上限。
+- 成功和失败的浏览器请求都会报告不含凭据的排队、fetch、尝试和抢占时序，便于区分本地调度与上游网络长尾。
 - 仅监听 `127.0.0.1`，校验本地 Host/Origin，上游由静态 allowlist 限制。
 - Chrome 出口不可用时失败关闭，不回退到系统直连。
 - Codex 首次登录可通过一次性助手完成，无需复制其他电脑的 `auth.json`。
-- Codex 浏览器精简模式只转发核心模型接口，自动关闭会导致首条消息超时的产品后端初始化，并可在切回直连时恢复原配置。
+- Codex 提供稳定的 Browser Lean、Browser Full（浏览器完整，实验）和可选 Direct 三种模式；
+  `Browser` 默认等同 Browser Lean。
+- Chrome 扩展弹窗提供“服务器直连”“浏览器精简”“浏览器完整（实验）”三个按钮；关闭全部
+  VS Code 后点击，Bridge 会事务式更新托管配置并按所选模式启动 VS Code。三种模式都应从按钮启动，
+  不能只看上次磁盘配置后再从普通 VS Code 图标打开。
 - A/B 事务式更新，切换前自动冒烟测试，失败时恢复旧注册。
 - Windows 登录后自动启动 Chrome 并等待 Bridge ready。
 - VS Code Claude Code 可在 Anthropic 官方模式和 Gemini 模式之间切换，且不接管全局 Claude 配置。
-- 可选的 VS Code 直连模式通过本机 `18889` 连接自有 HTTPS 代理，并提供两个桌面启动按钮随时切换。
+- 可选的 VS Code 直连模式通过本机 `18889` 连接自有 HTTPS 代理；安装后仍提供 Lean、Full、Direct
+  三个桌面启动入口，作为扩展弹窗之外的备用入口。
 
 ## 快速开始
 
@@ -75,8 +84,12 @@ Invoke-RestMethod http://127.0.0.1:18888/ready -Proxy $null
 返回 HTTP 200 且 `ready=true` 后，再按[客户端使用指南](docs/USAGE.md)配置
 Codex、Claude Code 或 CC Switch。
 
+完成 Codex 登录后，推荐完全退出 VS Code，打开 FanVPN AI Bridge 弹窗并点击“浏览器精简”或
+“浏览器完整（实验）”。按钮会写入受管理的 provider 和产品端点配置，再自动启动 VS Code；
+不需要手工输入三种模式的 provider。“服务器直连”只有在完成可选直连安装后才能使用。
+
 如果还部署了配套的自有 HTTPS 代理，可按[安装文档](docs/INSTALLATION.md#可选安装-vs-code-直连模式)
-安装可选直连模式，再按[客户端使用指南](docs/USAGE.md#可选的-vs-code-网络模式切换)选择入口。
+安装可选直连模式，再按[客户端使用指南](docs/USAGE.md#三种-vs-code-网络模式)选择入口。
 浏览器桥接仍是默认方式。
 
 ## 路由
@@ -85,6 +98,8 @@ Codex、Claude Code 或 CC Switch。
 |---|---|
 | OpenAI Responses API | `http://127.0.0.1:18888/openai/v1` |
 | ChatGPT Codex backend | `http://127.0.0.1:18888/chatgpt-codex` |
+| ChatGPT 产品后端（仅 Browser Full） | `http://127.0.0.1:18888/chatgpt-backend` |
+| VS Code Codex 界面产品接口（Browser 模式自动管理） | `http://127.0.0.1:8000/api` |
 | Codex 登录 Token Exchange、刷新和注销 | `http://127.0.0.1:18888/auth-openai` |
 | Anthropic Messages API | `http://127.0.0.1:18888/anthropic` |
 | Gemini Native | `http://127.0.0.1:18888/gemini` |
@@ -92,8 +107,10 @@ Codex、Claude Code 或 CC Switch。
 
 路由来自 `config/routes.example.json`。API Key 不应写入路由配置。
 
-当前 Browser 模式是稳定优先的精简模式，不接管 Codex Apps、插件目录和完整账号产品后端。
-个人 Skills、本地脚本及手工配置的本地 MCP 仍可使用。具体边界见[客户端使用](docs/USAGE.md)。
+默认 `Browser` 是稳定优先的 Browser Lean，不接管 Codex Apps、插件目录和完整账号产品后端。
+Browser Full（浏览器完整，实验）会把产品后端也交给 Chrome，并使用有界、短期、仅进程内存在的
+只读元数据缓存。Host 或 Chrome 重启后缓存立即清空。个人 Skills、本地脚本及手工配置的本地 MCP
+在 Lean 中仍可使用。具体边界见[客户端使用](docs/USAGE.md)。
 
 ## 文档
 

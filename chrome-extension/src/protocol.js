@@ -22,6 +22,9 @@ export const MessageType = Object.freeze({
   ERROR: "error",
   PING: "ping",
   PONG: "pong",
+  CONTROL_MODE_GET: "control.mode.get",
+  CONTROL_MODE_SET: "control.mode.set",
+  CONTROL_MODE_RESULT: "control.mode.result",
 });
 
 export const ErrorCode = Object.freeze({

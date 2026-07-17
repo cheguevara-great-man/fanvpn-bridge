@@ -47,15 +47,20 @@ remote_plugin = false
 enabled = false
 ```
 
-浏览器模式当前采用**精简模式**：只把模型目录和 Responses 对话送入 Chrome，并关闭会访问
+默认浏览器模式采用 **Browser Lean**：只把模型目录和 Responses 对话送入 Chrome，并关闭会访问
 ChatGPT 产品后端的 Apps、插件同步、远程插件目录和分析请求。这样可以避免没有系统代理时，
 Codex 在第一条消息前等待这些请求超时。个人 Skills、本地脚本、Git 和手工配置的本地 MCP
 不依赖插件目录，可以继续使用。
 
-精简模式不提供完整的账号产品功能，例如账号侧插件、Apps/连接器同步、完整云端任务元数据和
-部分账号信息。后续版本会按接口族逐项接入；不要再配置 2.2.1 曾使用的
-`chatgpt_base_url = "http://127.0.0.1:18888/chatgpt-backend/"`，该整包转发方案会造成请求重试风暴。
-Bridge 不读取浏览器 Cookie，而是转发 Codex 自己已有的认证请求头。Bridge 当前不传输
+Lean 不提供完整的账号产品功能，例如账号侧插件、Apps/连接器同步、完整云端任务元数据和
+部分账号信息。**Browser Full（浏览器完整，实验）** 会自动设置
+`chatgpt_base_url = "http://127.0.0.1:18888/chatgpt-backend/backend-api/"`，并把 VS Code
+扩展自身的产品接口切换到 `http://localhost:8000/api`。这两个本地入口最终都固定转发到
+ChatGPT 官方后端，不允许客户端指定任意上游。
+
+Codex 出于安全原因不会把 ChatGPT 凭据发给自定义 origin。Bridge 只在静态路由已经确认目标为
+ChatGPT 官方 MCP 或 `/backend-api/wham/` 接口后，按需读取当前 `~/.codex/auth.json` 并补齐
+认证头；Token 和账号 ID 不写入日志。Bridge 当前不传输
 WebSocket，因此必须关闭 WebSocket。
 
 ### 在当前电脑独立登录
@@ -94,7 +99,14 @@ C:\Users\<你的 Windows 用户名>\.codex\auth.json
 如果脚本提示当前 Host 不包含 `auth-openai`，先按[安装文档](INSTALLATION.md)更新
 Native Host，并刷新 Chrome 扩展。
 
-当前电脑的 `~/.codex/config.toml` 需要选择 ChatGPT Bridge provider。建议先备份原文件，再复制
+2.6.0 起，使用扩展弹窗时不需要手工输入三种模式的托管 provider。完成登录后可以直接关闭全部
+VS Code 窗口，在 FanVPN AI Bridge 弹窗中点击“浏览器精简”；Bridge 会保留其他 Codex 配置，
+创建 `browser_ai_bridge` / `browser_ai_direct` provider，并在第一次修改前生成
+`config.toml.before-network-mode.bak`。下面的复制方式仍可用于不使用模式管理的手工配置，但旧的
+`fanvpn_chatgpt` provider 会在弹窗中显示为“未由 Bridge 管理”，直到第一次选择托管模式。
+
+如果不使用弹窗或模式启动器，当前电脑的 `~/.codex/config.toml` 仍需要手工选择 ChatGPT Bridge
+provider。建议先备份原文件，再复制
 [`config/codex-fanvpn-chatgpt.example.toml`](../config/codex-fanvpn-chatgpt.example.toml)：
 
 ```powershell
@@ -126,19 +138,98 @@ enabled = false
 `~/.codex/auth.json`。成功判据是：Codex 直接进入聊天页，并能在关闭 Clash 的情况下
 完成一次真实对话。
 
-## 可选的 VS Code 网络模式切换
+## 三种 VS Code 网络模式
 
-安装直连模式后，桌面有两个入口：
+2.6.0 起，推荐直接从 FanVPN AI Bridge 扩展弹窗选择：
 
-- **VS Code - Browser Bridge**：继续使用 `127.0.0.1:18888 -> Chrome -> 浏览器代理扩展`。
-- **VS Code - Direct US Proxy**：使用 `127.0.0.1:18889 -> 自有美国 HTTPS 代理`，不经过 Chrome。
+| 弹窗按钮 | 模式 | 网络链路与用途 |
+|---|---|---|
+| 服务器直连 | Direct | `VS Code -> 127.0.0.1:18889 -> 自有 HTTPS 代理`，不经过 Chrome；需先完成可选直连安装 |
+| 浏览器精简 | Browser Lean | 核心模型请求经 `18888 -> Chrome -> 浏览器代理扩展`，是稳定默认模式 |
+| 浏览器完整（实验） | Browser Full | 在 Lean 基础上转发 ChatGPT 产品后端、Apps、插件、连接器和 VS Code Codex 界面请求 |
 
-切换前必须关闭所有 VS Code 窗口并等待几秒，再点击所需按钮。VS Code 的第一个进程会
-决定后续窗口继承的环境；在已有窗口未退出时启动另一模式，无法可靠切换。两个按钮都会
-保留 `~/.codex/config.toml` 中的其他内容。Browser 模式会选择精简 provider，并暂时把
-`apps`、`plugins`、`remote_plugin` 和 `analytics.enabled` 设为 `false`；切回 Direct 时会恢复切换前
-每一项的原始值或“原本不存在”的状态。脚本还会清理 2.2.1 遗留的 `chatgpt-backend`
-配置。第一次修改前会保留 `config.toml.before-network-mode.bak`。
+切换前必须关闭所有 VS Code 窗口并等待 `Code.exe` 退出，再点击所需按钮。点击成功后，Bridge 会
+自动启动新的 VS Code；已有 VS Code 进程仍在运行时，Host 会拒绝切换，避免单实例进程继续使用旧环境。
+弹窗中的“上次托管配置”只表示磁盘配置，不表示某个已经运行的 VS Code 进程正在使用该模式。
+Direct 未安装凭据时会显示错误并失败关闭，不会回退到浏览器链路或本机公网。
+启动器会先快照 Codex 配置、VS Code 设置、相关备份和端点状态；任一配置步骤或 VS Code 启动失败时，
+会恢复全部文件和切换前的 Direct 代理状态，不会留下半套模式。
+
+安装可选直连模式后，桌面还会建立三个同等入口：**VS Code - Browser Bridge**、
+**VS Code - Browser Full (Experimental)** 和 **VS Code - Direct US Proxy**。扩展弹窗中的两个
+浏览器模式不要求安装 Direct；桌面入口和命令行只是备用方式。
+
+三种模式都会
+保留 `~/.codex/config.toml` 中的其他内容。Browser Lean 会暂时把 `apps`、`plugins`、
+`remote_plugin` 和 `analytics.enabled` 设为 `false`；Browser Full 与 Direct 会恢复切换前每一项的
+原始值或“原本不存在”的状态。Browser Full 还会临时写入产品后端地址，离开 Full 时精确恢复。
+浏览器模式还会把隐藏的 VS Code 设置 `chatgpt.apiEndpoint` 临时改为 `localhost`，Direct 模式
+恢复用户原值或“原本不存在”的状态。
+
+Browser Full 启动器还会仅给本次 VS Code 进程传入一个非敏感的
+`CODEX_CONNECTORS_TOKEN=browser-ai-bridge-managed` 标记。它不是 OpenAI Token，也不能单独访问
+任何账号；作用是让 Codex 为固定 MCP 路由预先携带 Bearer 认证。Bridge 只有在静态路由已经确认上游是
+`https://chatgpt.com` 的固定 MCP/Apps 接口后，才会在内存中把标记替换为当前
+`~/.codex/auth.json` 的有效凭据。Browser Lean 和 Direct 不使用这个标记，也不会修改用户级环境变量。
+
+Direct 的代理参数、Browser Full 的 MCP 标记以及浏览器模式的登录刷新地址都属于本次启动进程，
+不会因为磁盘上显示某个模式就自动注入到普通 VS Code 图标。因此每次使用这三种托管模式时，都应先
+退出全部 VS Code，再从扩展按钮、对应桌面入口或下方启动命令进入。
+
+部分 Codex 版本即使已有 Bearer Token，仍会按 MCP 协议尝试 GET 通知流并探测 OAuth 元数据。2.5.0
+起这些无副作用请求由 Host 在本机立即返回，不再经过 Chrome 和浏览器代理。Browser Full 的插件
+总目录只读分页作为单并发后台流量运行，普通插件元数据最多 3 个并发，建议/精选查询另有第 4 个
+保留槽；账号初始化、模型、MCP 或工具请求到达时，元数据 GET 可以在收到响应头前让路。
+
+2.6.0 对经过认证、明确允许且返回 HTTP 200 的只读产品元数据增加短期内存缓存。2.6.1
+进一步为全局插件目录增加有界持久缓存：
+
+| 元数据 | 缓存时间 |
+|---|---:|
+| 全局插件目录 | 10 分钟 |
+| 已安装插件状态快照 | 30 秒 |
+| 推荐插件 | 5 分钟 |
+| 精选插件 | 5 分钟 |
+| 连接器目录 | 10 分钟 |
+| 账号检查 | 2 分钟 |
+
+缓存按账号、完整上游 URL 和除认证值外的全部客户端请求头摘要隔离；Token 本身不进入缓存键、磁盘
+或日志，同一账号刷新访问令牌后仍可复用目录。只有 JSON 响应可进入缓存；响应带有 `Set-Cookie`、
+`Cache-Control: no-store/no-cache`、`Pragma: no-cache`、`Vary: *`、超过对应大小上限或不是 HTTP 200
+时不会缓存。相同缓存键的并发 miss 会合并为一次上游请求。
+
+`scope=GLOBAL` 的全局插件目录分页会写入
+`%LOCALAPPDATA%\FanVPNBridge\product-cache-v1`，最多保留 6 小时；2.6.2 起 Apps 连接器目录也写入同一
+按账号隔离的缓存，但只保留 1 小时。两者受 256 项、单项 8 MiB、内存 64 MiB 和磁盘容量上限约束。
+账号检查、已安装插件状态、模型响应、MCP、Cookie、Token 和用户内容不会落盘。首次安装仍需真实
+同步一次目录，之后即使 Chrome 或 Native Host 重启也可命中。
+
+插件和连接器元数据 GET 每次等待响应头最多 10 秒；网络失败或响应头超时最多重试一次。为高优先级
+流量让路不算网络失败，也不再单独限制让路次数；从排队、抢占到重试结束仍有独立的 15 秒硬性总期限。
+账号检查可短期缓存，但不自动重试；Statsig POST、模型请求、MCP、工具调用和其他修改操作既不缓存
+也不自动重试。
+
+需要分析性能时，可以查看成功请求和失败请求的浏览器分段时序：
+
+```powershell
+Get-Content "$env:LOCALAPPDATA\FanVPNBridge\fanvpn-bridge.log" -Tail 500 |
+  Select-String 'request_complete|browser_fetch_failed|request_failed'
+```
+
+- `response_head_ms`：本地请求进入 Host 到成功响应头返回的端到端时间。
+- `executor_queue_ms`：浏览器总执行时间减去累计 fetch 时间，主要包含排队、让路后的等待和调度开销。
+- `fetch_head_ms`：所有实际 fetch 等待响应头的累计时间，失败或被抢占的尝试也包含在内。
+- `fetch_attempts`：实际发起 fetch 的次数。
+- `fetch_preemptions`：其中因高优先级请求到达而被抢占的次数。
+
+经 Chrome 执行的成功请求在 `request_complete` 中记录这些字段；尚未返回响应头就失败的请求会先记录
+`browser_fetch_failed`，随后记录对应的 `request_failed`。本地快速响应和内存缓存命中没有实际
+browser fetch，因此不会带这组时序。这些字段不包含 URL、正文、Token 或 Cookie。
+
+当前 Windows PowerShell 不支持 Codex 的实验性 Shell Snapshot，但部分 Codex 版本仍会在新任务
+首轮等待创建后才失败。浏览器模式会临时设置 `features.shell_snapshot = false` 跳过这段无效等待；
+Direct 模式同样会恢复原值。该设置不会关闭普通 Shell、终端或工具调用。
+第一次修改前会保留 `config.toml.before-network-mode.bak`。
 
 Claude Code 处于 Anthropic 官方模式时，按钮也会同步切换它：直连模式移除本地
 `ANTHROPIC_BASE_URL` 覆盖，让官方请求继承 `18889`；浏览器模式恢复 `18888/anthropic`。
@@ -147,14 +238,21 @@ Claude Code 处于 Anthropic 官方模式时，按钮也会同步切换它：直
 也可以在仓库根目录用命令选择：
 
 ```powershell
-# 默认浏览器桥接
+# 默认浏览器桥接（Browser 是 BrowserLean 的兼容别名）
 powershell -NoProfile -ExecutionPolicy Bypass -File `
   .\tools\start_vscode_network_mode.ps1 -Mode Browser
+
+# 浏览器完整（实验）
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  .\tools\start_vscode_network_mode.ps1 -Mode BrowserFull
 
 # 可选服务器直连
 powershell -NoProfile -ExecutionPolicy Bypass -File `
   .\tools\start_vscode_network_mode.ps1 -Mode Direct
 ```
+
+Browser Full 必须通过扩展弹窗、上面的启动脚本或对应桌面入口打开。只运行
+`set_codex_network_mode.ps1` 再手工打开 VS Code 不会带入进程级 MCP 认证标记。
 
 直连模式会按需启动本地 `18889`，并只给这次启动的 VS Code 传入代理参数和环境变量；
 不会改 Windows 全局代理，也不会影响其他已经运行的软件。浏览器模式会停止 `18889`，

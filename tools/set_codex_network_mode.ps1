@@ -1,13 +1,14 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('Browser', 'Direct')]
+    [ValidateSet('Browser', 'BrowserLean', 'BrowserFull', 'Direct')]
     [string]$Mode,
 
     [string]$CodexHome = (Join-Path $HOME '.codex')
 )
 
 $ErrorActionPreference = 'Stop'
+$effectiveMode = if ($Mode -eq 'Browser') { 'BrowserLean' } else { $Mode }
 $configPath = Join-Path ([System.IO.Path]::GetFullPath($CodexHome)) 'config.toml'
 $directory = Split-Path -Parent $configPath
 New-Item -ItemType Directory -Path $directory -Force | Out-Null
@@ -85,9 +86,8 @@ $providerPattern = '(?ms)^' + [regex]::Escape($providerBegin) + '.*?^' +
     [regex]::Escape($providerEnd) + '\s*'
 $content = [regex]::Replace($content, $providerPattern, '')
 
-# Version 2.2.1 temporarily routed the whole ChatGPT product backend through one
-# browser route. Restore the user's previous value (or remove the injected value)
-# during upgrade because that route caused long retry storms on real deployments.
+# Preserve the user's original ChatGPT product-backend setting while switching
+# between Browser Full and the modes that do not use the experimental route.
 $chatgptBegin = '# BEGIN Browser AI Bridge managed ChatGPT base URL'
 $chatgptEnd = '# END Browser AI Bridge managed ChatGPT base URL'
 $chatgptPattern = '(?ms)^' + [regex]::Escape($chatgptBegin) + '.*?^' +
@@ -118,12 +118,41 @@ $firstTable = [regex]::Match($content, '(?m)^\s*\[')
 $topLength = if ($firstTable.Success) { $firstTable.Index } else { $content.Length }
 $top = $content.Substring(0, $topLength)
 $tables = $content.Substring($topLength)
-$legacyBackendPattern = '(?m)^chatgpt_base_url\s*=\s*["'']http://127\.0\.0\.1:18888/chatgpt-backend/?["'']\s*(?:#.*)?(?:\r?\n|$)'
+$legacyBackendPattern = '(?m)^chatgpt_base_url\s*=\s*["'']http://127\.0\.0\.1:18888/chatgpt-backend(?:/backend-api)?/?["'']\s*(?:#.*)?(?:\r?\n|$)'
 $top = [regex]::Replace($top, $legacyBackendPattern, '')
 if ($previousChatgptLine -and -not [regex]::IsMatch($top, '(?m)^chatgpt_base_url\s*=')) {
     $top = $previousChatgptLine + "`r`n" + $top.TrimStart()
 }
 $content = $top + $tables
+
+if ($effectiveMode -eq 'BrowserFull') {
+    $firstTable = [regex]::Match($content, '(?m)^\s*\[')
+    $topLength = if ($firstTable.Success) { $firstTable.Index } else { $content.Length }
+    $top = $content.Substring(0, $topLength)
+    $tables = $content.Substring($topLength)
+    $existingChatgpt = [regex]::Match($top, '(?m)^chatgpt_base_url\s*=.*$')
+    $fullRestoreValue = 'absent'
+    if ($existingChatgpt.Success) {
+        $originalChatgptLine = $existingChatgpt.Value.TrimEnd("`r", "`n")
+        $fullRestoreValue = [Convert]::ToBase64String(
+            [Text.Encoding]::UTF8.GetBytes($originalChatgptLine)
+        )
+        $top = [regex]::Replace(
+            $top,
+            '(?m)^chatgpt_base_url\s*=.*(?:\r?\n|$)',
+            '',
+            1
+        )
+    }
+    $content = $top + $tables
+    $chatgptManaged = @"
+$chatgptBegin
+# previous-chatgpt-base-url-base64: $fullRestoreValue
+chatgpt_base_url = "http://127.0.0.1:18888/chatgpt-backend/backend-api/"
+$chatgptEnd
+"@
+    $content = $chatgptManaged.Trim() + "`r`n" + $content.TrimStart()
+}
 
 # Browser mode is deliberately lean: only the model Responses API is routed
 # through Chrome. Product-backend initialization is disabled until its endpoint
@@ -154,7 +183,7 @@ if ($leanMatch.Success) {
     $content = [regex]::Replace($content, $leanPattern, '', 1)
 }
 
-if ($Mode -eq 'Browser') {
+if ($effectiveMode -eq 'BrowserLean') {
     $metadata = New-Object System.Collections.Generic.List[string]
     foreach ($setting in $settings) {
         if (-not $leanMatch.Success) {
@@ -172,7 +201,45 @@ if ($Mode -eq 'Browser') {
     }
 }
 
-$provider = if ($Mode -eq 'Direct') { 'browser_ai_direct' } else { 'browser_ai_bridge' }
+# Current Codex builds still attempt the experimental shell snapshot on
+# Windows PowerShell even though that shell is unsupported. A new thread can
+# wait several seconds before the attempt fails. Browser modes disable only
+# that ineffective experiment and Direct restores the user's original value.
+$snapshotBegin = '# BEGIN Browser AI Bridge managed Windows compatibility'
+$snapshotEnd = '# END Browser AI Bridge managed Windows compatibility'
+$snapshotPattern = '(?ms)^' + [regex]::Escape($snapshotBegin) + '.*?^' +
+    [regex]::Escape($snapshotEnd) + '\s*'
+$snapshotMatch = [regex]::Match($content, $snapshotPattern)
+$previousSnapshotLine = $null
+if ($snapshotMatch.Success) {
+    $saved = [regex]::Match(
+        $snapshotMatch.Value,
+        '(?m)^# previous-shell-snapshot-base64: (?<value>[A-Za-z0-9+/=]+|absent)\s*$'
+    )
+    if (-not $saved.Success) {
+        throw 'Managed Windows compatibility block is missing restore metadata.'
+    }
+    $previousSnapshotLine = ConvertFrom-RestoreValue $saved.Groups['value'].Value
+    $content = [regex]::Replace($content, $snapshotPattern, '', 1)
+}
+
+if ($effectiveMode -ne 'Direct') {
+    if (-not $snapshotMatch.Success) {
+        $previousSnapshotLine = Get-TomlKeyLine -Text $content -Table 'features' -Key 'shell_snapshot'
+    }
+    $encodedSnapshot = ConvertTo-RestoreValue $previousSnapshotLine
+    $content = Set-TomlKeyLine -Text $content -Table 'features' -Key 'shell_snapshot' -Line 'shell_snapshot = false'
+    $snapshotBlock = @(
+        $snapshotBegin,
+        "# previous-shell-snapshot-base64: $encodedSnapshot",
+        $snapshotEnd
+    )
+    $content = ($snapshotBlock -join "`r`n") + "`r`n" + $content.TrimStart()
+} elseif ($snapshotMatch.Success) {
+    $content = Set-TomlKeyLine -Text $content -Table 'features' -Key 'shell_snapshot' -Line $previousSnapshotLine
+}
+
+$provider = if ($effectiveMode -eq 'Direct') { 'browser_ai_direct' } else { 'browser_ai_bridge' }
 $modelProviderPattern = '(?m)^model_provider\s*=\s*"[^"]*"\s*$'
 $firstTable = [regex]::Match($content, '(?m)^\s*\[')
 $topLength = if ($firstTable.Success) { $firstTable.Index } else { $content.Length }
@@ -186,7 +253,7 @@ $content = "model_provider = `"$provider`"`r`n" + $top.TrimStart() + $tables
 $managedProviders = @"
 $providerBegin
 [model_providers.browser_ai_bridge]
-name = "ChatGPT Codex through Browser AI Bridge (lean)"
+name = "ChatGPT Codex through Browser AI Bridge"
 base_url = "http://127.0.0.1:18888/chatgpt-codex"
 requires_openai_auth = true
 wire_api = "responses"
@@ -217,8 +284,13 @@ try {
     Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
 }
 Write-Host "Codex network provider: $provider"
-if ($Mode -eq 'Browser') {
+if ($effectiveMode -eq 'BrowserLean') {
     Write-Host 'Browser lean mode: Apps, plugins, remote plugin catalog, and analytics are disabled.'
+} elseif ($effectiveMode -eq 'BrowserFull') {
+    Write-Host 'Browser full mode: ChatGPT product backend, Apps, and plugin settings are enabled as configured.'
 } else {
     Write-Host 'Direct mode: previously saved Apps, plugin, and analytics settings are restored.'
+}
+if ($effectiveMode -ne 'Direct') {
+    Write-Host 'Windows compatibility: unsupported PowerShell shell snapshot is disabled.'
 }

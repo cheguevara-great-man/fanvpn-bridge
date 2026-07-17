@@ -6,7 +6,7 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
-from fanvpn_bridge.contracts import Header
+from fanvpn_bridge.contracts import BrowserTiming, Header
 from fanvpn_bridge.framing import encode_message
 from fanvpn_bridge.protocol import decode_body_frame, envelope, iter_body_frames, validate_base
 
@@ -57,10 +57,17 @@ class CollectingSink:
     chunks: list[bytes] = field(default_factory=list)
     error: Exception | None = None
     done: threading.Event = field(default_factory=threading.Event)
+    timing: BrowserTiming | None = None
 
-    def start(self, status: int, headers: Sequence[Header]) -> None:
+    def start(
+        self,
+        status: int,
+        headers: Sequence[Header],
+        timing: BrowserTiming | None = None,
+    ) -> None:
         self.status = status
         self.headers = headers
+        self.timing = timing
 
     def write(self, data: bytes, on_consumed: Callable[[], None] | None = None) -> None:
         self.chunks.append(data)

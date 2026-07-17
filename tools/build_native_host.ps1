@@ -1,7 +1,8 @@
 param(
     [string]$Python,
     [switch]$SkipToolInstall,
-    [string]$DistRoot
+    [string]$DistRoot,
+    [string]$BuildCacheRoot
 )
 
 $ErrorActionPreference = 'Stop'
@@ -9,9 +10,22 @@ $requiredPythonMajor = 3
 $requiredPythonMinor = 12
 $requiredPyInstallerVersion = '6.21.0'
 $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$toolDirectory = Join-Path $root 'build\pyinstaller'
-$workDirectory = Join-Path $root 'build\pyinstaller-work'
-$specDirectory = Join-Path $root 'build\pyinstaller-spec'
+if (-not $BuildCacheRoot) {
+    $cacheParent = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { $env:TEMP }
+    if (-not $cacheParent) { throw 'LOCALAPPDATA or TEMP is required for the build cache.' }
+    $BuildCacheRoot = Join-Path $cacheParent 'BrowserAIBridge\build-cache'
+}
+$BuildCacheRoot = [System.IO.Path]::GetFullPath($BuildCacheRoot)
+$sha256 = [System.Security.Cryptography.SHA256]::Create()
+try {
+    $rootHashBytes = $sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($root.ToLowerInvariant()))
+} finally {
+    $sha256.Dispose()
+}
+$rootHash = -join ($rootHashBytes | Select-Object -First 8 | ForEach-Object { $_.ToString('x2') })
+$toolDirectory = Join-Path $BuildCacheRoot "pyinstaller-$requiredPyInstallerVersion"
+$workDirectory = Join-Path $BuildCacheRoot "work\$rootHash"
+$specDirectory = Join-Path $BuildCacheRoot "spec\$rootHash"
 if (-not $DistRoot) {
     $DistRoot = Join-Path $root 'dist'
 }
@@ -84,4 +98,15 @@ try {
 
 $outputDirectory = Join-Path $distDirectory 'browser-ai-bridge'
 Copy-Item -LiteralPath (Join-Path $root 'config\routes.example.json') -Destination (Join-Path $outputDirectory 'routes.json') -Force
+$outputTools = Join-Path $outputDirectory 'tools'
+New-Item -ItemType Directory -Path $outputTools -Force | Out-Null
+foreach ($scriptName in @(
+    'set_codex_network_mode.ps1',
+    'set_vscode_claude_network_mode.ps1',
+    'set_vscode_codex_product_endpoint.ps1',
+    'set_vscode_codex_mode.ps1',
+    'start_vscode_network_mode.ps1'
+)) {
+    Copy-Item -LiteralPath (Join-Path $root "tools\$scriptName") -Destination (Join-Path $outputTools $scriptName) -Force
+}
 Write-Host "Native Host built at: $outputDirectory" -ForegroundColor Green
