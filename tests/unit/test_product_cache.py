@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 from unittest.mock import patch
+from pathlib import Path
+import tempfile
 
 from fanvpn_bridge.contracts import Header, ResolvedRoute
 from fanvpn_bridge.product_cache import ProductResponseCache
@@ -166,6 +168,72 @@ class ProductResponseCacheTests(unittest.TestCase):
         )
         assert json_policy is not None and text_policy is not None
         self.assertNotEqual(json_policy.key, text_policy.key)
+
+    def test_account_partition_survives_access_token_rotation(self) -> None:
+        cache = ProductResponseCache()
+        first = cache.policy(
+            "GET",
+            plugin_route(),
+            [Header("Authorization", "Bearer first"), Header("ChatGPT-Account-ID", "acct")],
+        )
+        refreshed = cache.policy(
+            "GET",
+            plugin_route(),
+            [Header("Authorization", "Bearer refreshed"), Header("ChatGPT-Account-ID", "acct")],
+        )
+        other = cache.policy(
+            "GET",
+            plugin_route(),
+            [Header("Authorization", "Bearer first"), Header("ChatGPT-Account-ID", "other")],
+        )
+        assert first is not None and refreshed is not None and other is not None
+        self.assertEqual(first.key, refreshed.key)
+        self.assertNotEqual(first.key, other.key)
+
+    def test_global_catalog_persists_across_cache_processes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            headers = [
+                Header("Authorization", "Bearer first"),
+                Header("ChatGPT-Account-ID", "acct"),
+            ]
+            first_cache = ProductResponseCache(persistent_directory=path)
+            first_policy = first_cache.policy("GET", plugin_route(), headers)
+            assert first_policy is not None
+            self.assertIsNotNone(first_policy.persistent_ttl_seconds)
+            self.assertTrue(
+                first_cache.put(
+                    first_policy,
+                    status=200,
+                    headers=(Header("Content-Type", "application/json"),),
+                    body=b'{"plugins":[]}',
+                )
+            )
+
+            second_cache = ProductResponseCache(persistent_directory=path)
+            second_policy = second_cache.policy(
+                "GET",
+                plugin_route(),
+                [
+                    Header("Authorization", "Bearer refreshed"),
+                    Header("ChatGPT-Account-ID", "acct"),
+                ],
+            )
+            assert second_policy is not None
+            hit = second_cache.get(second_policy)
+            self.assertIsNotNone(hit)
+            assert hit is not None
+            self.assertEqual(hit[0].body, b'{"plugins":[]}')
+
+    def test_installed_plugin_state_is_never_persisted(self) -> None:
+        cache = ProductResponseCache()
+        policy = cache.policy(
+            "GET",
+            product_route("/backend-api/ps/plugins/installed?scope=GLOBAL"),
+            [Header("Authorization", "Bearer secret"), Header("ChatGPT-Account-ID", "acct")],
+        )
+        assert policy is not None
+        self.assertIsNone(policy.persistent_ttl_seconds)
 
     def test_identical_cache_misses_share_one_in_flight_owner(self) -> None:
         cache = ProductResponseCache()

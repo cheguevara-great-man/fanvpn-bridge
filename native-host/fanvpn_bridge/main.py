@@ -37,7 +37,15 @@ def run(config_path: Path) -> int:
     )
     dispatcher.start()
     routes = RouteTable(config.routes)
-    product_cache = ProductResponseCache()
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    cache_base = (
+        Path(local_app_data) / "FanVPNBridge"
+        if local_app_data
+        else Path.home() / ".fanvpn-bridge"
+    )
+    product_cache = ProductResponseCache(
+        persistent_directory=cache_base / "product-cache-v1"
+    )
     server = create_http_server(
         config,
         routes,

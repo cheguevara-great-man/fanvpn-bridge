@@ -10,7 +10,11 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass
+import base64
 import hashlib
+import json
+import os
+from pathlib import Path
 import threading
 import time
 from urllib.parse import parse_qs, urlsplit
@@ -22,13 +26,14 @@ _GLOBAL_PLUGIN_LIST_PATH = "/backend-api/ps/plugins/list"
 _DEFAULT_MAX_ENTRIES = 256
 _DEFAULT_MAX_ENTRY_BYTES = 8 * 1024 * 1024
 _DEFAULT_MAX_TOTAL_BYTES = 64 * 1024 * 1024
+_PERSISTENT_PLUGIN_LIST_TTL_SECONDS = 6 * 60 * 60
 _CACHEABLE_GET_POLICIES = {
-    _GLOBAL_PLUGIN_LIST_PATH: (10 * 60, 8 * 1024 * 1024, True),
-    "/backend-api/ps/plugins/installed": (30, 4 * 1024 * 1024, True),
-    "/backend-api/ps/plugins/suggested": (5 * 60, 4 * 1024 * 1024, True),
-    "/backend-api/plugins/featured": (5 * 60, 4 * 1024 * 1024, False),
-    "/backend-api/connectors/directory/list": (10 * 60, 8 * 1024 * 1024, False),
-    "/backend-api/wham/accounts/check": (2 * 60, 1024 * 1024, False),
+    _GLOBAL_PLUGIN_LIST_PATH: (10 * 60, 8 * 1024 * 1024, True, _PERSISTENT_PLUGIN_LIST_TTL_SECONDS),
+    "/backend-api/ps/plugins/installed": (30, 4 * 1024 * 1024, True, None),
+    "/backend-api/ps/plugins/suggested": (5 * 60, 4 * 1024 * 1024, True, None),
+    "/backend-api/plugins/featured": (5 * 60, 4 * 1024 * 1024, False, None),
+    "/backend-api/connectors/directory/list": (10 * 60, 8 * 1024 * 1024, False, None),
+    "/backend-api/wham/accounts/check": (2 * 60, 1024 * 1024, False, None),
 }
 
 
@@ -37,6 +42,7 @@ class CachePolicy:
     key: str
     ttl_seconds: float
     max_body_bytes: int
+    persistent_ttl_seconds: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,12 +69,14 @@ class ProductResponseCache:
         *,
         max_entries: int = _DEFAULT_MAX_ENTRIES,
         max_total_bytes: int = _DEFAULT_MAX_TOTAL_BYTES,
+        persistent_directory: Path | None = None,
     ) -> None:
         self._max_entries = max_entries
         self._max_total_bytes = max_total_bytes
         self._entries: OrderedDict[str, CachedResponse] = OrderedDict()
         self._in_flight: dict[str, threading.Event] = {}
         self._total_bytes = 0
+        self._persistent_directory = persistent_directory
         self._lock = threading.Lock()
 
     def policy(
@@ -91,7 +99,7 @@ class ProductResponseCache:
         endpoint_policy = _CACHEABLE_GET_POLICIES.get(upstream.path)
         if endpoint_policy is None:
             return None
-        ttl_seconds, max_body_bytes, require_global_scope = endpoint_policy
+        ttl_seconds, max_body_bytes, require_global_scope, persistent_ttl_seconds = endpoint_policy
         query = parse_qs(upstream.query, keep_blank_values=True)
         if require_global_scope and query.get("scope") != ["GLOBAL"]:
             return None
@@ -105,6 +113,7 @@ class ProductResponseCache:
             key=digest,
             ttl_seconds=ttl_seconds,
             max_body_bytes=min(max_body_bytes, _DEFAULT_MAX_ENTRY_BYTES),
+            persistent_ttl_seconds=persistent_ttl_seconds,
         )
 
     def get(self, policy: CachePolicy) -> tuple[CachedResponse, int] | None:
@@ -182,6 +191,8 @@ class ProductResponseCache:
             ):
                 _key, evicted = self._entries.popitem(last=False)
                 self._total_bytes -= len(evicted.body)
+        if policy.persistent_ttl_seconds is not None:
+            self._write_persistent(policy, entry)
         return True
 
     def _delete_locked(self, key: str, entry: CachedResponse) -> None:
@@ -195,13 +206,120 @@ class ProductResponseCache:
     ) -> tuple[CachedResponse, int] | None:
         entry = self._entries.get(policy.key)
         if entry is None:
-            return None
+            entry = self._read_persistent(policy, now)
+            if entry is None:
+                return None
+            self._entries[policy.key] = entry
+            self._total_bytes += len(entry.body)
+            while (
+                len(self._entries) > self._max_entries
+                or self._total_bytes > self._max_total_bytes
+            ):
+                _key, evicted = self._entries.popitem(last=False)
+                self._total_bytes -= len(evicted.body)
         age = now - entry.stored_at
-        if age > policy.ttl_seconds:
+        effective_ttl = (
+            policy.persistent_ttl_seconds
+            if policy.persistent_ttl_seconds is not None
+            and self._persistent_directory is not None
+            else policy.ttl_seconds
+        )
+        if age > effective_ttl:
             self._delete_locked(policy.key, entry)
+            self._delete_persistent(policy.key)
             return None
         self._entries.move_to_end(policy.key)
         return entry, max(0, round(age * 1000))
+
+    def _persistent_path(self, key: str) -> Path | None:
+        if self._persistent_directory is None:
+            return None
+        return self._persistent_directory / f"{key}.json"
+
+    def _write_persistent(self, policy: CachePolicy, entry: CachedResponse) -> None:
+        path = self._persistent_path(policy.key)
+        if path is None:
+            return
+        payload = {
+            "version": 1,
+            "stored_at": time.time(),
+            "status": entry.status,
+            "headers": [[header.name, header.value] for header in entry.headers],
+            "body": base64.b64encode(entry.body).decode("ascii"),
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
+            temporary.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+            temporary.replace(path)
+            self._trim_persistent_directory()
+        except (OSError, ValueError, TypeError):
+            try:
+                temporary.unlink(missing_ok=True)
+            except (OSError, UnboundLocalError):
+                pass
+
+    def _read_persistent(
+        self,
+        policy: CachePolicy,
+        now_monotonic: float,
+    ) -> CachedResponse | None:
+        if policy.persistent_ttl_seconds is None:
+            return None
+        path = self._persistent_path(policy.key)
+        if path is None or not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if payload.get("version") != 1 or payload.get("status") != 200:
+                raise ValueError("unsupported cache entry")
+            age = max(0.0, time.time() - float(payload["stored_at"]))
+            if age > policy.persistent_ttl_seconds:
+                path.unlink(missing_ok=True)
+                return None
+            body = base64.b64decode(payload["body"], validate=True)
+            if len(body) > policy.max_body_bytes:
+                raise ValueError("oversized cache entry")
+            headers = tuple(Header(str(name), str(value)) for name, value in payload["headers"])
+            return CachedResponse(
+                status=200,
+                headers=headers,
+                body=body,
+                stored_at=now_monotonic - age,
+            )
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return None
+
+    def _delete_persistent(self, key: str) -> None:
+        path = self._persistent_path(key)
+        if path is not None:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _trim_persistent_directory(self) -> None:
+        directory = self._persistent_directory
+        if directory is None:
+            return
+        try:
+            files = sorted(
+                directory.glob("*.json"),
+                key=lambda candidate: candidate.stat().st_mtime,
+                reverse=True,
+            )
+            total = 0
+            for index, path in enumerate(files):
+                size = path.stat().st_size
+                total += size
+                if index >= self._max_entries or total > self._max_total_bytes * 2:
+                    path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _account_partition(headers: list[Header]) -> str | None:
@@ -220,7 +338,7 @@ def _account_partition(headers: list[Header]) -> str | None:
     ]
     if account_ids:
         account_digest = hashlib.sha256(account_ids[-1].encode("utf-8")).hexdigest()
-        return f"account:{account_digest}:authorization:{token_digest}"
+        return f"account:{account_digest}"
     return "authorization:" + token_digest
 
 
@@ -230,6 +348,7 @@ def _header_partition(headers: list[Header]) -> str:
     canonical = "\0".join(
         f"{header.name.strip().lower()}\0{header.value.strip()}"
         for header in sorted(headers, key=lambda value: (value.name.lower(), value.value))
+        if header.name.strip().lower() not in {"authorization", "chatgpt-account-id"}
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 

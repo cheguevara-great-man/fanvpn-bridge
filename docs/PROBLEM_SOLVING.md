@@ -342,6 +342,11 @@ Host 对成功、经过认证的 allowlist JSON GET 做按账号、Authorization
 设置上述短期 TTL，使关闭再打开 VS Code 时可复用同一 Host 内的成功结果。该缓存不持久化；重开
 Chrome 或 Host 后第一次请求仍真实访问上游。Statsig 仍是高优先级 POST，既不缓存也不自动重试。
 
+**Host 重启后 Full 再次慢（2.6.1）**：实测 Full 首次加载逐页同步全局插件目录时，Codex 界面挂载
+约 48 秒；同一 Host 内再次启动命中缓存后约 4.8 秒。2.6.1 只把 `scope=GLOBAL` 的插件目录分页
+持久化六小时，并让相同 ChatGPT 账号在访问令牌刷新后继续命中。账号状态、已安装插件、模型/MCP
+请求、Cookie、Token 和用户内容仍不持久化。
+
 **时序无法归因（2.6.0）**：旧日志只有 Host 侧 `response_head_ms`，无法区分请求慢在浏览器排队、
 实际 fetch、重试还是抢占。扩展现在在成功响应头和失败 error 中都附带不含凭据的 BrowserTiming。
 经 Chrome 执行的成功请求在 `request_complete` 记录 `executor_queue_ms`、累计 `fetch_head_ms`、`fetch_attempts` 和
