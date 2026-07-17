@@ -1,5 +1,7 @@
 const PRODUCT_METADATA_HEAD_TIMEOUT_MS = 10_000;
 const PRODUCT_METADATA_MAX_ATTEMPTS = 2;
+const PRODUCT_METADATA_MAX_PREEMPTIONS = 4;
+const PRODUCT_METADATA_TOTAL_TIMEOUT_MS = 15_000;
 const PRODUCT_METADATA_QUIET_WINDOW_MS = 150;
 
 /**
@@ -40,12 +42,16 @@ export class ProductRequestScheduler {
 
   async runMetadataAttempt(task, { parentSignal, urgent = false } = {}) {
     const request = this.createPreemptibleRequest(parentSignal);
-    await this.acquireMetadataSlot(request, parentSignal, urgent);
+    let acquired = false;
     try {
+      await this.acquireMetadataSlot(request, parentSignal, urgent);
+      acquired = true;
       return await this.invokePreemptible(task, request, parentSignal);
     } finally {
-      this.activeMetadataRequests.delete(request);
-      this.metadataSlotsTaken -= 1;
+      if (acquired) {
+        this.activeMetadataRequests.delete(request);
+        this.metadataSlotsTaken -= 1;
+      }
       request.cleanup();
       this.notifyWaiters();
     }
@@ -53,12 +59,16 @@ export class ProductRequestScheduler {
 
   async runCatalogAttempt(task, { parentSignal } = {}) {
     const request = this.createPreemptibleRequest(parentSignal);
-    await this.acquireCatalogSlot(request, parentSignal);
+    let acquired = false;
     try {
+      await this.acquireCatalogSlot(request, parentSignal);
+      acquired = true;
       return await this.invokePreemptible(task, request, parentSignal);
     } finally {
-      this.activeCatalogRequests.delete(request);
-      this.catalogSlotTaken = false;
+      if (acquired) {
+        this.activeCatalogRequests.delete(request);
+        this.catalogSlotTaken = false;
+      }
       request.cleanup();
       this.notifyWaiters();
     }
@@ -170,63 +180,99 @@ export async function resilientFetch(
     fetchImpl = globalThis.fetch,
     headTimeoutMs = PRODUCT_METADATA_HEAD_TIMEOUT_MS,
     maxAttempts = PRODUCT_METADATA_MAX_ATTEMPTS,
+    maxPreemptions = PRODUCT_METADATA_MAX_PREEMPTIONS,
+    totalTimeoutMs = PRODUCT_METADATA_TOTAL_TIMEOUT_MS,
     scheduler = defaultScheduler,
+    onTiming,
   } = {},
 ) {
+  const timing = {
+    startedAt: monotonicNow(),
+    attempts: 0,
+    preemptions: 0,
+    fetchHeadMs: 0,
+  };
+  const attempt = async (signal, timeout) => {
+    timing.attempts += 1;
+    const fetchStartedAt = monotonicNow();
+    try {
+      return await fetchAttempt(url, options, {
+        parentSignal: signal,
+        fetchImpl,
+        headTimeoutMs: timeout,
+      });
+    } finally {
+      timing.fetchHeadMs += elapsedMilliseconds(fetchStartedAt);
+    }
+  };
+  let timingReported = false;
+  const reportTiming = () => {
+    if (timingReported) return;
+    timingReported = true;
+    const totalMs = elapsedMilliseconds(timing.startedAt);
+    try {
+      onTiming?.({
+        executor_queue_ms: boundedTiming(Math.max(0, totalMs - timing.fetchHeadMs)),
+        fetch_head_ms: boundedTiming(timing.fetchHeadMs),
+        attempts: boundedCount(timing.attempts),
+        preemptions: boundedCount(timing.preemptions),
+      });
+    } catch (_error) {
+      // Diagnostics must never change request behavior.
+    }
+  };
+  const finish = (response) => {
+    reportTiming();
+    return response;
+  };
   const retryable = isRetryableProductMetadataRequest(options?.method, url);
   const backgroundCatalog = isBackgroundProductCatalogRequest(options?.method, url);
   const urgentMetadata = isUrgentProductMetadataRequest(options?.method, url);
   if (!retryable) {
-    return scheduler.runPriority(() =>
-      fetchAttempt(url, options, {
-        parentSignal,
-        fetchImpl,
-        headTimeoutMs: null,
-      }),
-    );
-  }
-
-  if (!backgroundCatalog) {
-    let attempts = 0;
-    let lastError;
-    while (attempts < maxAttempts) {
-      const result = await scheduler.runMetadataAttempt(
-        (schedulerSignal) =>
-          fetchAttempt(url, options, {
-            parentSignal: schedulerSignal,
-            fetchImpl,
-            headTimeoutMs,
-          }),
-        { parentSignal, urgent: urgentMetadata },
-      );
-      if (result.value !== undefined) return result.value;
-      if (parentSignal?.aborted) throw result.error;
-      if (result.preempted) continue;
-      attempts += 1;
-      lastError = result.error;
+    try {
+      return finish(await scheduler.runPriority(() => attempt(parentSignal, null)));
+    } catch (error) {
+      reportTiming();
+      throw error;
     }
-    throw lastError;
   }
 
-  let attempts = 0;
-  let lastError;
-  while (attempts < maxAttempts) {
-    const result = await scheduler.runCatalogAttempt(
-      (schedulerSignal) =>
-        fetchAttempt(url, options, {
-          parentSignal: schedulerSignal,
-          fetchImpl,
-          headTimeoutMs,
-        }),
-      { parentSignal },
-    );
-    if (result.value !== undefined) return result.value;
-    if (parentSignal?.aborted) throw result.error;
-    if (result.preempted) continue;
-    attempts += 1;
-    lastError = result.error;
+  const deadline = createDeadlineSignal(parentSignal, totalTimeoutMs);
+  try {
+    let failedAttempts = 0;
+    let lastError;
+    // Network failures consume maxAttempts. Scheduler preemptions have their
+    // own small budget because they are not upstream failures, while the hard
+    // total deadline remains the final bound for both kinds of retry.
+    while (failedAttempts < maxAttempts) {
+      const result = backgroundCatalog
+        ? await scheduler.runCatalogAttempt(
+            (schedulerSignal) => attempt(schedulerSignal, headTimeoutMs),
+            { parentSignal: deadline.signal },
+          )
+        : await scheduler.runMetadataAttempt(
+            (schedulerSignal) => attempt(schedulerSignal, headTimeoutMs),
+            { parentSignal: deadline.signal, urgent: urgentMetadata },
+          );
+      if (deadline.timedOut && !parentSignal?.aborted) throw metadataTimeoutError();
+      if (result.value !== undefined) return finish(result.value);
+      if (parentSignal?.aborted) throw result.error;
+      lastError = result.error;
+      if (result.preempted) {
+        timing.preemptions += 1;
+        if (timing.preemptions >= maxPreemptions) throw metadataTimeoutError();
+        continue;
+      }
+      failedAttempts += 1;
+    }
+    throw lastError ?? metadataTimeoutError();
+  } catch (error) {
+    reportTiming();
+    if (deadline.timedOut && !parentSignal?.aborted) throw metadataTimeoutError();
+    throw error;
+  } finally {
+    deadline.cleanup();
   }
-  throw lastError;
 }
 
 export function isRetryableProductMetadataRequest(method, value) {
@@ -242,7 +288,8 @@ export function isRetryableProductMetadataRequest(method, value) {
     url.pathname === "/backend-api/ps/plugins/list" ||
     url.pathname === "/backend-api/ps/plugins/installed" ||
     url.pathname === "/backend-api/ps/plugins/suggested" ||
-    url.pathname === "/backend-api/plugins/featured"
+    url.pathname === "/backend-api/plugins/featured" ||
+    url.pathname === "/backend-api/connectors/directory/list"
   );
 }
 
@@ -288,8 +335,20 @@ async function fetchAttempt(url, options, { parentSignal, fetchImpl, headTimeout
     timedOut = true;
     controller.abort();
   }, headTimeoutMs);
+  let rejectForAbort;
+  const abortPromise = new Promise((_resolve, reject) => {
+    rejectForAbort = () => reject(abortError());
+    if (controller.signal.aborted) rejectForAbort();
+    else controller.signal.addEventListener("abort", rejectForAbort, { once: true });
+  });
   try {
-    return await fetchImpl(url, { ...options, signal: controller.signal });
+    // Chrome normally rejects fetch when its signal is aborted. Promise.race
+    // is still required because an extension/network implementation that
+    // ignores AbortSignal must not permanently occupy a scheduler slot.
+    const fetchPromise = Promise.resolve().then(() =>
+      fetchImpl(url, { ...options, signal: controller.signal }),
+    );
+    return await Promise.race([fetchPromise, abortPromise]);
   } catch (error) {
     if (timedOut && !parentSignal?.aborted) {
       const timeout = new Error("Timed out waiting for product metadata response headers");
@@ -301,6 +360,7 @@ async function fetchAttempt(url, options, { parentSignal, fetchImpl, headTimeout
     throw error;
   } finally {
     if (timer !== null) clearTimeout(timer);
+    controller.signal.removeEventListener("abort", rejectForAbort);
     parentSignal?.removeEventListener("abort", abortFromParent);
   }
 }
@@ -328,4 +388,53 @@ function abortError() {
   const error = new Error("Request aborted");
   error.name = "AbortError";
   return error;
+}
+
+function metadataTimeoutError() {
+  const error = new Error("Timed out waiting for product metadata");
+  error.name = "TimeoutError";
+  error.code = "REQUEST_TIMEOUT";
+  error.retryable = true;
+  return error;
+}
+
+function createDeadlineSignal(parentSignal, timeoutMs) {
+  const controller = new AbortController();
+  let timedOut = false;
+  const abortFromParent = () => controller.abort(parentSignal?.reason);
+  if (parentSignal?.aborted) controller.abort(parentSignal.reason);
+  else parentSignal?.addEventListener("abort", abortFromParent, { once: true });
+  const timer =
+    Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? setTimeout(() => {
+          timedOut = true;
+          controller.abort("product_metadata_deadline");
+        }, timeoutMs)
+      : null;
+  return {
+    signal: controller.signal,
+    get timedOut() {
+      return timedOut;
+    },
+    cleanup() {
+      if (timer !== null) clearTimeout(timer);
+      parentSignal?.removeEventListener("abort", abortFromParent);
+    },
+  };
+}
+
+function monotonicNow() {
+  return globalThis.performance?.now?.() ?? Date.now();
+}
+
+function elapsedMilliseconds(startedAt) {
+  return Math.max(0, Math.round(monotonicNow() - startedAt));
+}
+
+function boundedTiming(value) {
+  return Math.min(3_600_000, Math.max(0, Math.trunc(value)));
+}
+
+function boundedCount(value) {
+  return Math.min(10_000, Math.max(0, Math.trunc(value)));
 }

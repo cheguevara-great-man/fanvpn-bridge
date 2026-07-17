@@ -14,7 +14,10 @@
     { "$ref": "#/$defs/flowAck" },
     { "$ref": "#/$defs/messageError" },
     { "$ref": "#/$defs/ping" },
-    { "$ref": "#/$defs/pong" }
+    { "$ref": "#/$defs/pong" },
+    { "$ref": "#/$defs/controlModeGet" },
+    { "$ref": "#/$defs/controlModeSet" },
+    { "$ref": "#/$defs/controlModeResult" }
   ],
   "$defs": {
     "protocolVersion": { "const": 1 },
@@ -37,6 +40,17 @@
         "minItems": 2,
         "maxItems": 2
       }
+    },
+    "browserTiming": {
+      "type": "object",
+      "required": ["executor_queue_ms", "fetch_head_ms", "attempts", "preemptions"],
+      "properties": {
+        "executor_queue_ms": { "type": "integer", "minimum": 0, "maximum": 3600000 },
+        "fetch_head_ms": { "type": "integer", "minimum": 0, "maximum": 3600000 },
+        "attempts": { "type": "integer", "minimum": 0, "maximum": 10000 },
+        "preemptions": { "type": "integer", "minimum": 0, "maximum": 10000 }
+      },
+      "additionalProperties": false
     },
     "base": {
       "type": "object",
@@ -149,7 +163,8 @@
             "type": { "const": "response.head" },
             "id": { "$ref": "#/$defs/requestId" },
             "status": { "type": "integer", "minimum": 100, "maximum": 599 },
-            "headers": { "$ref": "#/$defs/headers" }
+            "headers": { "$ref": "#/$defs/headers" },
+            "timing": { "$ref": "#/$defs/browserTiming" }
           },
           "additionalProperties": false
         }
@@ -202,7 +217,8 @@
             "id": { "$ref": "#/$defs/requestId" },
             "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]+$" },
             "message": { "type": "string", "maxLength": 4096 },
-            "retryable": { "type": "boolean" }
+            "retryable": { "type": "boolean" },
+            "timing": { "$ref": "#/$defs/browserTiming" }
           },
           "additionalProperties": false
         }
@@ -233,6 +249,59 @@
             "v": { "$ref": "#/$defs/protocolVersion" },
             "type": { "const": "pong" },
             "nonce": { "type": "string", "minLength": 1, "maxLength": 64 }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "codexMode": {
+      "enum": ["direct", "browser_lean", "browser_full", "unmanaged"]
+    },
+    "controlModeGet": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "id"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "control.mode.get" },
+            "id": { "$ref": "#/$defs/requestId" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "controlModeSet": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "id", "mode"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "control.mode.set" },
+            "id": { "$ref": "#/$defs/requestId" },
+            "mode": { "enum": ["direct", "browser_lean", "browser_full"] }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "controlModeResult": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "id", "ok", "mode", "restart_vscode_required"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "control.mode.result" },
+            "id": { "$ref": "#/$defs/requestId" },
+            "ok": { "type": "boolean" },
+            "mode": { "$ref": "#/$defs/codexMode" },
+            "restart_vscode_required": { "type": "boolean" },
+            "message": { "type": "string", "maxLength": 512 }
           },
           "additionalProperties": false
         }

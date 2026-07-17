@@ -42,12 +42,17 @@ def main() -> int:
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
-    smoke_temp_root = ROOT / "build" / "smoke-temp"
-    smoke_temp_root.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
-        prefix="browser-ai-bridge-smoke-",
-        dir=smoke_temp_root,
-    ) as temporary_directory:
+    required_helpers = (
+        "set_codex_network_mode.ps1",
+        "set_vscode_claude_network_mode.ps1",
+        "set_vscode_codex_product_endpoint.ps1",
+        "set_vscode_codex_mode.ps1",
+        "start_vscode_network_mode.ps1",
+    )
+    missing_helpers = [name for name in required_helpers if not (exe.parent / "tools" / name).is_file()]
+    if missing_helpers:
+        raise RuntimeError(f"Packaged mode helpers are missing: {', '.join(missing_helpers)}")
+    with tempfile.TemporaryDirectory(prefix="browser-ai-bridge-smoke-") as temporary_directory:
         config = json.loads((exe.parent / "routes.json").read_text(encoding="utf-8"))
         config["listen"]["port"] = port
         config_path = Path(temporary_directory) / "routes.json"

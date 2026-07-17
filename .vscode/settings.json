@@ -1,0 +1,19 @@
+{
+  "files.watcherExclude": {
+    "**/build/**": true,
+    "**/dist*/**": true,
+    "**/__pycache__/**": true,
+    "**/.pytest_cache/**": true
+  },
+  "search.exclude": {
+    "**/build/**": true,
+    "**/dist*/**": true,
+    "**/__pycache__/**": true,
+    "**/.pytest_cache/**": true
+  },
+  "python.analysis.exclude": [
+    "**/build/**",
+    "**/dist*/**",
+    "**/__pycache__/**"
+  ]
+}

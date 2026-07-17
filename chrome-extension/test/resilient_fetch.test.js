@@ -12,6 +12,14 @@ import {
 const catalogUrl = "https://chatgpt.com/backend-api/ps/plugins/list?scope=GLOBAL";
 const installedUrl = "https://chatgpt.com/backend-api/ps/plugins/installed?scope=GLOBAL";
 
+async function waitForCalls(readCalls, expected) {
+  const deadline = Date.now() + 1_000;
+  while (readCalls() < expected) {
+    if (Date.now() >= deadline) throw new Error(`Expected ${expected} fetch calls`);
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+}
+
 test("recognizes only idempotent ChatGPT product metadata requests", () => {
   assert.equal(isRetryableProductMetadataRequest("GET", catalogUrl), true);
   assert.equal(
@@ -39,6 +47,13 @@ test("recognizes only idempotent ChatGPT product metadata requests", () => {
     false,
   );
   assert.equal(isBackgroundProductCatalogRequest("GET", catalogUrl), true);
+  assert.equal(
+    isRetryableProductMetadataRequest(
+      "GET",
+      "https://chatgpt.com/backend-api/connectors/directory/list?external_logos=true",
+    ),
+    true,
+  );
   assert.equal(
     isBackgroundProductCatalogRequest(
       "GET",
@@ -165,10 +180,18 @@ test("priority traffic preempts a stalled catalog read and lets it resume", asyn
     return new Response('{"statsigPayload":"{}"}', { status: 200 });
   };
 
+  let timing;
   const catalog = resilientFetch(
     catalogUrl,
     { method: "GET" },
-    { fetchImpl, headTimeoutMs: 1_000, scheduler },
+    {
+      fetchImpl,
+      headTimeoutMs: 1_000,
+      scheduler,
+      onTiming: (value) => {
+        timing = value;
+      },
+    },
   );
   await catalogStarted;
   const bootstrap = await resilientFetch(
@@ -181,6 +204,133 @@ test("priority traffic preempts a stalled catalog read and lets it resume", asyn
   assert.equal(bootstrap.status, 200);
   assert.equal(catalogResponse.status, 200);
   assert.equal(catalogCalls, 2);
+  assert.equal(timing.attempts, 2);
+  assert.equal(timing.preemptions, 1);
+  assert.ok(timing.executor_queue_ms >= 0);
+  assert.ok(timing.fetch_head_ms >= 0);
+});
+
+test("two scheduler preemptions do not consume the network retry budget", async () => {
+  const scheduler = new ProductRequestScheduler({ quietWindowMs: 0 });
+  let catalogCalls = 0;
+  let timing;
+  const fetchImpl = async (url, options) => {
+    if (url === catalogUrl) {
+      catalogCalls += 1;
+      if (catalogCalls <= 2) {
+        return new Promise((_resolve, reject) => {
+          options.signal.addEventListener(
+            "abort",
+            () => reject(new DOMException("preempted", "AbortError")),
+            { once: true },
+          );
+        });
+      }
+      return new Response("{}", { status: 200 });
+    }
+    return new Response("{}", { status: 200 });
+  };
+  const catalog = resilientFetch(catalogUrl, { method: "GET" }, {
+    fetchImpl,
+    scheduler,
+    headTimeoutMs: 1_000,
+    onTiming: (value) => {
+      timing = value;
+    },
+  });
+
+  await waitForCalls(() => catalogCalls, 1);
+  await resilientFetch("https://chatgpt.com/backend-api/wham/statsig/bootstrap", {
+    method: "POST",
+  }, { fetchImpl, scheduler });
+  await waitForCalls(() => catalogCalls, 2);
+  await resilientFetch("https://chatgpt.com/backend-api/wham/accounts/check", {
+    method: "POST",
+  }, { fetchImpl, scheduler });
+
+  const response = await catalog;
+  assert.equal(response.status, 200);
+  assert.equal(catalogCalls, 3);
+  assert.equal(timing.attempts, 3);
+  assert.equal(timing.preemptions, 2);
+});
+
+test("repeated preemption is bounded and releases the catalog slot", async () => {
+  const scheduler = new ProductRequestScheduler({ quietWindowMs: 0 });
+  let catalogCalls = 0;
+  const fetchImpl = async (url, options) => {
+    if (url === catalogUrl) {
+      catalogCalls += 1;
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener(
+          "abort",
+          () => reject(new DOMException("preempted", "AbortError")),
+          { once: true },
+        );
+      });
+    }
+    return new Response("{}", { status: 200 });
+  };
+  const catalogResult = resilientFetch(catalogUrl, { method: "GET" }, {
+    fetchImpl,
+    scheduler,
+    headTimeoutMs: 1_000,
+    maxPreemptions: 2,
+  }).then(
+    () => ({ ok: true }),
+    (error) => ({ ok: false, error }),
+  );
+
+  for (let expected = 1; expected <= 2; expected += 1) {
+    await waitForCalls(() => catalogCalls, expected);
+    await resilientFetch(`https://chatgpt.com/backend-api/priority/${expected}`, {
+      method: "POST",
+    }, { fetchImpl, scheduler });
+  }
+
+  const result = await catalogResult;
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "REQUEST_TIMEOUT");
+  assert.equal(catalogCalls, 2);
+  assert.equal(scheduler.catalogSlotTaken, false);
+  assert.equal(scheduler.activeCatalogRequests.size, 0);
+});
+
+test("metadata has a hard overall deadline even when fetch ignores AbortSignal", async () => {
+  const scheduler = new ProductRequestScheduler({ quietWindowMs: 0 });
+  let calls = 0;
+  let timing;
+  await assert.rejects(
+    resilientFetch(
+      catalogUrl,
+      { method: "GET" },
+      {
+        scheduler,
+        headTimeoutMs: 1_000,
+        totalTimeoutMs: 10,
+        onTiming: (value) => {
+          timing = value;
+        },
+        fetchImpl: async () => {
+          calls += 1;
+          if (calls === 1) return new Promise(() => {});
+          return new Response("{}", { status: 200 });
+        },
+      },
+    ),
+    (error) => error?.code === "REQUEST_TIMEOUT",
+  );
+  assert.equal(calls, 1);
+  assert.equal(timing.attempts, 1);
+  assert.equal(timing.preemptions, 0);
+  assert.equal(scheduler.catalogSlotTaken, false);
+  assert.equal(scheduler.activeCatalogRequests.size, 0);
+  const recovered = await resilientFetch(
+    catalogUrl,
+    { method: "GET" },
+    { scheduler, fetchImpl: async () => new Response("{}", { status: 200 }) },
+  );
+  assert.equal(recovered.status, 200);
 });
 
 test("priority traffic preempts plugin status reads and lets them resume", async () => {

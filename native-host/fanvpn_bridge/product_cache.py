@@ -1,8 +1,8 @@
-"""Bounded in-memory cache for immutable-ish Codex product metadata.
+"""Bounded in-memory cache for read-only Codex product metadata.
 
-Only the paginated global plugin catalog is cached.  Model responses, MCP
-traffic, installed-plugin state, account details, and credentials never enter
-this cache.  Entries are partitioned by ChatGPT account and disappear with the
+Only explicitly allowlisted GET endpoints are cached.  Model responses, MCP
+traffic, mutations and credentials never enter this cache.  Every entry is
+partitioned by ChatGPT account and authorization token and disappears with the
 Native Host process.
 """
 
@@ -19,10 +19,17 @@ from .contracts import Header, ResolvedRoute
 
 
 _GLOBAL_PLUGIN_LIST_PATH = "/backend-api/ps/plugins/list"
-_DEFAULT_TTL_SECONDS = 10 * 60
 _DEFAULT_MAX_ENTRIES = 256
 _DEFAULT_MAX_ENTRY_BYTES = 8 * 1024 * 1024
 _DEFAULT_MAX_TOTAL_BYTES = 64 * 1024 * 1024
+_CACHEABLE_GET_POLICIES = {
+    _GLOBAL_PLUGIN_LIST_PATH: (10 * 60, 8 * 1024 * 1024, True),
+    "/backend-api/ps/plugins/installed": (30, 4 * 1024 * 1024, True),
+    "/backend-api/ps/plugins/suggested": (5 * 60, 4 * 1024 * 1024, True),
+    "/backend-api/plugins/featured": (5 * 60, 4 * 1024 * 1024, False),
+    "/backend-api/connectors/directory/list": (10 * 60, 8 * 1024 * 1024, False),
+    "/backend-api/wham/accounts/check": (2 * 60, 1024 * 1024, False),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,7 +77,7 @@ class ProductResponseCache:
         route: ResolvedRoute,
         headers: list[Header],
     ) -> CachePolicy | None:
-        """Return a cache policy only for authenticated global catalog GETs."""
+        """Return a policy only for authenticated, allowlisted metadata GETs."""
 
         if method != "GET" or route.name != "chatgpt-backend":
             return None
@@ -79,22 +86,25 @@ class ProductResponseCache:
             upstream.scheme != "https"
             or upstream.hostname != "chatgpt.com"
             or upstream.port not in {None, 443}
-            or upstream.path != _GLOBAL_PLUGIN_LIST_PATH
         ):
             return None
+        endpoint_policy = _CACHEABLE_GET_POLICIES.get(upstream.path)
+        if endpoint_policy is None:
+            return None
+        ttl_seconds, max_body_bytes, require_global_scope = endpoint_policy
         query = parse_qs(upstream.query, keep_blank_values=True)
-        if query.get("scope") != ["GLOBAL"]:
+        if require_global_scope and query.get("scope") != ["GLOBAL"]:
             return None
         partition = _account_partition(headers)
         if partition is None:
             return None
         digest = hashlib.sha256(
-            f"{partition}\0{route.upstream_url}".encode("utf-8")
+            f"{partition}\0{route.upstream_url}\0{_header_partition(headers)}".encode("utf-8")
         ).hexdigest()
         return CachePolicy(
             key=digest,
-            ttl_seconds=_DEFAULT_TTL_SECONDS,
-            max_body_bytes=_DEFAULT_MAX_ENTRY_BYTES,
+            ttl_seconds=ttl_seconds,
+            max_body_bytes=min(max_body_bytes, _DEFAULT_MAX_ENTRY_BYTES),
         )
 
     def get(self, policy: CachePolicy) -> tuple[CachedResponse, int] | None:
@@ -136,7 +146,23 @@ class ProductResponseCache:
     ) -> bool:
         if status != 200 or len(body) > policy.max_body_bytes:
             return False
-        if any(header.name.lower() == "set-cookie" for header in headers):
+        response_headers: dict[str, list[str]] = {}
+        for header in headers:
+            response_headers.setdefault(header.name.lower(), []).append(header.value)
+        if "set-cookie" in response_headers:
+            return False
+        cache_control = ",".join(response_headers.get("cache-control", ())).lower()
+        directives = {item.strip().split("=", 1)[0] for item in cache_control.split(",")}
+        if directives & {"no-store", "no-cache"}:
+            return False
+        pragma = ",".join(response_headers.get("pragma", ())).lower()
+        if "no-cache" in {item.strip() for item in pragma.split(",")}:
+            return False
+        vary = ",".join(response_headers.get("vary", ()))
+        if "*" in {item.strip() for item in vary.split(",")}:
+            return False
+        content_types = response_headers.get("content-type", ())
+        if not content_types or not _is_json_content_type(content_types[-1]):
             return False
         entry = CachedResponse(
             status=status,
@@ -196,3 +222,18 @@ def _account_partition(headers: list[Header]) -> str | None:
         account_digest = hashlib.sha256(account_ids[-1].encode("utf-8")).hexdigest()
         return f"account:{account_digest}:authorization:{token_digest}"
     return "authorization:" + token_digest
+
+
+def _header_partition(headers: list[Header]) -> str:
+    """Hash all client-supplied headers so every possible Vary input is isolated."""
+
+    canonical = "\0".join(
+        f"{header.name.strip().lower()}\0{header.value.strip()}"
+        for header in sorted(headers, key=lambda value: (value.name.lower(), value.value))
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _is_json_content_type(value: str) -> bool:
+    media_type = value.split(";", 1)[0].strip().lower()
+    return media_type == "application/json" or media_type.endswith("+json")

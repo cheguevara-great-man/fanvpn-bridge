@@ -55,6 +55,16 @@ class HealthSnapshot:
     last_error_at: datetime | None
 
 
+@dataclass(frozen=True, slots=True)
+class BrowserTiming:
+    """Secret-free timing reported by the browser executor."""
+
+    executor_queue_ms: int
+    fetch_head_ms: int
+    attempts: int
+    preemptions: int
+
+
 @runtime_checkable
 class RouteResolver(Protocol):
     """Resolves a local route name and relative path without arbitrary URLs."""
@@ -81,7 +91,12 @@ class MessageChannel(Protocol):
 class ResponseSink(Protocol):
     """Consumes one browser response and writes it to a local HTTP client."""
 
-    def start(self, status: int, headers: Sequence[Header]) -> None:
+    def start(
+        self,
+        status: int,
+        headers: Sequence[Header],
+        timing: BrowserTiming | None = None,
+    ) -> None:
         """Write response status and end-to-end headers exactly once."""
 
     def write(self, data: bytes, on_consumed: Callable[[], None] | None = None) -> None:

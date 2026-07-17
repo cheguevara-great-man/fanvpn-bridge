@@ -20,6 +20,7 @@ from urllib.parse import urlsplit
 from .codex_product_auth import CodexProductAuth
 from .config import BridgeConfig
 from .contracts import (
+    BrowserTiming,
     EgressRequest,
     Header,
     HealthSnapshotProvider,
@@ -72,6 +73,7 @@ class _RelayMetrics:
     response_preview: bytes = b""
     response_headers: tuple[Header, ...] = ()
     response_body: bytes | None = None
+    browser_timing: BrowserTiming | None = None
 
 
 class QueueResponseSink(ResponseSink):
@@ -81,8 +83,13 @@ class QueueResponseSink(ResponseSink):
         self.events: queue.Queue[_ResponseEvent] = queue.Queue(maxsize=max_in_flight + 2)
         self._closed = threading.Event()
 
-    def start(self, status: int, headers: Sequence[Header]) -> None:
-        self._put_nowait(_ResponseEvent("head", (status, list(headers))))
+    def start(
+        self,
+        status: int,
+        headers: Sequence[Header],
+        timing: BrowserTiming | None = None,
+    ) -> None:
+        self._put_nowait(_ResponseEvent("head", (status, list(headers), timing)))
 
     def write(self, data: bytes, on_consumed: Callable[[], None] | None = None) -> None:
         if self._closed.is_set():
@@ -345,7 +352,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             )
             _LOG.info(
                 "request_complete request_id=%s route=%s family=%s method=%s status=%s response_head_ms=%s "
-                "first_body_ms=%s total_ms=%s complete=%s",
+                "first_body_ms=%s total_ms=%s complete=%s executor_queue_ms=%s fetch_head_ms=%s "
+                "fetch_attempts=%s fetch_preemptions=%s",
                 request_id,
                 route_name,
                 family,
@@ -355,6 +363,10 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 metrics.first_body_ms if metrics.first_body_ms is not None else "none",
                 metrics.total_ms,
                 metrics.complete,
+                metrics.browser_timing.executor_queue_ms if metrics.browser_timing else "unknown",
+                metrics.browser_timing.fetch_head_ms if metrics.browser_timing else "unknown",
+                metrics.browser_timing.attempts if metrics.browser_timing else "unknown",
+                metrics.browser_timing.preemptions if metrics.browser_timing else "unknown",
             )
             if metrics.response_preview:
                 _LOG.info(
@@ -538,6 +550,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         response_preview = bytearray()
         response_headers: tuple[Header, ...] = ()
         response_body: bytearray | None = bytearray() if capture_body_limit is not None else None
+        browser_timing: BrowserTiming | None = None
         idle_deadline = time.monotonic() + timeout
         while True:
             remaining = idle_deadline - time.monotonic()
@@ -555,7 +568,9 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             if event.kind == "head":
                 if response_started:
                     raise BridgeError(ErrorCode.PROTOCOL_VIOLATION, "Duplicate response head")
-                status, headers = cast(tuple[int, list[Header]], event.value)
+                status, headers, browser_timing = cast(
+                    tuple[int, list[Header], BrowserTiming | None], event.value
+                )
                 response_status = status
                 response_headers = tuple(headers)
                 response_head_ms = _elapsed_ms(started_at)
@@ -611,6 +626,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                     response_preview=bytes(response_preview),
                     response_headers=response_headers,
                     response_body=bytes(response_body) if response_body is not None else None,
+                    browser_timing=browser_timing,
                 )
             if event.kind == "error":
                 error = event.value
@@ -626,6 +642,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                         response_preview=bytes(response_preview),
                         response_headers=response_headers,
                         response_body=None,
+                        browser_timing=browser_timing,
                     )
                 if isinstance(error, BridgeError):
                     raise error

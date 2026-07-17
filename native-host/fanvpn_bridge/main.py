@@ -16,6 +16,7 @@ from .errors import BridgeError
 from .framing import FramedMessageChannel
 from .forward_proxy import ForwardProxyError, run_forward_proxy
 from .http_server import create_http_server
+from .mode_control import CodexModeController
 from .product_cache import ProductResponseCache
 from .routing import RouteTable
 from .runtime_logging import configure_runtime_logging
@@ -32,6 +33,7 @@ def run(config_path: Path) -> int:
         max_in_flight=config.protocol.max_in_flight,
         max_active_requests=config.protocol.max_active_requests,
         request_timeout_seconds=config.protocol.request_timeout_seconds,
+        mode_controller=CodexModeController(),
     )
     dispatcher.start()
     routes = RouteTable(config.routes)

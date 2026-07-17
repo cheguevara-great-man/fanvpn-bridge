@@ -15,6 +15,14 @@ def plugin_route(query: str = "scope=GLOBAL&limit=200") -> ResolvedRoute:
     )
 
 
+def product_route(path: str) -> ResolvedRoute:
+    return ResolvedRoute(
+        name="chatgpt-backend",
+        upstream_base_url="https://chatgpt.com",
+        upstream_url=f"https://chatgpt.com{path}",
+    )
+
+
 class ProductResponseCacheTests(unittest.TestCase):
     def test_only_authenticated_global_plugin_catalog_gets_are_cacheable(self) -> None:
         cache = ProductResponseCache()
@@ -23,6 +31,39 @@ class ProductResponseCacheTests(unittest.TestCase):
         self.assertIsNone(cache.policy("POST", plugin_route(), headers))
         self.assertIsNone(cache.policy("GET", plugin_route("scope=WORKSPACE"), headers))
         self.assertIsNone(cache.policy("GET", plugin_route(), []))
+
+    def test_short_lived_startup_metadata_is_cacheable_but_mutations_are_not(self) -> None:
+        cache = ProductResponseCache()
+        headers = [Header("Authorization", "Bearer secret"), Header("ChatGPT-Account-ID", "acct")]
+        account = cache.policy(
+            "GET",
+            product_route("/backend-api/wham/accounts/check"),
+            headers,
+        )
+        installed = cache.policy(
+            "GET",
+            product_route("/backend-api/ps/plugins/installed?scope=GLOBAL"),
+            headers,
+        )
+        connectors = cache.policy(
+            "GET",
+            product_route("/backend-api/connectors/directory/list?external_logos=true"),
+            headers,
+        )
+        self.assertIsNotNone(account)
+        self.assertIsNotNone(installed)
+        self.assertIsNotNone(connectors)
+        self.assertLess(account.ttl_seconds, connectors.ttl_seconds)
+        self.assertIsNone(
+            cache.policy(
+                "POST",
+                product_route("/backend-api/ps/plugins/installed?scope=GLOBAL"),
+                headers,
+            )
+        )
+        self.assertIsNone(
+            cache.policy("GET", product_route("/backend-api/wham/usage"), headers)
+        )
 
     def test_entries_are_partitioned_by_account_and_expire(self) -> None:
         cache = ProductResponseCache()
@@ -69,7 +110,10 @@ class ProductResponseCacheTests(unittest.TestCase):
             cache.put(
                 policy,
                 status=200,
-                headers=(Header("Set-Cookie", "private=value"),),
+                headers=(
+                    Header("Content-Type", "application/json"),
+                    Header("Set-Cookie", "private=value"),
+                ),
                 body=b"{}",
             )
         )
@@ -77,10 +121,51 @@ class ProductResponseCacheTests(unittest.TestCase):
             cache.put(
                 policy,
                 status=200,
-                headers=(),
+                headers=(Header("Content-Type", "application/json"),),
                 body=b"x" * (policy.max_body_bytes + 1),
             )
         )
+
+    def test_response_cache_directives_and_content_type_are_respected(self) -> None:
+        cache = ProductResponseCache()
+        policy = cache.policy(
+            "GET",
+            plugin_route(),
+            [Header("Authorization", "Bearer secret")],
+        )
+        assert policy is not None
+        for headers in (
+            (Header("Content-Type", "application/json"), Header("Cache-Control", "no-store")),
+            (Header("Content-Type", "application/json"), Header("Cache-Control", "no-cache")),
+            (Header("Content-Type", "application/json"), Header("Pragma", "no-cache")),
+            (Header("Content-Type", "application/json"), Header("Vary", "*")),
+            (Header("Content-Type", "text/html"),),
+            (),
+        ):
+            self.assertFalse(cache.put(policy, status=200, headers=headers, body=b"{}"))
+        self.assertTrue(
+            cache.put(
+                policy,
+                status=200,
+                headers=(
+                    Header("Content-Type", "application/problem+json; charset=utf-8"),
+                    Header("Vary", "Accept"),
+                ),
+                body=b"{}",
+            )
+        )
+
+    def test_cache_key_covers_all_client_header_variants(self) -> None:
+        cache = ProductResponseCache()
+        common = [Header("Authorization", "Bearer secret")]
+        json_policy = cache.policy(
+            "GET", plugin_route(), common + [Header("Accept", "application/json")]
+        )
+        text_policy = cache.policy(
+            "GET", plugin_route(), common + [Header("Accept", "text/plain")]
+        )
+        assert json_policy is not None and text_policy is not None
+        self.assertNotEqual(json_policy.key, text_policy.key)
 
     def test_identical_cache_misses_share_one_in_flight_owner(self) -> None:
         cache = ProductResponseCache()
@@ -98,7 +183,14 @@ class ProductResponseCacheTests(unittest.TestCase):
         self.assertIsNotNone(waiter.wait_event)
         self.assertFalse(waiter.wait_event.is_set())
 
-        self.assertTrue(cache.put(policy, status=200, headers=(), body=b'{"plugins":[]}'))
+        self.assertTrue(
+            cache.put(
+                policy,
+                status=200,
+                headers=(Header("Content-Type", "application/json"),),
+                body=b'{"plugins":[]}',
+            )
+        )
         cache.complete(policy)
         self.assertTrue(waiter.wait_event.wait(0.1))
         hit = cache.acquire(policy)
