@@ -235,6 +235,16 @@ class ProductResponseCacheTests(unittest.TestCase):
         assert policy is not None
         self.assertIsNone(policy.persistent_ttl_seconds)
 
+    def test_connector_directory_is_short_lived_and_persistent(self) -> None:
+        cache = ProductResponseCache()
+        policy = cache.policy(
+            "GET",
+            product_route("/backend-api/connectors/directory/list?external_logos=true"),
+            [Header("Authorization", "Bearer secret"), Header("ChatGPT-Account-ID", "acct")],
+        )
+        assert policy is not None
+        self.assertEqual(policy.persistent_ttl_seconds, 60 * 60)
+
     def test_identical_cache_misses_share_one_in_flight_owner(self) -> None:
         cache = ProductResponseCache()
         policy = cache.policy(

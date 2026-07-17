@@ -73,6 +73,10 @@ class ProductDiagnosticTests(unittest.TestCase):
         route = self.route("/api/codex/ps/mcp")
         self.assertEqual(request_family(route), "apps-mcp")
 
+    def test_connector_directory_has_its_own_family(self) -> None:
+        route = self.route("/connectors/directory/list?external_logos=true")
+        self.assertEqual(request_family(route), "connectors-directory")
+
 
 if __name__ == "__main__":
     unittest.main()

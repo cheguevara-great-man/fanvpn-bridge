@@ -32,7 +32,7 @@ _CACHEABLE_GET_POLICIES = {
     "/backend-api/ps/plugins/installed": (30, 4 * 1024 * 1024, True, None),
     "/backend-api/ps/plugins/suggested": (5 * 60, 4 * 1024 * 1024, True, None),
     "/backend-api/plugins/featured": (5 * 60, 4 * 1024 * 1024, False, None),
-    "/backend-api/connectors/directory/list": (10 * 60, 8 * 1024 * 1024, False, None),
+    "/backend-api/connectors/directory/list": (10 * 60, 8 * 1024 * 1024, False, 60 * 60),
     "/backend-api/wham/accounts/check": (2 * 60, 1024 * 1024, False, None),
 }
 

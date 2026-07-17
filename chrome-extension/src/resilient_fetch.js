@@ -1,6 +1,5 @@
 const PRODUCT_METADATA_HEAD_TIMEOUT_MS = 10_000;
 const PRODUCT_METADATA_MAX_ATTEMPTS = 2;
-const PRODUCT_METADATA_MAX_PREEMPTIONS = 4;
 const PRODUCT_METADATA_TOTAL_TIMEOUT_MS = 15_000;
 const PRODUCT_METADATA_QUIET_WINDOW_MS = 150;
 
@@ -180,7 +179,7 @@ export async function resilientFetch(
     fetchImpl = globalThis.fetch,
     headTimeoutMs = PRODUCT_METADATA_HEAD_TIMEOUT_MS,
     maxAttempts = PRODUCT_METADATA_MAX_ATTEMPTS,
-    maxPreemptions = PRODUCT_METADATA_MAX_PREEMPTIONS,
+    maxPreemptions = null,
     totalTimeoutMs = PRODUCT_METADATA_TOTAL_TIMEOUT_MS,
     scheduler = defaultScheduler,
     onTiming,
@@ -260,7 +259,9 @@ export async function resilientFetch(
       lastError = result.error;
       if (result.preempted) {
         timing.preemptions += 1;
-        if (timing.preemptions >= maxPreemptions) throw metadataTimeoutError();
+        if (maxPreemptions !== null && timing.preemptions >= maxPreemptions) {
+          throw metadataTimeoutError();
+        }
         continue;
       }
       failedAttempts += 1;

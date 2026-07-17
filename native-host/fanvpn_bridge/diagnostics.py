@@ -70,6 +70,7 @@ def request_family(route: ResolvedRoute) -> str:
         ("/ps/plugins/suggested", "plugins-suggested"),
         ("/ps/plugins/list", "plugins-list"),
         ("/ps/plugins/workspace/", "plugins-workspace"),
+        ("/connectors/directory/list", "connectors-directory"),
         ("/ps/mcp", "apps-mcp"),
         ("/api/codex/ps/mcp", "apps-mcp"),
         ("/codex/analytics-events/", "analytics"),
