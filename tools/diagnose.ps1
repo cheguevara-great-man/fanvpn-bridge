@@ -63,19 +63,8 @@ $result = [ordered]@{
     health = $null
     health_error = $null
     startup_task = $null
-    chrome_background_mode_policy = $false
     chrome_profiles = @()
     deployment_warnings = @()
-}
-
-$chromePolicyPath = 'HKCU:\Software\Policies\Google\Chrome'
-try {
-    $result.chrome_background_mode_policy = (Get-ItemPropertyValue `
-        -LiteralPath $chromePolicyPath `
-        -Name BackgroundModeEnabled `
-        -ErrorAction Stop) -eq 1
-} catch {
-    $result.chrome_background_mode_policy = $false
 }
 
 $extensionId = 'bgpbajocpomglgdffkgcklhepbcfpbfd'
@@ -203,8 +192,6 @@ if ($result.registry_present -and -not $result.manifest_present) { $warnings.Add
 if ($result.manifest_present -and -not $result.executable_present) { $warnings.Add('Registered Native Host executable is missing.') }
 if (-not $result.health) { $warnings.Add('Running Bridge health endpoint is unavailable.') }
 if (-not $result.no_proxy_has_loopback) { $warnings.Add('User NO_PROXY does not include loopback.') }
-if (-not $result.chrome_background_mode_policy) { $warnings.Add('Chrome background mode policy is not enabled.') }
-if (-not $result.startup_task) { $warnings.Add('Bridge background monitor task is missing.') }
 
 $directCredentialPath = Join-Path $env:LOCALAPPDATA 'FanVPNBridge\direct-proxy.json'
 $result.direct_mode_configured = Test-Path -LiteralPath $directCredentialPath -PathType Leaf

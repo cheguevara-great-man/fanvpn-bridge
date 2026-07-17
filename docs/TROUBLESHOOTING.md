@@ -34,7 +34,7 @@ Invoke-RestMethod http://127.0.0.1:18888/routes -Proxy $null
 | 更新后新路由没有出现 | Chrome 仍在运行切换前的 Host，或扩展尚未刷新 | 刷新扩展并重开 Chrome，再检查 `/ready` 和 `/routes` |
 | `source_matches_registered` 为 `false` | 当前注册的 route 配置与仓库源码不同 | 确认本地改动后运行 A/B 更新脚本，刷新扩展并重开 Chrome |
 | `registered_matches_running` 为 `false` | 注册已切换，但 Chrome 仍保持旧 Host 进程 | 关闭并重新打开 Chrome |
-| A/B 更新报 `WinError 5` 或 `libcrypto-3.dll` 拒绝访问 | 非活动槽残留旧 Host，或安全软件正在扫描 DLL | 2.6.3+ 会自动结束非活动槽残留进程；等待数秒重试，仍失败时再暂时关闭 Chrome |
+| A/B 更新报 `WinError 5` 或 `libcrypto-3.dll` 拒绝访问 | 上次切换后未重开 Chrome，旧进程仍占用本次目标槽位 | 关闭 Chrome，确认所有 Host 进程退出后重新运行更新脚本 |
 | `Failed to fetch` / `UPSTREAM_CONNECTION_FAILED` | FanVPN 未开启、节点失效或目标被节点限制 | 在同一 Chrome profile 检查 FanVPN 并切换节点 |
 | 本地请求被发送到 Clash/系统代理 | `NO_PROXY` 未包含 loopback，或应用未重启 | 添加 `127.0.0.1,localhost` 后重启 VS Code |
 | 请求长时间无首个流式输出 | 扩展版本旧或未刷新 | 刷新 FanVPN AI Bridge，确认已加载当前 `stream.js` |
@@ -58,7 +58,7 @@ Get-ScheduledTaskInfo -TaskName 'FanVPN Bridge Bootstrap'
 Start-ScheduledTask -TaskName 'FanVPN Bridge Bootstrap'
 ```
 
-自动任务会无窗口启动和持续监测 Chrome/Bridge；它不能替用户打开 FanVPN、选择节点或
+自动任务只能启动 Chrome 和等待 Bridge；它不能替用户打开 FanVPN、选择节点或
 授权 Chrome 扩展。
 
 启动日志：
@@ -121,10 +121,10 @@ Browser Full 会把 app-server 产品后端指向固定的 `chatgpt-backend` rou
 看到 `request_cache_wait` 后跟 `request_cache_hit family=plugins-list` 表示并发合并生效；缓存不包含
 Token、Cookie、安装状态、模型内容或 MCP 工具调用。
 
-2.6.3 起安装器为当前用户启用 Chrome 官方后台模式，计划任务在整个 Windows 登录会话内隐藏监测。
-它先用无启动窗口模式初始化扩展；关闭最后一个可见窗口不会结束后台链路，Chrome 被真正终止后连续
-两次检查失败会无窗口重启。日志中的 `MONITOR Bridge connection was lost` 后应出现 `STARTING` 和
-`MONITOR ready`，不会再以普通空白页兜底。
+计划任务先用 Chrome 的无启动窗口模式在后台初始化扩展。部分 Chrome 版本在后台模式关闭、刚升级或
+异常退出后会直接忽略该模式；2.5.0 起若约 10 秒仍未就绪，启动脚本会自动打开一个普通 Chrome 空白页
+作为一次性兜底，并继续复用相同默认配置文件和扩展状态。`startup.log` 中出现 `FALLBACK` 后紧跟
+`READY` 属于预期恢复，不需要重装 Host。
 
 检查两个本地入口及 VS Code 隐藏设置：
 

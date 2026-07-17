@@ -36,34 +36,7 @@ if (-not $KeepDirectMode) {
 if (-not $KeepStartupTask) {
     $startupTaskName = 'FanVPN Bridge Bootstrap'
     if (Get-ScheduledTask -TaskName $startupTaskName -ErrorAction SilentlyContinue) {
-        Stop-ScheduledTask -TaskName $startupTaskName -ErrorAction SilentlyContinue
         Unregister-ScheduledTask -TaskName $startupTaskName -Confirm:$false
         Write-Host 'FanVPN Bridge startup task removed.' -ForegroundColor Green
     }
-
-    $chromePolicyPath = 'HKCU:\Software\Policies\Google\Chrome'
-    $bridgeStatePath = 'HKCU:\Software\FanVPNBridge'
-    try {
-        $previousValue = [uint32](Get-ItemPropertyValue `
-            -LiteralPath $bridgeStatePath `
-            -Name BackgroundModePolicyPrevious `
-            -ErrorAction Stop)
-        if ($previousValue -eq 2) {
-            Remove-ItemProperty -LiteralPath $chromePolicyPath -Name BackgroundModeEnabled -Force -ErrorAction SilentlyContinue
-        } else {
-            New-Item -Path $chromePolicyPath -Force | Out-Null
-            New-ItemProperty `
-                -Path $chromePolicyPath `
-                -Name BackgroundModeEnabled `
-                -PropertyType DWord `
-                -Value $previousValue `
-                -Force | Out-Null
-        }
-        Remove-ItemProperty `
-            -LiteralPath $bridgeStatePath `
-            -Name BackgroundModePolicyPrevious `
-            -Force `
-            -ErrorAction SilentlyContinue
-        Write-Host 'Previous Chrome background-mode policy restored.' -ForegroundColor Green
-    } catch {}
 }

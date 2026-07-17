@@ -19,8 +19,8 @@ Bridge 不承担 Responses、Chat Completions、Anthropic Messages 或 Gemini Na
 
 ```text
 Windows 用户登录
-  └─ FanVPN Bridge Bootstrap 计划任务（当前登录会话内常驻）
-      └─ 无窗口启动并监测 Chrome / Bridge，断开后自动恢复
+  └─ FanVPN Bridge Bootstrap 计划任务
+      └─ 启动 Chrome
           └─ MV3 Service Worker 调用 runtime.connectNative()
               └─ browser-ai-bridge.exe
                   ├─ stdin/stdout：Native Messaging
@@ -35,9 +35,6 @@ Windows 用户登录
 
 Chrome 的 Native Messaging Port 维持 Host 和扩展 Service Worker 的生命周期。
 端口断开后扩展按退避策略重连；Host 收到 stdin EOF 后停止接收请求、取消在途请求并退出。
-安装器同时为当前 Windows 用户启用 Chrome 官方后台模式，使最后一个可见窗口关闭后浏览器进程、
-代理认证缓存、Offscreen Document 和 Native Messaging Port 可以继续工作。隐藏计划任务每 15 秒
-检查 Bridge；连续两次失败后只启动无窗口 Chrome，不再打开普通空白页。
 
 三模式控制复用同一条受信 Native Messaging 通道：
 
