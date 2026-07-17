@@ -106,6 +106,7 @@ foreach ($scriptName in @(
     'set_vscode_codex_product_endpoint.ps1',
     'set_vscode_codex_mode.ps1',
     'start_vscode_network_mode.ps1'
+    'configure_usage_reporting.ps1'
 )) {
     Copy-Item -LiteralPath (Join-Path $root "tools\$scriptName") -Destination (Join-Path $outputTools $scriptName) -Force
 }

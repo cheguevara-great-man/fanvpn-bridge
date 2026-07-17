@@ -48,6 +48,7 @@ def main() -> int:
         "set_vscode_codex_product_endpoint.ps1",
         "set_vscode_codex_mode.ps1",
         "start_vscode_network_mode.ps1",
+        "configure_usage_reporting.ps1",
     )
     missing_helpers = [name for name in required_helpers if not (exe.parent / "tools" / name).is_file()]
     if missing_helpers:

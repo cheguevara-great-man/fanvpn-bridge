@@ -39,6 +39,7 @@ from .diagnostics import (
 from .errors import BridgeError, ErrorCode
 from .product_cache import CachedResponse, ProductResponseCache
 from .routing import RouteTable
+from .usage_reporting import TokenUsage, UsageExtractor, UsageReporter
 
 
 _HOP_BY_HOP = {
@@ -74,6 +75,7 @@ class _RelayMetrics:
     response_headers: tuple[Header, ...] = ()
     response_body: bytes | None = None
     browser_timing: BrowserTiming | None = None
+    token_usage: TokenUsage | None = None
 
 
 class QueueResponseSink(ResponseSink):
@@ -136,6 +138,7 @@ class BridgeHTTPServer(ThreadingHTTPServer):
         diagnostics: DiagnosticOptions,
         product_auth: CodexProductAuth,
         product_cache: ProductResponseCache,
+        usage_reporter: UsageReporter | None = None,
         product_api_alias: bool = False,
     ) -> None:
         self.bridge_config = config
@@ -145,6 +148,7 @@ class BridgeHTTPServer(ThreadingHTTPServer):
         self.diagnostics = diagnostics
         self.product_auth = product_auth
         self.product_cache = product_cache
+        self.usage_reporter = usage_reporter
         self.product_api_alias = product_api_alias
         super().__init__(server_address, BridgeRequestHandler)
 
@@ -202,6 +206,14 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 {"routes": sorted(server.bridge_config.routes)},
                 head_only=method == "HEAD",
             )
+            return
+        if self.path == "/__bridge/usage":
+            value = (
+                server.usage_reporter.snapshot()
+                if server.usage_reporter is not None
+                else {"enabled": False, "reason": "usage-reporting.json is not configured"}
+            )
+            self._send_json(200, value, head_only=method == "HEAD")
             return
         if self.path == "/__bridge/version":
             snapshot = server.health.snapshot()
@@ -349,7 +361,20 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 capture_body_limit=(
                     cache_policy.max_body_bytes if cache_policy is not None else None
                 ),
+                extract_usage=(
+                    server.usage_reporter is not None
+                    and method == "POST"
+                    and route_name in {"chatgpt-codex", "openai"}
+                ),
             )
+            if (
+                server.usage_reporter is not None
+                and metrics.complete
+                and metrics.status < 400
+                and metrics.token_usage is not None
+                and route_name is not None
+            ):
+                server.usage_reporter.record(metrics.token_usage, route=route_name)
             _LOG.info(
                 "request_complete request_id=%s route=%s family=%s method=%s status=%s response_head_ms=%s "
                 "first_body_ms=%s total_ms=%s complete=%s executor_queue_ms=%s fetch_head_ms=%s "
@@ -540,6 +565,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         started_at: float | None = None,
         capture_error_preview: bool = False,
         capture_body_limit: int | None = None,
+        extract_usage: bool = False,
     ) -> _RelayMetrics:
         server = cast(BridgeHTTPServer, self.server)
         started_at = started_at if started_at is not None else time.monotonic()
@@ -551,6 +577,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         response_headers: tuple[Header, ...] = ()
         response_body: bytearray | None = bytearray() if capture_body_limit is not None else None
         browser_timing: BrowserTiming | None = None
+        usage_extractor = UsageExtractor() if extract_usage else None
         idle_deadline = time.monotonic() + timeout
         while True:
             remaining = idle_deadline - time.monotonic()
@@ -608,6 +635,11 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                         else:
                             response_body = None
                     self._write_chunk(data)
+                    # Flush to Codex before doing even the small amount of JSON
+                    # inspection needed for accounting. Usage collection must
+                    # never delay the visible model stream.
+                    if usage_extractor is not None:
+                        usage_extractor.feed(data)
                 if on_consumed is not None:
                     on_consumed()
                 continue
@@ -627,6 +659,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                     response_headers=response_headers,
                     response_body=bytes(response_body) if response_body is not None else None,
                     browser_timing=browser_timing,
+                    token_usage=usage_extractor.finish() if usage_extractor is not None else None,
                 )
             if event.kind == "error":
                 error = event.value
@@ -643,6 +676,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                         response_headers=response_headers,
                         response_body=None,
                         browser_timing=browser_timing,
+                        token_usage=None,
                     )
                 if isinstance(error, BridgeError):
                     raise error
@@ -878,6 +912,7 @@ def create_http_server(
     listen_port: int | None = None,
     product_api_alias: bool = False,
     product_cache: ProductResponseCache | None = None,
+    usage_reporter: UsageReporter | None = None,
 ) -> BridgeHTTPServer:
     auth_path = codex_auth_path or Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "auth.json"
     return BridgeHTTPServer(
@@ -889,5 +924,6 @@ def create_http_server(
         diagnostics=load_diagnostic_options(),
         product_auth=CodexProductAuth(auth_path),
         product_cache=product_cache or ProductResponseCache(),
+        usage_reporter=usage_reporter,
         product_api_alias=product_api_alias,
     )

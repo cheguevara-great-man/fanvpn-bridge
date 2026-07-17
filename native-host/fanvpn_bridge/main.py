@@ -20,6 +20,7 @@ from .mode_control import CodexModeController
 from .product_cache import ProductResponseCache
 from .routing import RouteTable
 from .runtime_logging import configure_runtime_logging
+from .usage_reporting import UsageReporter
 
 
 def run(config_path: Path) -> int:
@@ -46,12 +47,18 @@ def run(config_path: Path) -> int:
     product_cache = ProductResponseCache(
         persistent_directory=cache_base / "product-cache-v1"
     )
+    usage_reporter = UsageReporter.load(cache_base, dispatcher)
+    if usage_reporter is None:
+        log.info("usage_reporting_disabled")
+    else:
+        log.info("usage_reporting_ready")
     server = create_http_server(
         config,
         routes,
         dispatcher,
         dispatcher,
         product_cache=product_cache,
+        usage_reporter=usage_reporter,
     )
     server_thread = threading.Thread(
         target=server.serve_forever,
@@ -69,6 +76,7 @@ def run(config_path: Path) -> int:
             listen_port=8000,
             product_api_alias=True,
             product_cache=product_cache,
+            usage_reporter=usage_reporter,
         )
     except OSError as error:
         log.warning("vscode_product_api_unavailable listen=%s:8000 error=%s", config.listen_host, error)
@@ -87,6 +95,8 @@ def run(config_path: Path) -> int:
     if product_server is not None:
         product_server.shutdown()
         product_server.server_close()
+    if usage_reporter is not None:
+        usage_reporter.close()
     return 0
 
 
