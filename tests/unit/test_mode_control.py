@@ -67,7 +67,9 @@ class CodexModeControllerTests(unittest.TestCase):
                 self.assertTrue(command[0].endswith("powershell.exe"))
                 self.assertTrue(command[command.index("-File") + 1].endswith("start_vscode_network_mode.ps1"))
                 self.assertEqual(command[command.index("-Mode") + 1], "BrowserFull")
-                self.assertEqual(command[command.index("-CodexHome") + 1], str(root / "codex"))
+                actual_codex_home = Path(command[command.index("-CodexHome") + 1]).resolve()
+                expected_codex_home = (root / "codex").resolve()
+                self.assertEqual(actual_codex_home, expected_codex_home)
                 self.write_config(
                     root,
                     'model_provider = "browser_ai_bridge"\n'
