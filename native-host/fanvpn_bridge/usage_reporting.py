@@ -37,6 +37,7 @@ class TokenUsage:
     cached_input_tokens: int = 0
     reasoning_output_tokens: int = 0
     model: str = "unknown"
+    model_level: str = "default"
 
 
 class UsageExtractor:
@@ -308,8 +309,20 @@ def _find_usage(value: object) -> TokenUsage | None:
     if isinstance(response, dict) and isinstance(response.get("usage"), dict):
         candidate = response["usage"]
         model = response.get("model", value.get("model", "unknown"))
+        reasoning = response.get("reasoning")
+        model_level = (
+            reasoning.get("effort")
+            if isinstance(reasoning, dict) and isinstance(reasoning.get("effort"), str)
+            else response.get("service_tier", "default")
+        )
     else:
         model = value.get("model", "unknown")
+        reasoning = value.get("reasoning")
+        model_level = (
+            reasoning.get("effort")
+            if isinstance(reasoning, dict) and isinstance(reasoning.get("effort"), str)
+            else value.get("service_tier", "default")
+        )
     if not isinstance(candidate, dict):
         return None
     input_tokens = _token_int(candidate, "input_tokens", "prompt_tokens")
@@ -328,6 +341,11 @@ def _find_usage(value: object) -> TokenUsage | None:
         cached_input_tokens=_detail_int(input_details, "cached_tokens"),
         reasoning_output_tokens=_detail_int(output_details, "reasoning_tokens"),
         model=str(model)[:128] if isinstance(model, str) and model else "unknown",
+        model_level=(
+            str(model_level)[:64]
+            if isinstance(model_level, str) and model_level
+            else "default"
+        ),
     )
 
 
@@ -353,6 +371,12 @@ def _find_usage_bytes(raw: bytes) -> TokenUsage | None:
         return None
     model_matches = list(re.finditer(rb'"model"\s*:\s*"([^"\\]{1,128})"', raw))
     model = model_matches[-1].group(1).decode("utf-8", "replace") if model_matches else "unknown"
+    effort_matches = list(re.finditer(rb'"effort"\s*:\s*"([^"\\]{1,64})"', raw))
+    model_level = (
+        effort_matches[-1].group(1).decode("utf-8", "replace")
+        if effort_matches
+        else "default"
+    )
     return TokenUsage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
@@ -360,6 +384,7 @@ def _find_usage_bytes(raw: bytes) -> TokenUsage | None:
         cached_input_tokens=number(b"cached_tokens"),
         reasoning_output_tokens=number(b"reasoning_tokens"),
         model=model,
+        model_level=model_level,
     )
 
 
