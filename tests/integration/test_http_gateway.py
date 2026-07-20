@@ -383,6 +383,26 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
         ):
             self.assertIn(required, header_names)
 
+    def test_machine_credit_policy_blocks_only_model_posts(self) -> None:
+        class BlockedReporter:
+            def model_request_allowed(self):
+                return False
+
+            def policy_snapshot(self):
+                return {"blocked": True, "limit_credits": 10, "used_credits": 10.5}
+
+        self.server.usage_reporter = BlockedReporter()
+        before = dict(self.upstream_counts)
+        status, _headers, payload = self.request(
+            "POST", "/chatgpt-codex/responses", b"{}",
+            {"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 429)
+        self.assertEqual(json.loads(payload)["error"]["code"], "machine_credit_limit_reached")
+        self.assertEqual(self.upstream_counts, before)
+        status, _headers, _payload = self.request("GET", "/chatgpt-codex/models")
+        self.assertEqual(status, 200)
+
     def test_does_not_forward_upstream_cors_headers_to_loopback(self) -> None:
         status, headers, _payload = self.request("GET", "/openai/v1/models")
         self.assertEqual(status, 200)

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Sequence
 from urllib.parse import urlsplit
 
+from .codex_product_auth import CodexProductAuth
 from .contracts import EgressRequest, Header, RequestDispatcher, ResolvedRoute
 
 
@@ -92,15 +93,19 @@ class UsageExtractor:
 
 
 class _ReportSink:
-    def __init__(self) -> None:
+    def __init__(self, capture_limit: int = 0) -> None:
         self.status: int | None = None
         self.done = threading.Event()
         self.error: Exception | None = None
+        self.body = bytearray()
+        self._capture_limit = capture_limit
 
     def start(self, status: int, headers: Sequence[Header], timing=None) -> None:
         self.status = status
 
     def write(self, data: bytes, on_consumed: Callable[[], None] | None = None) -> None:
+        if self._capture_limit and len(self.body) < self._capture_limit:
+            self.body.extend(data[: self._capture_limit - len(self.body)])
         if on_consumed is not None:
             on_consumed()
 
@@ -130,10 +135,16 @@ class UsageReporter:
         self._report_token = report_token
         self._machine_id = machine_id
         self._machine_name = machine_name
+        auth_path = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "auth.json"
+        self._product_auth = CodexProductAuth(auth_path)
         self._database_path = runtime_directory / _DATABASE_NAME
         self._wake = threading.Event()
         self._closed = threading.Event()
         self._database_lock = threading.Lock()
+        self._policy_lock = threading.Lock()
+        self._policy: dict[str, object] = {"blocked": False, "reason": "policy_not_loaded"}
+        # Let queued usage events flush first; account quota sync follows shortly after startup.
+        self._next_quota_sync = time.monotonic() + 2.0
         self._initialize_database()
         self._thread = threading.Thread(target=self._run, name="fanvpn-usage-reporter", daemon=True)
         self._thread.start()
@@ -200,7 +211,16 @@ class UsageReporter:
             "delivered_total_tokens": totals[0],
             "delivered_input_tokens": totals[1],
             "delivered_output_tokens": totals[2],
+            "policy": self.policy_snapshot(),
         }
+
+    def policy_snapshot(self) -> dict[str, object]:
+        with self._policy_lock:
+            return dict(self._policy)
+
+    def model_request_allowed(self) -> bool:
+        with self._policy_lock:
+            return not bool(self._policy.get("blocked", False))
 
     def close(self) -> None:
         self._closed.set()
@@ -211,13 +231,18 @@ class UsageReporter:
     def _run(self) -> None:
         delay = 1.0
         while not self._closed.is_set():
+            now = time.monotonic()
+            if now >= self._next_quota_sync:
+                self._sync_quota_and_policy()
+                self._next_quota_sync = now + 300.0
             row = self._next_event()
             if row is None:
-                self._wake.wait(30)
+                self._wake.wait(min(30.0, max(self._next_quota_sync - time.monotonic(), 1.0)))
                 self._wake.clear()
                 continue
             event_id, payload = row
             if self._deliver(event_id, payload):
+                self._refresh_policy()
                 delay = 1.0
                 continue
             self._wake.wait(delay)
@@ -273,6 +298,112 @@ class UsageReporter:
         except Exception as error:
             _LOG.info("usage_delivery_deferred error=%s", type(error).__name__)
             return False
+
+    def _sync_quota_and_policy(self) -> None:
+        try:
+            quota = self._fetch_official_quota()
+            if quota is not None:
+                self._post_json(self._collector_url.replace("/v1/usage/events", "/v1/usage/quota"), quota)
+            self._refresh_policy()
+        except Exception as error:
+            _LOG.info("quota_sync_deferred error=%s", type(error).__name__)
+
+    def _fetch_official_quota(self) -> dict[str, object] | None:
+        url = "https://chatgpt.com/backend-api/wham/usage"
+        route = ResolvedRoute(
+            name="chatgpt-backend", upstream_base_url="https://chatgpt.com", upstream_url=url
+        )
+        headers = self._product_auth.attach(route, [Header("accept", "application/json")])
+        sink = self._dispatch("GET", route, headers, b"", capture_limit=64 * 1024)
+        if sink.status != 200:
+            return None
+        value = json.loads(bytes(sink.body))
+        if not isinstance(value, dict) or not isinstance(value.get("rate_limit"), dict):
+            return None
+        rate_limit = value["rate_limit"]
+        window = rate_limit.get("primary_window")
+        if not isinstance(window, dict):
+            return None
+        used_percent = window.get("used_percent")
+        window_seconds = window.get("limit_window_seconds")
+        reset_at = window.get("reset_at")
+        allowed = rate_limit.get("allowed")
+        limit_reached = rate_limit.get("limit_reached")
+        plan_type = value.get("plan_type", "unknown")
+        if (
+            isinstance(used_percent, bool) or not isinstance(used_percent, (int, float))
+            or isinstance(window_seconds, bool) or not isinstance(window_seconds, int)
+            or isinstance(reset_at, bool) or not isinstance(reset_at, int)
+            or not isinstance(allowed, bool) or not isinstance(limit_reached, bool)
+            or not isinstance(plan_type, str)
+        ):
+            return None
+        return {
+            "machine_id": self._machine_id,
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+            "plan_type": plan_type[:32],
+            "used_percent": float(used_percent),
+            "allowed": allowed,
+            "limit_reached": limit_reached,
+            "limit_window_seconds": window_seconds,
+            "reset_at": reset_at,
+        }
+
+    def _refresh_policy(self) -> None:
+        url = self._collector_url.replace(
+            "/v1/usage/events", f"/v1/usage/policy?machine_id={self._machine_id}"
+        )
+        parts = urlsplit(url)
+        route = ResolvedRoute(
+            name="usage-policy", upstream_base_url=f"{parts.scheme}://{parts.netloc}", upstream_url=url
+        )
+        sink = self._dispatch(
+            "GET", route,
+            [Header("accept", "application/json"), Header("authorization", f"Bearer {self._report_token}")],
+            b"", capture_limit=16 * 1024,
+        )
+        if sink.status != 200:
+            return
+        value = json.loads(bytes(sink.body))
+        if not isinstance(value, dict) or not isinstance(value.get("blocked"), bool):
+            return
+        value["updated_at"] = datetime.now(timezone.utc).isoformat()
+        with self._policy_lock:
+            self._policy = value
+
+    def _post_json(self, url: str, value: dict[str, object]) -> None:
+        parts = urlsplit(url)
+        body = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        route = ResolvedRoute(
+            name="usage-quota", upstream_base_url=f"{parts.scheme}://{parts.netloc}", upstream_url=url
+        )
+        sink = self._dispatch(
+            "POST", route,
+            [
+                Header("accept", "application/json"),
+                Header("authorization", f"Bearer {self._report_token}"),
+                Header("content-type", "application/json"),
+            ],
+            body, capture_limit=16 * 1024,
+        )
+        if sink.status not in {200, 201, 202}:
+            raise RuntimeError("quota collector rejected snapshot")
+
+    def _dispatch(
+        self, method: str, route: ResolvedRoute, headers: list[Header], body: bytes,
+        *, capture_limit: int,
+    ) -> _ReportSink:
+        sink = _ReportSink(capture_limit)
+        self._dispatcher.submit(
+            EgressRequest(
+                request_id="usage_" + uuid.uuid4().hex,
+                method=method, route=route, headers=tuple(headers),
+            ),
+            (body,) if body else (), sink,
+        )
+        if not sink.done.wait(30) or sink.error is not None:
+            raise TimeoutError("usage control request failed")
+        return sink
 
     def _next_event(self) -> tuple[str, str] | None:
         with self._database_lock, closing(self._connect()) as database, database:

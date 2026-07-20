@@ -7,6 +7,7 @@ import time
 import unittest
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 from fanvpn_bridge.usage_reporting import TokenUsage, UsageExtractor, UsageReporter
 
@@ -17,8 +18,25 @@ class ImmediateDispatcher:
 
     def submit(self, request, body, response) -> None:
         self.requests.append((request, b"".join(body)))
-        response.start(202, [])
-        response.write(b'{"accepted":1}')
+        url = request.route.upstream_url
+        if url.endswith("/backend-api/wham/usage"):
+            response.start(200, [])
+            response.write(json.dumps({
+                "plan_type": "pro",
+                "rate_limit": {
+                    "allowed": True, "limit_reached": False,
+                    "primary_window": {
+                        "used_percent": 18, "limit_window_seconds": 604800,
+                        "reset_at": int(time.time()) + 3600,
+                    },
+                },
+            }).encode())
+        elif "/v1/usage/policy?" in url:
+            response.start(200, [])
+            response.write(b'{"blocked":false,"reason":"within_machine_credit_limit"}')
+        else:
+            response.start(202, [])
+            response.write(b'{"accepted":1}')
         response.finish()
 
     def cancel(self, request_id: str, reason: str) -> None:
@@ -97,6 +115,35 @@ class UsageReportingTests(unittest.TestCase):
             self.assertNotIn("response", event)
             self.assertEqual(event["machine_name"], "WORKSTATION-1")
             self.assertEqual(request.route.upstream_url, "https://203.0.113.10:9443/v1/usage/events")
+
+    def test_syncs_only_sanitized_official_quota_and_machine_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            codex_home = Path(directory) / "codex"
+            codex_home.mkdir()
+            (codex_home / "auth.json").write_text(json.dumps({
+                "tokens": {"access_token": "private-token", "account_id": "private-account"}
+            }), encoding="utf-8")
+            dispatcher = ImmediateDispatcher()
+            with patch.dict("os.environ", {"CODEX_HOME": str(codex_home)}):
+                reporter = UsageReporter(
+                    Path(directory) / "runtime", dispatcher,
+                    collector_url="https://203.0.113.10:9443/v1/usage/events",
+                    report_token="secret-report-token",
+                    machine_id=str(uuid.uuid4()), machine_name="WORKSTATION-1",
+                )
+            reporter._sync_quota_and_policy()
+            snapshot = reporter.snapshot()
+            reporter.close()
+            quota_request = next(
+                (request, body) for request, body in dispatcher.requests
+                if request.route.upstream_url.endswith("/v1/usage/quota")
+            )
+            quota = json.loads(quota_request[1])
+            self.assertEqual(quota["used_percent"], 18)
+            self.assertNotIn("email", quota)
+            self.assertNotIn("account_id", quota)
+            self.assertNotIn("access_token", quota)
+            self.assertFalse(snapshot["policy"]["blocked"])
 
 
 if __name__ == "__main__":

@@ -269,6 +269,37 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                     _elapsed_ms(request_started),
                 )
                 return
+            if (
+                method == "POST"
+                and route_name == "chatgpt-codex"
+                and server.usage_reporter is not None
+                and not server.usage_reporter.model_request_allowed()
+            ):
+                self._discard_small_rejected_body()
+                policy = server.usage_reporter.policy_snapshot()
+                body = json.dumps(
+                    {
+                        "error": {
+                            "message": "This machine reached its configured Codex Credits allocation.",
+                            "type": "usage_limit_error",
+                            "code": "machine_credit_limit_reached",
+                            "policy": policy,
+                        }
+                    },
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                self._send_response_bytes(
+                    429,
+                    (Header("Content-Type", "application/json; charset=utf-8"),),
+                    body,
+                    head_only=False,
+                )
+                _LOG.info(
+                    "request_blocked request_id=%s route=%s reason=machine_credit_limit_reached",
+                    request_id,
+                    route_name,
+                )
+                return
             route_config = server.bridge_config.routes[route.name]
             headers = self._request_headers(route_config.request_header_allowlist)
             headers = server.product_auth.attach(route, headers)
