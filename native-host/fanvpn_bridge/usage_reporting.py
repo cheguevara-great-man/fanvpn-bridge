@@ -38,6 +38,7 @@ class TokenUsage:
     reasoning_output_tokens: int = 0
     model: str = "unknown"
     model_level: str = "default"
+    service_tier: str = "default"
 
 
 class UsageExtractor:
@@ -313,16 +314,18 @@ def _find_usage(value: object) -> TokenUsage | None:
         model_level = (
             reasoning.get("effort")
             if isinstance(reasoning, dict) and isinstance(reasoning.get("effort"), str)
-            else response.get("service_tier", "default")
+            else "default"
         )
+        service_tier = response.get("service_tier", "default")
     else:
         model = value.get("model", "unknown")
         reasoning = value.get("reasoning")
         model_level = (
             reasoning.get("effort")
             if isinstance(reasoning, dict) and isinstance(reasoning.get("effort"), str)
-            else value.get("service_tier", "default")
+            else "default"
         )
+        service_tier = value.get("service_tier", "default")
     if not isinstance(candidate, dict):
         return None
     input_tokens = _token_int(candidate, "input_tokens", "prompt_tokens")
@@ -344,6 +347,11 @@ def _find_usage(value: object) -> TokenUsage | None:
         model_level=(
             str(model_level)[:64]
             if isinstance(model_level, str) and model_level
+            else "default"
+        ),
+        service_tier=(
+            str(service_tier)[:64]
+            if isinstance(service_tier, str) and service_tier
             else "default"
         ),
     )
@@ -377,6 +385,12 @@ def _find_usage_bytes(raw: bytes) -> TokenUsage | None:
         if effort_matches
         else "default"
     )
+    tier_matches = list(re.finditer(rb'"service_tier"\s*:\s*"([^"\\]{1,64})"', raw))
+    service_tier = (
+        tier_matches[-1].group(1).decode("utf-8", "replace")
+        if tier_matches
+        else "default"
+    )
     return TokenUsage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
@@ -385,6 +399,7 @@ def _find_usage_bytes(raw: bytes) -> TokenUsage | None:
         reasoning_output_tokens=number(b"reasoning_tokens"),
         model=model,
         model_level=model_level,
+        service_tier=service_tier,
     )
 
 

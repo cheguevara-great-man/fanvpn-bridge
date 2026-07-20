@@ -33,6 +33,7 @@ class UsageReportingTests(unittest.TestCase):
             "response": {
                 "model": "gpt-test",
                 "reasoning": {"effort": "high"},
+                "service_tier": "priority",
                 "usage": {
                     "input_tokens": 120,
                     "input_tokens_details": {"cached_tokens": 80},
@@ -47,7 +48,7 @@ class UsageReportingTests(unittest.TestCase):
             extractor.feed(wire[offset : offset + 17])
         self.assertEqual(
             extractor.finish(),
-            TokenUsage(120, 30, 150, 80, 10, "gpt-test", "high"),
+            TokenUsage(120, 30, 150, 80, 10, "gpt-test", "high", "priority"),
         )
 
     def test_extracts_non_streaming_openai_usage(self) -> None:
