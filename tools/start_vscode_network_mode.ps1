@@ -15,88 +15,12 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$runtimeDirectory = Join-Path $env:LOCALAPPDATA 'FanVPNBridge'
-$credentialPath = Join-Path $runtimeDirectory 'direct-proxy.json'
-$pidPath = Join-Path $runtimeDirectory 'direct-proxy.pid'
-$registryPath = 'HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.fanvpn.bridge'
 $managedConnectorsToken = 'browser-ai-bridge-managed'
+. (Join-Path $PSScriptRoot 'direct_proxy_runtime.ps1')
 
 if (Get-Process -Name Code -ErrorAction SilentlyContinue) {
     Write-Output 'BRIDGE_MODE_ERROR=VSCODE_RUNNING'
     exit 23
-}
-
-function Get-RegisteredBridgeExecutable {
-    if (-not (Test-Path -LiteralPath $registryPath)) {
-        throw 'Browser AI Bridge is not installed. Run install.ps1 first.'
-    }
-    $manifestPath = Get-ItemPropertyValue -LiteralPath $registryPath -Name '(default)'
-    $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    if (-not $manifest.path -or -not (Test-Path -LiteralPath $manifest.path -PathType Leaf)) {
-        throw 'The registered Browser AI Bridge executable cannot be found.'
-    }
-    return [System.IO.Path]::GetFullPath([string]$manifest.path)
-}
-
-function Stop-DirectProxy {
-    if (-not (Test-Path -LiteralPath $pidPath)) { return }
-    $savedPid = 0
-    if ([int]::TryParse(([System.IO.File]::ReadAllText($pidPath).Trim()), [ref]$savedPid)) {
-        $process = Get-Process -Id $savedPid -ErrorAction SilentlyContinue
-        $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $savedPid" -ErrorAction SilentlyContinue
-        if ($process -and $process.ProcessName -eq 'browser-ai-bridge' -and
-            $processInfo.CommandLine -match '(?i)(^|\s)--forward-proxy(\s|$)') {
-            try {
-                Stop-Process -Id $savedPid -Force -ErrorAction SilentlyContinue
-                [void]$process.WaitForExit(5000)
-            } catch {
-                # A stale or concurrently exiting proxy must not make a
-                # successful Browser-mode launch look like a failed switch.
-            }
-        }
-    }
-    Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
-}
-
-function Test-DirectProxyHealthy {
-    if (-not (Test-Path -LiteralPath $pidPath -PathType Leaf)) { return $false }
-    $savedPid = 0
-    if (-not [int]::TryParse(([System.IO.File]::ReadAllText($pidPath).Trim()), [ref]$savedPid)) {
-        return $false
-    }
-    $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $savedPid" -ErrorAction SilentlyContinue
-    return $null -ne $processInfo -and $processInfo.CommandLine -match '(?i)(^|\s)--forward-proxy(\s|$)'
-}
-
-function Start-DirectProxy {
-    if (-not (Test-Path -LiteralPath $credentialPath -PathType Leaf)) {
-        throw "Direct mode is not configured. Run tools\install_vscode_direct_mode.ps1 first."
-    }
-    New-Item -ItemType Directory -Path $runtimeDirectory -Force | Out-Null
-    $healthy = Test-DirectProxyHealthy
-    if (-not $healthy) {
-        Stop-DirectProxy
-        $exe = Get-RegisteredBridgeExecutable
-        $arguments = @(
-            '--forward-proxy',
-            '--proxy-config', "`"$credentialPath`"",
-            '--proxy-host', '127.0.0.1',
-            '--proxy-port', '18889'
-        )
-        $process = Start-Process -FilePath $exe -ArgumentList $arguments -WindowStyle Hidden -PassThru
-        [System.IO.File]::WriteAllText($pidPath, [string]$process.Id)
-    }
-    $deadline = [DateTime]::UtcNow.AddSeconds(10)
-    do {
-        try {
-            $ready = Invoke-RestMethod 'http://browser-ai-bridge.local/ready' -Proxy 'http://127.0.0.1:18889' -TimeoutSec 1
-            if ($ready.mode -eq 'vscode-direct-proxy') { return }
-        } catch {
-            Start-Sleep -Milliseconds 100
-        }
-    } while ([DateTime]::UtcNow -lt $deadline)
-    Stop-DirectProxy
-    throw 'The local direct proxy did not become ready on 127.0.0.1:18889.'
 }
 
 function Save-FileState {

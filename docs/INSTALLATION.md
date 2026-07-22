@@ -240,6 +240,29 @@ Windows 用户可读，并在桌面建立“VS Code - Browser Bridge”、
 扩展弹窗中的两个浏览器模式不要求执行本节；只有“服务器直连”需要该凭据文件。安装脚本不会
 设置 Windows 全局代理，也不会自动启用直连模式。
 
+## 可选：安装 Antigravity CLI
+
+该功能用于在**原版 VS Code 的集成终端**中使用 Google AI Pro。它不安装 Antigravity IDE，
+也不使用已经停止支持个人 Pro 账号的 Gemini Code Assist 扩展。执行前必须先完成上一节的
+VS Code 直连模式配置。
+
+在仓库根目录运行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  .\tools\install_antigravity_cli.ps1
+```
+
+脚本会先启动仅监听 `127.0.0.1:18889` 的私有出口，再通过该出口下载 Google 官方安装脚本。
+官方脚本从 Google 发布清单读取 SHA-512 摘要并校验 `agy.exe`，随后把 CLI 安装到当前用户目录：
+
+```text
+C:\Users\<Windows 用户名>\AppData\Local\agy\bin\agy.exe
+```
+
+不写入 `Program Files`，不要求管理员权限，也不会设置 Windows 全局代理。安装脚本不会自动修改
+PowerShell 配置或用户 `PATH`；日常使用由项目启动器直接定位 `agy.exe`。
+
 ## 卸载
 
 ```powershell
