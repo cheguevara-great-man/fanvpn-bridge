@@ -6,7 +6,8 @@
 
 1. [Windows 安装](INSTALLATION.md)：构建、加载 Chrome 扩展、注册 Native Host。
 2. [客户端使用](USAGE.md)：配置 Codex、Claude Code、CC Switch 与 Gemini。
-3. [故障排查](TROUBLESHOOTING.md)：Bridge、Chrome、FanVPN 或客户端异常时使用。
+3. [Antigravity CLI 浏览器链路](ANTIGRAVITY_CLI.md)：在 VS Code 终端中通过 Chrome 安装并运行官方 CLI。
+4. [故障排查](TROUBLESHOOTING.md)：Bridge、Chrome、FanVPN 或客户端异常时使用。
 
 ## 开发者
 

@@ -57,6 +57,21 @@
         "content-type",
         "x-goog-api-key"
       ]
+    },
+    "antigravity": {
+      "upstream_base_url": "https://daily-cloudcode-pa.googleapis.com",
+      "remove_path_prefix": "",
+      "probe_path": "/"
+    },
+    "antigravity-manifest": {
+      "upstream_base_url": "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app",
+      "remove_path_prefix": "",
+      "probe_path": "/manifests/windows_amd64.json"
+    },
+    "antigravity-download": {
+      "upstream_base_url": "https://storage.googleapis.com",
+      "remove_path_prefix": "",
+      "probe_path": "/"
     }
   }
 }

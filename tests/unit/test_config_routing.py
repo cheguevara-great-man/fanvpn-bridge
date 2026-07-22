@@ -87,6 +87,25 @@ class ConfigTests(unittest.TestCase):
 
 
 class RoutingTests(unittest.TestCase):
+    def test_antigravity_local_route_preserves_cloud_code_path_and_query(self) -> None:
+        raw = valid_config()
+        routes = raw["routes"]
+        assert isinstance(routes, dict)
+        routes["antigravity"] = {
+            "upstream_base_url": "https://daily-cloudcode-pa.googleapis.com",
+            "probe_path": "/",
+        }
+        config = parse_config(raw)
+        route = RouteTable(config.routes).resolve_local_target(
+            "/antigravity/v1internal:loadCodeAssist?alt=json"
+        )
+
+        self.assertEqual(route.name, "antigravity")
+        self.assertEqual(
+            route.upstream_url,
+            "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist?alt=json",
+        )
+
     def setUp(self) -> None:
         self.table = RouteTable(parse_config(valid_config()).routes)
 
