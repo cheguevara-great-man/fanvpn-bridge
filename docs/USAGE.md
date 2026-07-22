@@ -266,53 +266,6 @@ VS Code 官方说明主程序使用 Chromium 网络栈并支持 `--proxy-server`
 完成一次登录，再关闭 VS Code 并选择直连按钮；直连模式下后续 Token 刷新会通过 `18889`
 访问官方端点。
 
-## 原版 VS Code + Antigravity CLI
-
-该模式使用 Google 官方 `agy.exe`，适合只有 Google AI Pro、无法安装独立 Antigravity IDE，
-但可以使用原版 VS Code 和用户目录程序的电脑。网络链路是：
-
-```text
-VS Code 集成终端
-  -> 官方 Antigravity CLI（agy.exe）
-  -> HTTP_PROXY / HTTPS_PROXY = 127.0.0.1:18889
-  -> Browser Gateway HTTPS 代理
-  -> Google Antigravity
-```
-
-首次使用前，先按安装文档完成“VS Code 直连模式”和“Antigravity CLI”两节。然后在需要操作的
-代码目录中打开原版 VS Code，在其 PowerShell 集成终端运行：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File `
-  D:\你的路径\fanvpn-bridge\tools\start_antigravity_cli.ps1
-```
-
-启动器默认把当前终端目录作为 Antigravity 工作目录。也可以明确指定：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File `
-  D:\你的路径\fanvpn-bridge\tools\start_antigravity_cli.ps1 `
-  -WorkingDirectory 'D:\代码\my-project'
-```
-
-首次登录时，CLI 会打开默认 Chrome。Chrome 中的 Browser Gateway 负责授权网页，`agy.exe`
-后续的令牌交换和 Agent 请求则经 `18889` 完成；`NO_PROXY` 保留 `127.0.0.1` 和 `localhost`，
-不会把本地 OAuth 回调错误地送到美国服务器。
-
-脚本只在自己的进程中设置 `HTTP_PROXY`、`HTTPS_PROXY` 和 `ALL_PROXY`，退出后恢复原值；不会
-修改 Windows 全局代理、普通 VS Code、Codex 或其他终端。若本次启动的 `18889` 原本没有运行，
-CLI 退出时会自动关闭它；需要连续开启多个 CLI 会话时可传入 `-KeepProxy`。CLI 参数可直接放在
-脚本参数之后传递给 `agy.exe`。
-
-成功标志是终端先显示：
-
-```text
-Antigravity CLI is using the private gateway on 127.0.0.1:18889.
-```
-
-随后进入 `agy` 交互界面。CLI 内可使用 `/credits` 查看额外 AI Credits；基础模型额度在
-Antigravity 的模型/用量界面查看。
-
 ## VS Code Claude Code：Anthropic 官方模式
 
 该模式使用 Claude.ai 官方登录或 Anthropic API Key，不经过 CC Switch：

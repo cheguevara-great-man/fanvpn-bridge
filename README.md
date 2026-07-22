@@ -53,9 +53,6 @@ Claude Code 使用 Gemini 时，由 CC Switch 转换 Anthropic Messages 与 Gemi
 - VS Code Claude Code 可在 Anthropic 官方模式和 Gemini 模式之间切换，且不接管全局 Claude 配置。
 - 可选的 VS Code 直连模式通过本机 `18889` 连接自有 HTTPS 代理；安装后仍提供 Lean、Full、Direct
   三个桌面启动入口，作为扩展弹窗之外的备用入口。
-- Google AI Pro 用户可在原版 VS Code 终端运行官方 Antigravity CLI；项目负责通过同一个本机
-  `18889` 私有出口安装并启动 `agy`，不修改 Windows 全局代理，也不依赖已停用的个人版
-  Gemini Code Assist 扩展。
 
 ## 快速开始
 
@@ -94,9 +91,6 @@ Codex、Claude Code 或 CC Switch。
 如果还部署了配套的自有 HTTPS 代理，可按[安装文档](docs/INSTALLATION.md#可选安装-vs-code-直连模式)
 安装可选直连模式，再按[客户端使用指南](docs/USAGE.md#三种-vs-code-网络模式)选择入口。
 浏览器桥接仍是默认方式。
-
-希望在原版 VS Code 中使用 Google AI Pro 时，先完成可选直连安装，再按
-[Antigravity CLI 使用说明](docs/USAGE.md#原版-vs-code--antigravity-cli)操作。
 
 ## 路由
 
