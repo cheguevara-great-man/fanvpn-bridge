@@ -176,6 +176,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File `
 先再次执行“一键配置 Antigravity”，然后完全退出并重开 VS Code。新版配置会自动安装
 Windows ConPTY 兼容构建；不需要单独安装 Unix 工具，也不需要自己修改 VS Code 文件。
 
+### 回复结束后才一次性显示
+
+这不是 Browser Bridge 缓冲造成的。社区扩展原本对终端画面使用 120 ms 尾部防抖：
+模型连续输出时计时器会被每个新数据块反复重置，因此通常直到回复结束才刷新界面。
+项目内置的 Windows 兼容版已改为约每 80 ms 刷新一次的固定频率节流，使生成中的
+部分回复持续显示。再次执行“一键配置 Antigravity”并重开 VS Code 即可更新。
+
 ### 点击登录后终端只打印 `agy-browser.exe` 路径
 
 这表示旧版扩展把带引号的路径当成 PowerShell 字符串，而没有真正执行。再次运行“一键配置

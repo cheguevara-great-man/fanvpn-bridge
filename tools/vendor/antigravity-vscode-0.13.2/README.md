@@ -16,7 +16,10 @@ never reads the credential secret. Visible lifecycle commands use an explicit
 quoted Windows executable path is executed instead of merely echoed. Google
 sign-in opens in a separate PowerShell window on Windows; the extension polls
 Credential Manager and refreshes its chat view automatically when sign-in
-finishes.
+finishes. Interactive screen rendering uses an 80 ms fixed-frequency throttle
+instead of the upstream trailing-edge debounce. This lets partial assistant
+text reach the VS Code chat view throughout generation instead of commonly
+appearing all at once when generation ends.
 
 This fixes the upstream Unix-only call to:
 
