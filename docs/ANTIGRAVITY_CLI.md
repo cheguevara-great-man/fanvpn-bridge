@@ -175,3 +175,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File `
 
 先再次执行“一键配置 Antigravity”，然后完全退出并重开 VS Code。新版配置会自动安装
 Windows ConPTY 兼容构建；不需要单独安装 Unix 工具，也不需要自己修改 VS Code 文件。
+
+### 点击登录后终端只打印 `agy-browser.exe` 路径
+
+这表示旧版扩展把带引号的路径当成 PowerShell 字符串，而没有真正执行。再次运行“一键配置
+Antigravity”并重开 VS Code；Windows 兼容版会使用独立的 `PowerShell -NoProfile` 终端和调用
+运算符 `&` 启动 CLI。

@@ -11,7 +11,9 @@ ConPTY session. It also passes `vscode.env.appRoot` to the interactive-session
 service so the bundled module can be located reliably. On Windows it detects
 the official `gemini:antigravity` Credential Manager entry instead of relying
 on the legacy plaintext token-file probe; it checks only the target name and
-never reads the credential secret.
+never reads the credential secret. Visible lifecycle commands use an explicit
+`powershell.exe -NoProfile` terminal and the PowerShell call operator, so a
+quoted Windows executable path is executed instead of merely echoed.
 
 This fixes the upstream Unix-only call to:
 
