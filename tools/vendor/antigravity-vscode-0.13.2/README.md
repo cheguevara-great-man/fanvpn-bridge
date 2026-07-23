@@ -19,7 +19,10 @@ Credential Manager and refreshes its chat view automatically when sign-in
 finishes. Interactive screen rendering uses an 80 ms fixed-frequency throttle
 instead of the upstream trailing-edge debounce. This lets partial assistant
 text reach the VS Code chat view throughout generation instead of commonly
-appearing all at once when generation ends.
+appearing all at once when generation ends. The screen parser also understands
+the Antigravity CLI 1.1.5 model picker, where the new Effort slider separates
+the model rows from the keyboard footer; `/model` therefore surfaces clickable
+model choices instead of leaving the hidden TUI waiting indefinitely.
 
 This fixes the upstream Unix-only call to:
 
