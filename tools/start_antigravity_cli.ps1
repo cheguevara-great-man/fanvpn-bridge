@@ -21,18 +21,24 @@ function Get-AntigravityCliExecutable {
         return $candidate
     }
 
-    $candidates = @(
-        (Join-Path $env:LOCALAPPDATA 'agy\bin\agy.exe'),
-        (Join-Path $env:LOCALAPPDATA 'Antigravity\agy.exe')
-    )
-    $found = $candidates | Where-Object {
-        $_ -and (Test-Path -LiteralPath $_ -PathType Leaf)
-    } | Select-Object -First 1
-    if ($found) { return [System.IO.Path]::GetFullPath($found) }
+    $official = Join-Path $env:LOCALAPPDATA 'agy\bin\agy.exe'
+    $browserCopy = Join-Path $env:LOCALAPPDATA 'agy\bin\agy-browser.exe'
+    if (-not (Test-Path -LiteralPath $official -PathType Leaf)) {
+        throw 'The official Antigravity CLI is not installed. Run tools\install_antigravity_cli.ps1 first.'
+    }
 
-    $command = Get-Command agy.exe -ErrorAction SilentlyContinue
-    if ($command) { return $command.Source }
-    throw 'Antigravity CLI is not installed. Run tools\install_antigravity_cli.ps1 first.'
+    $mustPatch = -not (Test-Path -LiteralPath $browserCopy -PathType Leaf)
+    if (-not $mustPatch) {
+        $mustPatch = (Get-Item -LiteralPath $official).LastWriteTimeUtc -gt `
+            (Get-Item -LiteralPath $browserCopy).LastWriteTimeUtc
+    }
+    if ($mustPatch) {
+        & (Join-Path $PSScriptRoot 'patch_antigravity_cli.ps1') `
+            -SourcePath $official `
+            -DestinationPath $browserCopy `
+            -Quiet
+    }
+    return [System.IO.Path]::GetFullPath($browserCopy)
 }
 
 function Assert-AntigravityBrowserRoute {
@@ -50,6 +56,11 @@ function Assert-AntigravityBrowserRoute {
     if (@($routes.routes) -notcontains 'antigravity') {
         throw 'The installed Native Host does not contain the antigravity browser route. Update the Native Host first.'
     }
+    foreach ($authRoute in @('agi', 'google')) {
+        if (@($routes.routes) -notcontains $authRoute) {
+            throw "The installed Native Host does not contain the Antigravity auth route '$authRoute'. Update the Native Host first."
+        }
+    }
 }
 
 $workingDirectoryFullPath = [System.IO.Path]::GetFullPath($WorkingDirectory)
@@ -60,12 +71,20 @@ if (-not (Test-Path -LiteralPath $workingDirectoryFullPath -PathType Container))
 Assert-AntigravityBrowserRoute
 $agyExecutable = Get-AntigravityCliExecutable
 $previousCloudCodeUrl = [Environment]::GetEnvironmentVariable('CLOUD_CODE_URL', 'Process')
+$proxyVariableNames = @('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY')
+$previousProxyValues = @{}
+foreach ($proxyVariableName in $proxyVariableNames) {
+    $previousProxyValues[$proxyVariableName] = [Environment]::GetEnvironmentVariable($proxyVariableName, 'Process')
+}
 $exitCode = 1
 
 try {
     # Antigravity CLI 1.1.5 exposes this official endpoint override. Only the
     # child process receives it; no system-wide proxy or persistent setting is changed.
     $env:CLOUD_CODE_URL = "$($BridgeUrl.TrimEnd('/'))/antigravity"
+    foreach ($proxyVariableName in $proxyVariableNames) {
+        Remove-Item "Env:$proxyVariableName" -ErrorAction SilentlyContinue
+    }
     Push-Location -LiteralPath $workingDirectoryFullPath
     try {
         Write-Host 'Antigravity CLI is using Chrome through Browser AI Bridge.' -ForegroundColor Green
@@ -79,6 +98,14 @@ try {
         Remove-Item Env:CLOUD_CODE_URL -ErrorAction SilentlyContinue
     } else {
         $env:CLOUD_CODE_URL = $previousCloudCodeUrl
+    }
+    foreach ($proxyVariableName in $proxyVariableNames) {
+        $previousValue = $previousProxyValues[$proxyVariableName]
+        if ($null -eq $previousValue) {
+            Remove-Item "Env:$proxyVariableName" -ErrorAction SilentlyContinue
+        } else {
+            [Environment]::SetEnvironmentVariable($proxyVariableName, $previousValue, 'Process')
+        }
     }
 }
 

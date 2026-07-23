@@ -63,6 +63,16 @@
       "remove_path_prefix": "",
       "probe_path": "/"
     },
+    "agi": {
+      "upstream_base_url": "https://www.googleapis.com",
+      "remove_path_prefix": "",
+      "probe_path": "/oauth2/v2/userinfo"
+    },
+    "google": {
+      "upstream_base_url": "https://oauth2.googleapis.com",
+      "remove_path_prefix": "",
+      "probe_path": "/"
+    },
     "antigravity-manifest": {
       "upstream_base_url": "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app",
       "remove_path_prefix": "",

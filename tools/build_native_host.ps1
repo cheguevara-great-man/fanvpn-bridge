@@ -79,21 +79,42 @@ if (-not $toolAvailable) {
 }
 
 $oldPythonPath = $env:PYTHONPATH
+$oldPath = $env:PATH
+$pythonRoot = Split-Path -Parent $Python
+$condaLibraryBin = Join-Path $pythonRoot 'Library\bin'
 try {
     $env:PYTHONPATH = $toolDirectory
-    & $Python -m PyInstaller `
-        --noconfirm `
-        --clean `
-        --onedir `
-        --name browser-ai-bridge `
-        --paths (Join-Path $root 'native-host') `
-        --workpath $workDirectory `
-        --specpath $specDirectory `
-        --distpath $distDirectory `
-        (Join-Path $root 'native-host\entrypoint.py')
+    # Conda keeps Python runtime dependencies such as sqlite3.dll and
+    # libbz2.dll in Library\bin instead of beside python.exe.  PyInstaller's
+    # dependency scanner only sees them when that standard Conda directory is
+    # present on PATH during analysis.
+    if (Test-Path -LiteralPath $condaLibraryBin -PathType Container) {
+        $env:PATH = "$condaLibraryBin;$oldPath"
+    }
+    $pyInstallerArguments = @(
+        '--noconfirm',
+        '--clean',
+        '--onedir',
+        '--name', 'browser-ai-bridge',
+        '--paths', (Join-Path $root 'native-host'),
+        '--workpath', $workDirectory,
+        '--specpath', $specDirectory,
+        '--distpath', $distDirectory
+    )
+    if (Test-Path -LiteralPath $condaLibraryBin -PathType Container) {
+        foreach ($runtimeDll in @('libbz2.dll', 'sqlite3.dll')) {
+            $runtimeDllPath = Join-Path $condaLibraryBin $runtimeDll
+            if (Test-Path -LiteralPath $runtimeDllPath -PathType Leaf) {
+                $pyInstallerArguments += @('--add-binary', "$runtimeDllPath;.")
+            }
+        }
+    }
+    $pyInstallerArguments += (Join-Path $root 'native-host\entrypoint.py')
+    & $Python -m PyInstaller @pyInstallerArguments
     if ($LASTEXITCODE -ne 0) { throw 'PyInstaller build failed.' }
 } finally {
     $env:PYTHONPATH = $oldPythonPath
+    $env:PATH = $oldPath
 }
 
 $outputDirectory = Join-Path $distDirectory 'browser-ai-bridge'

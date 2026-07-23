@@ -14,6 +14,7 @@ import { resilientFetch } from "./resilient_fetch.js";
 
 const requests = new Map();
 const METHODS_WITHOUT_BODY = new Set(["GET", "HEAD"]);
+const ANTIGRAVITY_HOST = "daily-cloudcode-pa.googleapis.com";
 const BROWSER_DECODED_HEADERS = new Set([
   "content-length",
   "content-encoding",
@@ -22,6 +23,8 @@ const BROWSER_DECODED_HEADERS = new Set([
 
 let negotiatedMaxChunkBytes = MAX_CHUNK_BYTES;
 let negotiatedMaxInFlight = MAX_IN_FLIGHT;
+let antigravityUserAgent = null;
+let antigravityRuleUpdate = Promise.resolve();
 
 function postBackground(message) {
   return chrome.runtime.sendMessage({ target: "background", envelope: message });
@@ -152,6 +155,7 @@ async function handleEnvelope(message) {
 async function executeRequest(id, state) {
   let browserTiming = null;
   try {
+    await ensureAntigravityUserAgent(state.head.url, state.head.headers || []);
     const headers = new Headers();
     for (const pair of state.head.headers || []) {
       if (Array.isArray(pair) && pair.length === 2) headers.append(pair[0], pair[1]);
@@ -210,6 +214,40 @@ async function executeRequest(id, state) {
     state.requestChunks.length = 0;
     if (requests.get(id) === state) requests.delete(id);
   }
+}
+
+async function ensureAntigravityUserAgent(rawUrl, headerPairs) {
+  const url = new URL(rawUrl);
+  if (url.protocol !== "https:" || url.hostname !== ANTIGRAVITY_HOST || url.port) return;
+
+  const pair = headerPairs.find(
+    (candidate) =>
+      Array.isArray(candidate) &&
+      candidate.length === 2 &&
+      String(candidate[0]).toLowerCase() === "user-agent",
+  );
+  if (!pair || typeof pair[1] !== "string" || pair[1].length === 0) return;
+  const userAgent = pair[1];
+  if (antigravityUserAgent === userAgent) {
+    await antigravityRuleUpdate;
+    return;
+  }
+
+  antigravityUserAgent = userAgent;
+  antigravityRuleUpdate = antigravityRuleUpdate.then(() =>
+    chrome.runtime
+      .sendMessage({
+        target: "background",
+        kind: "antigravity-user-agent:set",
+        userAgent,
+      })
+      .then((response) => {
+        if (response?.ok !== true) {
+          throw new Error(response?.message || "Failed to preserve Antigravity User-Agent");
+        }
+      }),
+  );
+  await antigravityRuleUpdate;
 }
 
 async function sendResponseFrame(id, state, sequence, bytes, end) {

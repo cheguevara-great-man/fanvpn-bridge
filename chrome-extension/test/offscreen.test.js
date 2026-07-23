@@ -13,6 +13,7 @@ test("uses negotiated limits and aborts a response blocked on flow control", asy
   let listener;
   const outbound = [];
   const fetchCalls = [];
+  const backgroundControls = [];
   const responseBytes = new Uint8Array(20 * 1024);
   responseBytes.fill(7);
 
@@ -26,6 +27,10 @@ test("uses negotiated limits and aborts a response blocked on flow control", asy
         },
       },
       async sendMessage(value) {
+        if (value?.kind === "antigravity-user-agent:set") {
+          backgroundControls.push(value);
+          return { ok: true };
+        }
         outbound.push(value.envelope);
         return { ok: true };
       },
@@ -125,6 +130,23 @@ test("uses negotiated limits and aborts a response blocked on flow control", asy
       id,
       reason: "client_cancelled",
     }));
+
+    const antigravityId = "antigravity_request_0001";
+    await sendEnvelope(protocol.envelope(protocol.MessageType.REQUEST_HEAD, {
+      id: antigravityId,
+      method: "POST",
+      url: "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+      headers: [["User-Agent", "antigravity-cli/test windows/amd64"]],
+    }));
+    await sendEnvelope(protocol.envelope(protocol.MessageType.REQUEST_BODY, {
+      id: antigravityId,
+      seq: 0,
+      data: "",
+      end: true,
+    }));
+    await waitFor(() => fetchCalls.length === 2, "Antigravity request was not fetched");
+    assert.equal(backgroundControls.length, 1);
+    assert.equal(backgroundControls[0].userAgent, "antigravity-cli/test windows/amd64");
   } finally {
     globalThis.chrome = originalChrome;
     globalThis.fetch = originalFetch;

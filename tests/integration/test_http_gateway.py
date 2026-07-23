@@ -501,6 +501,21 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
         self.assertEqual(json.loads(payload)["error"]["code"], "MESSAGE_TOO_LARGE")
         self.assertEqual(self.dispatcher.snapshot().active_requests, 0)
 
+    def test_decodes_chunked_request_body_before_dispatch(self) -> None:
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        connection.request(
+            "POST",
+            "/openai/v1/responses",
+            body=iter((b"chunk-one", b"-chunk-two")),
+            headers={"Content-Type": "application/json"},
+            encode_chunked=True,
+        )
+        response = connection.getresponse()
+        payload = response.read()
+        connection.close()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(json.loads(payload)["body_bytes"], len(b"chunk-one-chunk-two"))
+
     def test_route_header_allowlist_removes_cross_origin_client_metadata(self) -> None:
         status, _headers, payload = self.request(
             "POST",

@@ -1,0 +1,26 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "origin",
+          "operation": "remove"
+        },
+        {
+          "header": "referer",
+          "operation": "remove"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "||daily-cloudcode-pa.googleapis.com/",
+      "resourceTypes": [
+        "xmlhttprequest",
+        "other"
+      ]
+    }
+  }
+]

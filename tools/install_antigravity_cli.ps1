@@ -9,6 +9,7 @@ $ErrorActionPreference = 'Stop'
 $bridgeBase = $BridgeUrl.TrimEnd('/')
 $targetDirectory = [System.IO.Path]::GetFullPath($InstallDirectory)
 $binaryPath = Join-Path $targetDirectory 'agy.exe'
+$browserBinaryPath = Join-Path $targetDirectory 'agy-browser.exe'
 $stagingPath = Join-Path ([System.IO.Path]::GetTempPath()) `
     ("agy-browser-download-{0}.exe" -f [Guid]::NewGuid().ToString('N'))
 
@@ -25,7 +26,13 @@ function Get-BridgeRoutes {
     return @($routes.routes)
 }
 
-$requiredRoutes = @('antigravity-manifest', 'antigravity-download')
+$requiredRoutes = @(
+    'antigravity',
+    'agi',
+    'google',
+    'antigravity-manifest',
+    'antigravity-download'
+)
 $availableRoutes = Get-BridgeRoutes
 $missingRoutes = @($requiredRoutes | Where-Object { $availableRoutes -notcontains $_ })
 if ($missingRoutes.Count -gt 0) {
@@ -67,8 +74,13 @@ try {
     New-Item -ItemType Directory -Path $targetDirectory -Force | Out-Null
     Copy-Item -LiteralPath $stagingPath -Destination $binaryPath -Force
     Unblock-File -LiteralPath $binaryPath -ErrorAction SilentlyContinue
+    & (Join-Path $PSScriptRoot 'patch_antigravity_cli.ps1') `
+        -SourcePath $binaryPath `
+        -DestinationPath $browserBinaryPath `
+        -Quiet
     Write-Host "Antigravity CLI $($manifest.version) installed through Chrome." -ForegroundColor Green
-    Write-Host "CLI: $binaryPath"
+    Write-Host "Official CLI: $binaryPath"
+    Write-Host "Browser CLI:  $browserBinaryPath"
     Write-Host 'Start it with tools\start_antigravity_cli.ps1.'
 } finally {
     Remove-Item -LiteralPath $stagingPath -Force -ErrorAction SilentlyContinue

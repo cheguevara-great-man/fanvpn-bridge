@@ -541,9 +541,17 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
     ) -> Iterable[bytes]:
         transfer_encoding = self.headers.get("Transfer-Encoding")
         if transfer_encoding and transfer_encoding.lower() != "identity":
-            raise BridgeError(
-                ErrorCode.REQUEST_BODY_UNSUPPORTED,
-                "Chunked request bodies are not supported in this implementation slice",
+            codings = [item.strip().lower() for item in transfer_encoding.split(",")]
+            if codings != ["chunked"] or self.headers.get("Content-Length") is not None:
+                self.close_connection = True
+                raise BridgeError(
+                    ErrorCode.REQUEST_BODY_UNSUPPORTED,
+                    "Only a single chunked transfer coding is supported",
+                )
+            return self._chunked_request_body(
+                chunk_size,
+                max_body_bytes=max_body_bytes,
+                timeout=timeout,
             )
         raw_length = self.headers.get("Content-Length")
         if raw_length is None:
@@ -581,6 +589,101 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                         raise BridgeError(ErrorCode.REQUEST_BODY_INVALID, "Request body ended early")
                     remaining -= len(data)
                     yield data
+            finally:
+                self.connection.settimeout(previous_timeout)
+
+        return chunks()
+
+    def _chunked_request_body(
+        self,
+        chunk_size: int,
+        *,
+        max_body_bytes: int,
+        timeout: float,
+    ) -> Iterable[bytes]:
+        def chunks() -> Iterable[bytes]:
+            total = 0
+            trailer_bytes = 0
+            previous_timeout = self.connection.gettimeout()
+            deadline = time.monotonic() + timeout
+
+            def read_line(limit: int = 8192) -> bytes:
+                time_left = deadline - time.monotonic()
+                if time_left <= 0:
+                    raise BridgeError(ErrorCode.REQUEST_TIMEOUT, "Timed out reading request body")
+                self.connection.settimeout(time_left)
+                try:
+                    line = self.rfile.readline(limit + 1)
+                except (TimeoutError, socket.timeout) as exc:
+                    raise BridgeError(
+                        ErrorCode.REQUEST_TIMEOUT,
+                        "Timed out reading request body",
+                    ) from exc
+                if not line:
+                    raise BridgeError(ErrorCode.REQUEST_BODY_INVALID, "Chunked body ended early")
+                if len(line) > limit or not line.endswith(b"\r\n"):
+                    raise BridgeError(ErrorCode.REQUEST_BODY_INVALID, "Invalid chunked body line")
+                return line
+
+            try:
+                while True:
+                    size_field = read_line()[:-2].split(b";", 1)[0].strip()
+                    if not size_field:
+                        raise BridgeError(ErrorCode.REQUEST_BODY_INVALID, "Missing chunk size")
+                    try:
+                        current = int(size_field, 16)
+                    except ValueError as exc:
+                        raise BridgeError(
+                            ErrorCode.REQUEST_BODY_INVALID,
+                            "Invalid chunk size",
+                        ) from exc
+                    if current < 0 or total + current > max_body_bytes:
+                        self.close_connection = True
+                        raise BridgeError(
+                            ErrorCode.MESSAGE_TOO_LARGE,
+                            f"Request body exceeds the {max_body_bytes} byte limit",
+                        )
+                    if current == 0:
+                        while True:
+                            trailer = read_line()
+                            trailer_bytes += len(trailer)
+                            if trailer_bytes > 16384:
+                                raise BridgeError(
+                                    ErrorCode.REQUEST_BODY_INVALID,
+                                    "Chunked body trailers are too large",
+                                )
+                            if trailer == b"\r\n":
+                                return
+
+                    remaining = current
+                    while remaining:
+                        time_left = deadline - time.monotonic()
+                        if time_left <= 0:
+                            raise BridgeError(
+                                ErrorCode.REQUEST_TIMEOUT,
+                                "Timed out reading request body",
+                            )
+                        self.connection.settimeout(time_left)
+                        try:
+                            data = self.rfile.read(min(chunk_size, remaining))
+                        except (TimeoutError, socket.timeout) as exc:
+                            raise BridgeError(
+                                ErrorCode.REQUEST_TIMEOUT,
+                                "Timed out reading request body",
+                            ) from exc
+                        if not data:
+                            raise BridgeError(
+                                ErrorCode.REQUEST_BODY_INVALID,
+                                "Chunked body ended early",
+                            )
+                        remaining -= len(data)
+                        total += len(data)
+                        yield data
+                    if read_line(limit=2) != b"\r\n":
+                        raise BridgeError(
+                            ErrorCode.REQUEST_BODY_INVALID,
+                            "Chunk data is not terminated by CRLF",
+                        )
             finally:
                 self.connection.settimeout(previous_timeout)
 

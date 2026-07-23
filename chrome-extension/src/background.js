@@ -12,6 +12,8 @@ const NATIVE_HOST_NAME = "com.fanvpn.bridge";
 const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 const OFFSCREEN_PATH = "offscreen.html";
+const ANTIGRAVITY_HOST = "daily-cloudcode-pa.googleapis.com";
+const ANTIGRAVITY_USER_AGENT_RULE_ID = 1001;
 const CONTROL_HANDSHAKE_TIMEOUT_MS = 5000;
 const CONTROL_TIMEOUT_MS = 60000;
 
@@ -333,6 +335,29 @@ function rejectPendingControls(message) {
   pendingControls.clear();
 }
 
+async function setAntigravityUserAgentRule(userAgent) {
+  if (typeof userAgent !== "string" || userAgent.length === 0 || userAgent.length > 512) {
+    throw new Error("Invalid Antigravity User-Agent");
+  }
+  await chrome.declarativeNetRequest.updateSessionRules({
+    removeRuleIds: [ANTIGRAVITY_USER_AGENT_RULE_ID],
+    addRules: [
+      {
+        id: ANTIGRAVITY_USER_AGENT_RULE_ID,
+        priority: 2,
+        action: {
+          type: "modifyHeaders",
+          requestHeaders: [{ header: "user-agent", operation: "set", value: userAgent }],
+        },
+        condition: {
+          urlFilter: `||${ANTIGRAVITY_HOST}/`,
+          resourceTypes: ["xmlhttprequest", "other"],
+        },
+      },
+    ],
+  });
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.target === "background" && isProtocolEnvelope(message.envelope)) {
     postNative(message.envelope);
@@ -349,6 +374,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       version: chrome.runtime.getManifest().version,
     });
     return false;
+  }
+  if (message?.target === "background" && message.kind === "antigravity-user-agent:set") {
+    setAntigravityUserAgentRule(message.userAgent)
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, message: error?.message || String(error) }));
+    return true;
   }
   if (message?.target === "background" && message.kind === "codex-mode:get") {
     requestModeControl("get")

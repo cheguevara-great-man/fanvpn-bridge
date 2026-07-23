@@ -12,3 +12,4 @@ native-host/com.fanvpn.bridge.local.json
 .env.*
 !.env.example
 .claude/settings.local.json
+chrome-extension/_metadata/
