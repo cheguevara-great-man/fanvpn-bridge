@@ -134,4 +134,19 @@ foreach ($scriptName in @(
 )) {
     Copy-Item -LiteralPath (Join-Path $root "tools\$scriptName") -Destination (Join-Path $outputTools $scriptName) -Force
 }
+$antigravityVsCodeVendor = Join-Path $root 'tools\vendor\antigravity-vscode-0.13.2'
+$outputAntigravityVsCodeVendor = Join-Path $outputTools 'vendor\antigravity-vscode-0.13.2'
+New-Item -ItemType Directory -Path $outputAntigravityVsCodeVendor -Force | Out-Null
+Copy-Item `
+    -LiteralPath (Join-Path $antigravityVsCodeVendor 'extension.js') `
+    -Destination (Join-Path $outputAntigravityVsCodeVendor 'extension.js') `
+    -Force
+Copy-Item `
+    -LiteralPath (Join-Path $antigravityVsCodeVendor 'LICENSE') `
+    -Destination (Join-Path $outputAntigravityVsCodeVendor 'LICENSE') `
+    -Force
+Copy-Item `
+    -LiteralPath (Join-Path $antigravityVsCodeVendor 'README.md') `
+    -Destination (Join-Path $outputAntigravityVsCodeVendor 'README.md') `
+    -Force
 Write-Host "Native Host built at: $outputDirectory" -ForegroundColor Green

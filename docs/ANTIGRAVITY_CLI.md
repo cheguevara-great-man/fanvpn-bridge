@@ -11,10 +11,24 @@
 3. 通过 Chrome 下载 VS Code 社区扩展，并验证扩展身份后安装。
 4. 保留原有 VS Code 设置并写入 `antigravity.cliPath`。
 5. 设置用户级 `CLOUD_CODE_URL`。
+6. 为当前社区扩展创建不含凭据的登录状态兼容标记，并复查扩展确实安装成功。
+7. 为社区扩展应用项目内置的 Windows ConPTY 兼容修复。
 
 配置完成后只需完全退出并重开一次 VS Code。CLI 不需要常驻：VS Code 插件会在创建会话时自动启动，在会话结束时退出。按钮显示“已配置”后，平时无需再点；需要检查官方 CLI 更新或修复配置时可以再次点击。
 
 按钮不会安装通用代理、不会修改系统代理，也不会保存 Google 密码。
+
+社区扩展 `lyadhgod.antigravity-vscode` 0.13.2 仍通过旧文件
+`~/.gemini/antigravity-cli/antigravity-oauth-token` 判断是否已经登录；Windows 版官方
+Antigravity CLI 1.1.5 已改用自己的安全凭据存储，不再创建该文件。一键配置只在旧文件不存在或为空时
+写入不含 Token 的兼容标记，让 VS Code 界面使用官方 CLI 的实际登录状态；如果未来 CLI 创建了真实的
+非空文件，脚本不会覆盖它。
+
+该社区扩展的原版交互会话通过 Linux/macOS 的 `script` 命令创建伪终端，在 Windows
+上会导致“The Antigravity session ended before it was ready”。一键配置固定安装经过身份
+校验的 0.13.2，并只替换其交互进程适配层：Unix 行为保持不变，Windows 改用 VS Code
+自带且 ABI 匹配的 `node-pty`/ConPTY。补丁来源、许可证和构建产物位于
+`tools/vendor/antigravity-vscode-0.13.2/`。
 
 ```text
 Antigravity CLI
@@ -155,3 +169,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File `
 ### `Eligibility Check` 返回 403
 
 先确认 Chrome 的代理扩展确实开启，再刷新 FanVPN AI Bridge 扩展。最新版扩展会为 Cloud Code 请求保留 CLI 的原始 User-Agent，并移除 Chrome 自动添加、会触发 Google 拒绝的 Origin 和 Referer。
+
+### `The Antigravity session ended before it was ready`
+
+先再次执行“一键配置 Antigravity”，然后完全退出并重开 VS Code。新版配置会自动安装
+Windows ConPTY 兼容构建；不需要单独安装 Unix 工具，也不需要自己修改 VS Code 文件。

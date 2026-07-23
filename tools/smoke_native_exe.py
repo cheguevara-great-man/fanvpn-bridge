@@ -56,6 +56,15 @@ def main() -> int:
     missing_helpers = [name for name in required_helpers if not (exe.parent / "tools" / name).is_file()]
     if missing_helpers:
         raise RuntimeError(f"Packaged mode helpers are missing: {', '.join(missing_helpers)}")
+    patched_antigravity_extension = (
+        exe.parent
+        / "tools"
+        / "vendor"
+        / "antigravity-vscode-0.13.2"
+        / "extension.js"
+    )
+    if not patched_antigravity_extension.is_file():
+        raise RuntimeError("Packaged Antigravity Windows compatibility build is missing.")
     with tempfile.TemporaryDirectory(prefix="browser-ai-bridge-smoke-") as temporary_directory:
         config = json.loads((exe.parent / "routes.json").read_text(encoding="utf-8"))
         config["listen"]["port"] = port

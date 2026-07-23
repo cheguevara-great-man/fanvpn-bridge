@@ -81,6 +81,26 @@ class AntigravityCliScriptTests(unittest.TestCase):
         self.assertIn("lyadhgod", setup)
         self.assertIn("antigravity.cliPath", setup)
         self.assertIn("CLOUD_CODE_URL", setup)
+        self.assertIn("antigravity-oauth-token", setup)
+        self.assertIn("--list-extensions", setup)
+        self.assertIn("Set-VsixWindowsCompatibility", setup)
+        self.assertIn("$extensionVersion = '0.13.2'", setup)
+        self.assertTrue(
+            (
+                TOOLS
+                / "vendor"
+                / "antigravity-vscode-0.13.2"
+                / "extension.js"
+            ).is_file()
+        )
+        self.assertTrue(
+            (
+                TOOLS
+                / "vendor"
+                / "antigravity-vscode-0.13.2"
+                / "LICENSE"
+            ).is_file()
+        )
         self.assertNotIn("18889", setup)
 
     @unittest.skipUnless(POWERSHELL.is_file(), "Windows PowerShell is required")
