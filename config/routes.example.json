@@ -87,6 +87,11 @@
       "upstream_base_url": "https://storage.googleapis.com",
       "remove_path_prefix": "",
       "probe_path": "/"
+    },
+    "vscode-marketplace": {
+      "upstream_base_url": "https://marketplace.visualstudio.com",
+      "remove_path_prefix": "",
+      "probe_path": "/_apis/public/gallery/publishers/lyadhgod/vsextensions/antigravity-vscode/latest/vspackage"
     }
   }
 }

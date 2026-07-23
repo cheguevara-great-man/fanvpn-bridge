@@ -10,6 +10,7 @@ import threading
 from pathlib import Path
 
 from .config import load_config
+from .antigravity_setup import AntigravitySetupController
 from .codex_login import CodexLoginError, run_codex_login
 from .dispatcher import NativeDispatcher
 from .errors import BridgeError
@@ -35,6 +36,7 @@ def run(config_path: Path) -> int:
         max_active_requests=config.protocol.max_active_requests,
         request_timeout_seconds=config.protocol.request_timeout_seconds,
         mode_controller=CodexModeController(),
+        antigravity_setup_controller=AntigravitySetupController(),
     )
     dispatcher.start()
     routes = RouteTable(config.routes)

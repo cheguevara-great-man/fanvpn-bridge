@@ -144,6 +144,30 @@ test("serializes native messages, caches the offscreen context, retries, and res
     });
     assert.equal((await modeResponse).mode, "browser_full");
 
+    const antigravityResponse = new Promise((resolve) => {
+      const handled = chrome.runtime.onMessage.emit(
+        { target: "background", kind: "antigravity-setup:get" },
+        {},
+        resolve,
+      );
+      assert.deepEqual(handled, [true]);
+    });
+    await waitFor(
+      () => nativeOutbound.some((message) => message.type === "control.antigravity.get"),
+      "Antigravity setup status request was not sent",
+    );
+    const antigravityRequest = nativeOutbound.find(
+      (message) => message.type === "control.antigravity.get",
+    );
+    nativeMessages.emit({
+      v: 1,
+      type: "control.antigravity.result",
+      id: antigravityRequest.id,
+      ok: true,
+      state: { ready: true, restart_vscode_required: false },
+    });
+    assert.equal((await antigravityResponse).state.ready, true);
+
     failNextSend = true;
     nativeMessages.emit({
       v: 1,

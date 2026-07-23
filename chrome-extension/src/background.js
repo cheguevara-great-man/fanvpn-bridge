@@ -178,7 +178,10 @@ async function handleNativeMessage(message, port) {
     postNative(envelope(MessageType.PONG, { nonce: message.nonce }), port);
     return;
   }
-  if (message.type === MessageType.CONTROL_MODE_RESULT) {
+  if (
+    message.type === MessageType.CONTROL_MODE_RESULT ||
+    message.type === MessageType.CONTROL_ANTIGRAVITY_RESULT
+  ) {
     const pending = pendingControls.get(message.id);
     if (!pending) return;
     pendingControls.delete(message.id);
@@ -317,6 +320,28 @@ async function requestModeControl(kind, mode) {
   });
 }
 
+async function requestAntigravityControl(kind) {
+  await waitForNativeHandshake();
+  const id = crypto.randomUUID().replaceAll("-", "");
+  const type =
+    kind === "setup"
+      ? MessageType.CONTROL_ANTIGRAVITY_SETUP
+      : MessageType.CONTROL_ANTIGRAVITY_GET;
+  const message = envelope(type, { id });
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pendingControls.delete(id);
+      reject(new Error("Antigravity 配置超时"));
+    }, kind === "setup" ? 15 * 60 * 1000 : CONTROL_TIMEOUT_MS);
+    pendingControls.set(id, { resolve, reject, timeout });
+    if (!postNative(message)) {
+      pendingControls.delete(id);
+      clearTimeout(timeout);
+      reject(new Error("Native Host 当前不可用"));
+    }
+  });
+}
+
 async function waitForNativeHandshake() {
   connectNative();
   const deadline = Date.now() + CONTROL_HANDSHAKE_TIMEOUT_MS;
@@ -395,6 +420,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     requestModeControl("set", message.mode)
       .then(sendResponse)
       .catch((error) => sendResponse({ ok: false, mode: "unmanaged", message: error.message }));
+    return true;
+  }
+  if (
+    message?.target === "background" &&
+    ["antigravity-setup:get", "antigravity-setup:run"].includes(message.kind)
+  ) {
+    requestAntigravityControl(message.kind.endsWith(":run") ? "setup" : "get")
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, message: error.message }));
     return true;
   }
   return false;

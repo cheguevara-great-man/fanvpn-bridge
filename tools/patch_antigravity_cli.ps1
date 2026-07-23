@@ -74,12 +74,18 @@ foreach ($replacement in $replacements) {
 $destinationDirectory = Split-Path -Parent $destination
 New-Item -ItemType Directory -Path $destinationDirectory -Force | Out-Null
 $temporary = "$destination.$([Guid]::NewGuid().ToString('N')).tmp"
+$replacementBackup = "$destination.$([Guid]::NewGuid().ToString('N')).bak"
 try {
     [System.IO.File]::WriteAllBytes($temporary, $bytes)
-    Move-Item -LiteralPath $temporary -Destination $destination -Force
+    if (Test-Path -LiteralPath $destination -PathType Leaf) {
+        [System.IO.File]::Replace($temporary, $destination, $replacementBackup)
+    } else {
+        [System.IO.File]::Move($temporary, $destination)
+    }
     Unblock-File -LiteralPath $destination -ErrorAction SilentlyContinue
 } finally {
     Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $replacementBackup -Force -ErrorAction SilentlyContinue
 }
 
 if (-not $Quiet) {

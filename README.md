@@ -51,6 +51,8 @@ Claude Code 使用 Gemini 时，由 CC Switch 转换 Anthropic Messages 与 Gemi
 - A/B 事务式更新，切换前自动冒烟测试，失败时恢复旧注册。
 - Windows 登录后自动启动 Chrome 并等待 Bridge ready。
 - VS Code Claude Code 可在 Anthropic 官方模式和 Gemini 模式之间切换，且不接管全局 Claude 配置。
+- Chrome 扩展弹窗可一键安装或更新 Antigravity CLI、验证并安装 VS Code 社区扩展、写入浏览器链路配置；
+  CLI 由 VS Code 会话按需启动，不需要常驻。
 - 可选的 VS Code 直连模式通过本机 `18889` 连接自有 HTTPS 代理；安装后仍提供 Lean、Full、Direct
   三个桌面启动入口，作为扩展弹窗之外的备用入口。
 
@@ -87,6 +89,9 @@ Codex、Claude Code 或 CC Switch。
 完成 Codex 登录后，推荐完全退出 VS Code，打开 FanVPN AI Bridge 弹窗并点击“浏览器精简”或
 “浏览器完整（实验）”。按钮会写入受管理的 provider 和产品端点配置，再自动启动 VS Code；
 不需要手工输入三种模式的 provider。“服务器直连”只有在完成可选直连安装后才能使用。
+
+使用 Antigravity 时，在同一弹窗点击“一键配置 Antigravity”，完成后重启一次 VS Code。按钮显示
+“已配置”后，日常使用只需从 VS Code 的 Antigravity 面板新建会话，不需要再次运行安装命令。
 
 如果还部署了配套的自有 HTTPS 代理，可按[安装文档](docs/INSTALLATION.md#可选安装-vs-code-直连模式)
 安装可选直连模式，再按[客户端使用指南](docs/USAGE.md#三种-vs-code-网络模式)选择入口。

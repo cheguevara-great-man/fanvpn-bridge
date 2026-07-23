@@ -3,18 +3,20 @@
   <head>
     <meta charset="utf-8" />
     <style>
-      body { font: 13px/1.5 system-ui, sans-serif; width: 320px; margin: 16px; color: #202124; }
+      body { font: 13px/1.5 system-ui, sans-serif; width: 340px; margin: 16px; color: #202124; }
       h1 { font-size: 17px; margin: 0 0 12px; }
       h2 { font-size: 13px; margin: 16px 0 8px; color: #5f6368; }
       .row { display: flex; justify-content: space-between; gap: 12px; margin: 6px 0; }
       .ok { color: #137333; }
       .bad { color: #b3261e; }
       .modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
-      button { border: 1px solid #dadce0; border-radius: 8px; background: #fff; padding: 8px 4px; cursor: pointer; color: #3c4043; }
+      button { border: 1px solid #dadce0; border-radius: 8px; background: #fff; padding: 8px 6px; cursor: pointer; color: #3c4043; }
       button:hover { background: #f8fafd; }
       button.active { border-color: #1a73e8; background: #e8f0fe; color: #174ea6; font-weight: 600; }
+      button.primary { width: 100%; border-color: #1a73e8; background: #1a73e8; color: #fff; font-weight: 600; }
+      button.primary.ready { border-color: #137333; background: #e6f4ea; color: #137333; }
       button:disabled { cursor: wait; opacity: .6; }
-      #mode-note { margin-top: 8px; color: #5f6368; }
+      #mode-note, #antigravity-note { margin-top: 8px; color: #5f6368; }
       .hint { margin-top: 5px; color: #80868b; font-size: 12px; }
       #notice { margin-top: 10px; padding: 8px; background: #e6f4ea; color: #137333; border-radius: 6px; }
       #error { margin-top: 10px; padding: 8px; background: #fce8e6; color: #b3261e; border-radius: 6px; word-break: break-word; }
@@ -28,14 +30,19 @@
     <div class="row"><span>ChatGPT 网站权限</span><strong id="site-access">检查中</strong></div>
     <div class="row"><span>版本</span><span id="version">-</span></div>
 
-    <h2>启动 VS Code 网络模式</h2>
+    <h2>VS Code Codex 网络模式</h2>
     <div class="modes">
-      <button type="button" data-mode="direct" title="通过本地 18889 连接已配置的私有 HTTPS 代理">服务器直连</button>
+      <button type="button" data-mode="direct">服务器直连</button>
       <button type="button" data-mode="browser_lean">浏览器精简</button>
       <button type="button" data-mode="browser_full">浏览器完整</button>
     </div>
-    <div id="mode-note">正在读取上次托管配置…</div>
-    <div class="hint">每次启动请先关闭全部 VS Code，再从这里选择并自动启动。完整模式仍属实验功能，直连需先配置私有代理。</div>
+    <div id="mode-note">正在读取上次托管配置……</div>
+
+    <h2>Antigravity for VS Code</h2>
+    <button type="button" class="primary" id="antigravity-setup">检查中……</button>
+    <div id="antigravity-note">CLI 按会话自动启动，不需要常驻。</div>
+    <div class="hint">首次配置或需要更新时点击。完成后只需重启一次 VS Code。</div>
+
     <div id="notice" hidden></div>
     <div id="error" hidden></div>
     <script type="module" src="src/popup.js"></script>

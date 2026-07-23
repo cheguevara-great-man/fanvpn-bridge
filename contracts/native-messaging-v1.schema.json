@@ -17,7 +17,10 @@
     { "$ref": "#/$defs/pong" },
     { "$ref": "#/$defs/controlModeGet" },
     { "$ref": "#/$defs/controlModeSet" },
-    { "$ref": "#/$defs/controlModeResult" }
+    { "$ref": "#/$defs/controlModeResult" },
+    { "$ref": "#/$defs/controlAntigravityGet" },
+    { "$ref": "#/$defs/controlAntigravitySetup" },
+    { "$ref": "#/$defs/controlAntigravityResult" }
   ],
   "$defs": {
     "protocolVersion": { "const": 1 },
@@ -301,6 +304,70 @@
             "ok": { "type": "boolean" },
             "mode": { "$ref": "#/$defs/codexMode" },
             "restart_vscode_required": { "type": "boolean" },
+            "message": { "type": "string", "maxLength": 512 }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "controlAntigravityGet": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "id"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "control.antigravity.get" },
+            "id": { "$ref": "#/$defs/requestId" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "controlAntigravitySetup": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "id"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "control.antigravity.setup" },
+            "id": { "$ref": "#/$defs/requestId" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "antigravitySetupState": {
+      "type": "object",
+      "required": [
+        "ready", "cli_installed", "extension_installed", "vscode_configured",
+        "environment_configured", "restart_vscode_required"
+      ],
+      "properties": {
+        "ready": { "type": "boolean" },
+        "cli_installed": { "type": "boolean" },
+        "extension_installed": { "type": "boolean" },
+        "vscode_configured": { "type": "boolean" },
+        "environment_configured": { "type": "boolean" },
+        "restart_vscode_required": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "controlAntigravityResult": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "id", "ok"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "control.antigravity.result" },
+            "id": { "$ref": "#/$defs/requestId" },
+            "ok": { "type": "boolean" },
+            "state": { "$ref": "#/$defs/antigravitySetupState" },
             "message": { "type": "string", "maxLength": 512 }
           },
           "additionalProperties": false

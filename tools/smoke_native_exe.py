@@ -49,6 +49,9 @@ def main() -> int:
         "set_vscode_codex_mode.ps1",
         "start_vscode_network_mode.ps1",
         "configure_usage_reporting.ps1",
+        "install_antigravity_cli.ps1",
+        "patch_antigravity_cli.ps1",
+        "setup_antigravity_vscode.ps1",
     )
     missing_helpers = [name for name in required_helpers if not (exe.parent / "tools" / name).is_file()]
     if missing_helpers:

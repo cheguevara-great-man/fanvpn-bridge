@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Mapping, Sequence
 
+from .antigravity_setup import AntigravitySetupController, AntigravitySetupError
 from .contracts import (
     BrowserTiming,
     EgressRequest,
@@ -30,7 +31,7 @@ from .protocol import (
 )
 
 
-HOST_VERSION = "3.2.1"
+HOST_VERSION = "3.3.0"
 _LOG = logging.getLogger("fanvpn_bridge.dispatcher")
 _LOG.addHandler(logging.NullHandler())
 
@@ -55,6 +56,7 @@ class NativeDispatcher:
         request_timeout_seconds: float,
         max_active_requests: int = 16,
         mode_controller: CodexModeController | None = None,
+        antigravity_setup_controller: AntigravitySetupController | None = None,
     ) -> None:
         self._channel = channel
         self._max_chunk_bytes = max_chunk_bytes
@@ -62,6 +64,7 @@ class NativeDispatcher:
         self._max_active_requests = max_active_requests
         self._request_timeout = request_timeout_seconds
         self._mode_controller = mode_controller
+        self._antigravity_setup_controller = antigravity_setup_controller
         self._control_lock = threading.Lock()
         self._pending: dict[str, _PendingRequest] = {}
         self._pending_lock = threading.Lock()
@@ -270,6 +273,9 @@ class NativeDispatcher:
         if message_type in {"control.mode.get", "control.mode.set"}:
             self._start_mode_control(message_type, message)
             return
+        if message_type in {"control.antigravity.get", "control.antigravity.setup"}:
+            self._start_antigravity_control(message_type, message)
+            return
 
         request_id = message.get("id")
         if not isinstance(request_id, str):
@@ -437,6 +443,66 @@ class NativeDispatcher:
             fields["message"] = message[:512]
         try:
             self._channel.send(envelope("control.mode.result", **fields))
+        except Exception:
+            return
+
+    def _start_antigravity_control(
+        self, message_type: str, message: Mapping[str, object]
+    ) -> None:
+        request_id = message.get("id")
+        if (
+            not isinstance(request_id, str)
+            or not 16 <= len(request_id) <= 64
+            or not all(character.isalnum() or character in "_-" for character in request_id)
+        ):
+            raise BridgeError(ErrorCode.PROTOCOL_VIOLATION, "Invalid control request id")
+        setup = message_type == "control.antigravity.setup"
+        threading.Thread(
+            target=self._run_antigravity_control,
+            args=(request_id, setup),
+            name="fanvpn-antigravity-setup" if setup else "fanvpn-antigravity-status",
+            daemon=True,
+        ).start()
+
+    def _run_antigravity_control(self, request_id: str, setup: bool) -> None:
+        if not self._control_lock.acquire(blocking=False):
+            self._send_antigravity_result(
+                request_id, ok=False, message="Another Bridge configuration task is running"
+            )
+            return
+        try:
+            if self._antigravity_setup_controller is None:
+                raise AntigravitySetupError("Antigravity setup is unavailable in this Native Host")
+            state = (
+                self._antigravity_setup_controller.setup()
+                if setup
+                else self._antigravity_setup_controller.status()
+            )
+            self._send_antigravity_result(request_id, ok=True, state=state)
+        except AntigravitySetupError as error:
+            self._send_antigravity_result(request_id, ok=False, message=str(error))
+        except Exception:
+            self._send_antigravity_result(
+                request_id, ok=False, message="Antigravity setup failed unexpectedly"
+            )
+        finally:
+            self._control_lock.release()
+
+    def _send_antigravity_result(
+        self,
+        request_id: str,
+        *,
+        ok: bool,
+        state: Mapping[str, object] | None = None,
+        message: str | None = None,
+    ) -> None:
+        fields: dict[str, object] = {"id": request_id, "ok": ok}
+        if state is not None:
+            fields["state"] = dict(state)
+        if message:
+            fields["message"] = message[:512]
+        try:
+            self._channel.send(envelope("control.antigravity.result", **fields))
         except Exception:
             return
 

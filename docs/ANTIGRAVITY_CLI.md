@@ -2,6 +2,20 @@
 
 本功能让官方 Antigravity CLI 的模型请求、登录校验和令牌刷新全部经过 Chrome，不需要让 VS Code、终端或 CLI 直接连接境外服务器。
 
+## 推荐：扩展内一键配置
+
+更新 Native Host 并刷新 FanVPN AI Bridge 扩展后，打开扩展弹窗，在“Antigravity for VS Code”区域点击“一键配置 Antigravity”。按钮会自动完成：
+
+1. 通过 Chrome 下载并校验官方 Antigravity CLI。
+2. 生成浏览器链路专用的 `agy-browser.exe`。
+3. 通过 Chrome 下载 VS Code 社区扩展，并验证扩展身份后安装。
+4. 保留原有 VS Code 设置并写入 `antigravity.cliPath`。
+5. 设置用户级 `CLOUD_CODE_URL`。
+
+配置完成后只需完全退出并重开一次 VS Code。CLI 不需要常驻：VS Code 插件会在创建会话时自动启动，在会话结束时退出。按钮显示“已配置”后，平时无需再点；需要检查官方 CLI 更新或修复配置时可以再次点击。
+
+按钮不会安装通用代理、不会修改系统代理，也不会保存 Google 密码。
+
 ```text
 Antigravity CLI
   -> 127.0.0.1:18888
@@ -46,6 +60,7 @@ google
 antigravity-avatar
 antigravity-manifest
 antigravity-download
+vscode-marketplace
 ```
 
 检查命令：
@@ -87,7 +102,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File `
 启动脚本会：
 
 - 检查 Chrome 和 Bridge 是否就绪；
-- 检查六条固定路由；
+- 检查运行所需的四条固定路由；
 - 始终运行 `agy-browser.exe`，不会在失败时退回会直连的 `agy.exe`；
 - 官方文件更新后自动重新生成浏览器副本；
 - 仅给本次 CLI 进程设置模型服务地址，并临时清除继承的通用代理环境变量；

@@ -68,6 +68,20 @@ class AntigravityCliScriptTests(unittest.TestCase):
             routes["antigravity-avatar"]["upstream_base_url"],
             "https://lh3.googleusercontent.com",
         )
+        self.assertEqual(
+            routes["vscode-marketplace"]["upstream_base_url"],
+            "https://marketplace.visualstudio.com",
+        )
+
+    def test_vscode_setup_downloads_a_validated_vsix_through_browser(self) -> None:
+        setup = (TOOLS / "setup_antigravity_vscode.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("/vscode-marketplace", setup)
+        self.assertIn("Test-VsixIdentity", setup)
+        self.assertIn("lyadhgod", setup)
+        self.assertIn("antigravity.cliPath", setup)
+        self.assertIn("CLOUD_CODE_URL", setup)
+        self.assertNotIn("18889", setup)
 
     @unittest.skipUnless(POWERSHELL.is_file(), "Windows PowerShell is required")
     def test_binary_patcher_preserves_official_file_and_rewrites_auth_routes(self) -> None:
@@ -111,6 +125,7 @@ class AntigravityCliScriptTests(unittest.TestCase):
             TOOLS / "install_antigravity_cli.ps1",
             TOOLS / "patch_antigravity_cli.ps1",
             TOOLS / "start_antigravity_cli.ps1",
+            TOOLS / "setup_antigravity_vscode.ps1",
         ]
         quoted_paths = ",".join(
             "'" + str(path).replace("'", "''") + "'" for path in script_paths

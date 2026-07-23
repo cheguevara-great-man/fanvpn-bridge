@@ -10,6 +10,7 @@ $bridgeBase = $BridgeUrl.TrimEnd('/')
 $targetDirectory = [System.IO.Path]::GetFullPath($InstallDirectory)
 $binaryPath = Join-Path $targetDirectory 'agy.exe'
 $browserBinaryPath = Join-Path $targetDirectory 'agy-browser.exe'
+$browserSourceMarker = "$browserBinaryPath.source-sha512"
 $stagingPath = Join-Path ([System.IO.Path]::GetTempPath()) `
     ("agy-browser-download-{0}.exe" -f [Guid]::NewGuid().ToString('N'))
 
@@ -62,24 +63,44 @@ try {
     if ($officialBinaryUri.Scheme -ne 'https' -or $officialBinaryUri.Host -ne 'storage.googleapis.com') {
         throw "The release manifest returned an unexpected download origin: $($officialBinaryUri.GetLeftPart([UriPartial]::Authority))"
     }
-    $downloadUri = "$bridgeBase/antigravity-download$($officialBinaryUri.PathAndQuery)"
-    $ProgressPreference = 'SilentlyContinue'
-    Invoke-WebRequest -Uri $downloadUri -OutFile $stagingPath -Proxy $null -TimeoutSec 600 -UseBasicParsing
-
-    $actualHash = (Get-FileHash -LiteralPath $stagingPath -Algorithm SHA512).Hash.ToLowerInvariant()
     $expectedHash = ([string]$manifest.sha512).ToLowerInvariant()
-    if ($actualHash -ne $expectedHash) {
-        throw 'Security check failed: the downloaded Antigravity CLI SHA-512 does not match the official manifest.'
+    $officialCurrent = $false
+    if (Test-Path -LiteralPath $binaryPath -PathType Leaf) {
+        $officialCurrent = `
+            (Get-FileHash -LiteralPath $binaryPath -Algorithm SHA512).Hash.ToLowerInvariant() -eq `
+            $expectedHash
+    }
+    if (-not $officialCurrent) {
+        $downloadUri = "$bridgeBase/antigravity-download$($officialBinaryUri.PathAndQuery)"
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri $downloadUri -OutFile $stagingPath -Proxy $null -TimeoutSec 600 -UseBasicParsing
+        $actualHash = (Get-FileHash -LiteralPath $stagingPath -Algorithm SHA512).Hash.ToLowerInvariant()
+        if ($actualHash -ne $expectedHash) {
+            throw 'Security check failed: the downloaded Antigravity CLI SHA-512 does not match the official manifest.'
+        }
+        New-Item -ItemType Directory -Path $targetDirectory -Force | Out-Null
+        Copy-Item -LiteralPath $stagingPath -Destination $binaryPath -Force
+        Unblock-File -LiteralPath $binaryPath -ErrorAction SilentlyContinue
     }
 
-    New-Item -ItemType Directory -Path $targetDirectory -Force | Out-Null
-    Copy-Item -LiteralPath $stagingPath -Destination $binaryPath -Force
-    Unblock-File -LiteralPath $binaryPath -ErrorAction SilentlyContinue
-    & (Join-Path $PSScriptRoot 'patch_antigravity_cli.ps1') `
-        -SourcePath $binaryPath `
-        -DestinationPath $browserBinaryPath `
-        -Quiet
-    Write-Host "Antigravity CLI $($manifest.version) installed through Chrome." -ForegroundColor Green
+    $browserCurrent = `
+        (Test-Path -LiteralPath $browserBinaryPath -PathType Leaf) -and `
+        (Test-Path -LiteralPath $browserSourceMarker -PathType Leaf) -and `
+        (([System.IO.File]::ReadAllText($browserSourceMarker)).Trim().ToLowerInvariant() -eq $expectedHash) -and `
+        ((Get-Item -LiteralPath $browserBinaryPath).Length -eq (Get-Item -LiteralPath $binaryPath).Length)
+    if (-not $browserCurrent) {
+        & (Join-Path $PSScriptRoot 'patch_antigravity_cli.ps1') `
+            -SourcePath $binaryPath `
+            -DestinationPath $browserBinaryPath `
+            -Quiet
+        [System.IO.File]::WriteAllText(
+            $browserSourceMarker,
+            $expectedHash + [Environment]::NewLine,
+            [System.Text.UTF8Encoding]::new($false)
+        )
+    }
+    $action = if ($officialCurrent -and $browserCurrent) { 'already current' } else { 'installed' }
+    Write-Host "Antigravity CLI $($manifest.version) $action through Chrome." -ForegroundColor Green
     Write-Host "Official CLI: $binaryPath"
     Write-Host "Browser CLI:  $browserBinaryPath"
     Write-Host 'Start it with tools\start_antigravity_cli.ps1.'
