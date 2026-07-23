@@ -56,7 +56,7 @@ function Assert-AntigravityBrowserRoute {
     if (@($routes.routes) -notcontains 'antigravity') {
         throw 'The installed Native Host does not contain the antigravity browser route. Update the Native Host first.'
     }
-    foreach ($authRoute in @('agi', 'google')) {
+    foreach ($authRoute in @('agi', 'google', 'antigravity-avatar')) {
         if (@($routes.routes) -notcontains $authRoute) {
             throw "The installed Native Host does not contain the Antigravity auth route '$authRoute'. Update the Native Host first."
         }

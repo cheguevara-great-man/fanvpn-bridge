@@ -43,6 +43,7 @@ token exchange failed: Post "https://oauth2.googleapis.com/token"
 antigravity
 agi
 google
+antigravity-avatar
 antigravity-manifest
 antigravity-download
 ```
@@ -53,7 +54,7 @@ antigravity-download
 (Invoke-RestMethod http://127.0.0.1:18888/routes -Proxy $null).routes
 ```
 
-其中 `agi` 和 `google` 是 Bridge 内部使用的短路由名。它们之所以较短，是为了让替换后的地址与官方程序中的原地址字节数完全相同，避免破坏可执行文件结构。
+其中 `agi` 和 `google` 是 Bridge 内部使用的短路由名。它们之所以较短，是为了让替换后的地址与官方程序中的原地址字节数完全相同，避免破坏可执行文件结构。`antigravity-avatar` 用于读取资格检查所需的 Google 账号头像。
 
 ## 安装或更新
 
@@ -86,7 +87,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File `
 启动脚本会：
 
 - 检查 Chrome 和 Bridge 是否就绪；
-- 检查五条固定路由；
+- 检查六条固定路由；
 - 始终运行 `agy-browser.exe`，不会在失败时退回会直连的 `agy.exe`；
 - 官方文件更新后自动重新生成浏览器副本；
 - 仅给本次 CLI 进程设置模型服务地址，并临时清除继承的通用代理环境变量；
@@ -110,13 +111,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File `
 
 ```powershell
 Get-Content "$env:LOCALAPPDATA\FanVPNBridge\fanvpn-bridge.log" -Tail 300 |
-  Select-String 'route=(antigravity|agi|google)'
+  Select-String 'route=(antigravity|agi|google|antigravity-avatar)'
 ```
 
 ## 能力边界
 
-- Google Cloud Code 模型服务、OAuth 用户信息校验、令牌交换和刷新均走浏览器链路。
-- CLI 显示头像时可能直接读取 `lh3.googleusercontent.com`；加载失败只影响头像，不影响登录和模型调用。
+- Google Cloud Code 模型服务、OAuth 用户信息校验、令牌交换、刷新和资格检查所需的账号头像均走浏览器链路。
 - Git、终端命令、任意网页和 CLI 自己下载的第三方工具不会自动经过 Bridge，因为 Bridge 不是开放式通用代理。
 - Google 若在新版 CLI 中更换内置 OAuth 地址，生成浏览器副本时会明确报“不支持的版本”，不会静默退回直连。
 

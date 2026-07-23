@@ -64,6 +64,10 @@ class AntigravityCliScriptTests(unittest.TestCase):
             routes["google"]["upstream_base_url"],
             "https://oauth2.googleapis.com",
         )
+        self.assertEqual(
+            routes["antigravity-avatar"]["upstream_base_url"],
+            "https://lh3.googleusercontent.com",
+        )
 
     @unittest.skipUnless(POWERSHELL.is_file(), "Windows PowerShell is required")
     def test_binary_patcher_preserves_official_file_and_rewrites_auth_routes(self) -> None:

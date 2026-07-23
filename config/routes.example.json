@@ -73,6 +73,11 @@
       "remove_path_prefix": "",
       "probe_path": "/"
     },
+    "antigravity-avatar": {
+      "upstream_base_url": "https://lh3.googleusercontent.com",
+      "remove_path_prefix": "",
+      "probe_path": "/"
+    },
     "antigravity-manifest": {
       "upstream_base_url": "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app",
       "remove_path_prefix": "",

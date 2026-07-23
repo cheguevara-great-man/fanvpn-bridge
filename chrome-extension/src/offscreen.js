@@ -15,6 +15,9 @@ import { resilientFetch } from "./resilient_fetch.js";
 const requests = new Map();
 const METHODS_WITHOUT_BODY = new Set(["GET", "HEAD"]);
 const ANTIGRAVITY_HOST = "daily-cloudcode-pa.googleapis.com";
+const ANTIGRAVITY_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo";
+const ANTIGRAVITY_AVATAR_HOST = "lh3.googleusercontent.com";
+const ANTIGRAVITY_AVATAR_ROUTE = "http://127.0.0.1:18888/antigravity-avatar";
 const BROWSER_DECODED_HEADERS = new Set([
   "content-length",
   "content-encoding",
@@ -172,12 +175,13 @@ async function executeRequest(id, state) {
       options.body = new Blob(state.requestChunks);
     }
     state.requestChunks.length = 0;
-    const response = await resilientFetch(state.head.url, options, {
+    let response = await resilientFetch(state.head.url, options, {
       parentSignal: state.controller.signal,
       onTiming: (timing) => {
         browserTiming = timing;
       },
     });
+    response = await routeAntigravityAvatarThroughBridge(state.head.url, response);
     const responseHeaders = [];
     for (const [name, value] of response.headers.entries()) {
       if (!BROWSER_DECODED_HEADERS.has(name.toLowerCase())) {
@@ -214,6 +218,37 @@ async function executeRequest(id, state) {
     state.requestChunks.length = 0;
     if (requests.get(id) === state) requests.delete(id);
   }
+}
+
+async function routeAntigravityAvatarThroughBridge(rawUrl, response) {
+  if (rawUrl !== ANTIGRAVITY_USERINFO_URL || !response.ok) return response;
+  const contentType = response.headers.get("content-type") || "";
+  if (!contentType.toLowerCase().includes("application/json")) return response;
+
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.byteLength > 1024 * 1024) {
+    throw new Error("Antigravity user-info response is unexpectedly large");
+  }
+  const profile = JSON.parse(new TextDecoder().decode(bytes));
+  if (typeof profile?.picture !== "string") {
+    return new Response(bytes, response);
+  }
+  const picture = new URL(profile.picture);
+  if (
+    picture.protocol !== "https:" ||
+    picture.hostname !== ANTIGRAVITY_AVATAR_HOST ||
+    picture.port ||
+    picture.username ||
+    picture.password
+  ) {
+    throw new Error("Antigravity returned an unsupported profile-picture origin");
+  }
+  profile.picture = `${ANTIGRAVITY_AVATAR_ROUTE}${picture.pathname}${picture.search}`;
+  return new Response(JSON.stringify(profile), {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
 }
 
 async function ensureAntigravityUserAgent(rawUrl, headerPairs) {

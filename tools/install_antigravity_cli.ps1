@@ -30,6 +30,7 @@ $requiredRoutes = @(
     'antigravity',
     'agi',
     'google',
+    'antigravity-avatar',
     'antigravity-manifest',
     'antigravity-download'
 )

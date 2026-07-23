@@ -38,6 +38,12 @@ test("uses negotiated limits and aborts a response blocked on flow control", asy
   };
   globalThis.fetch = async (url, options) => {
     fetchCalls.push({ url, options });
+    if (url === "https://www.googleapis.com/oauth2/v2/userinfo") {
+      return Response.json({
+        email: "person@example.test",
+        picture: "https://lh3.googleusercontent.com/a/example=s96-c",
+      });
+    }
     return new Response(responseBytes, {
       status: 200,
       headers: { "content-type": "application/octet-stream" },
@@ -147,6 +153,36 @@ test("uses negotiated limits and aborts a response blocked on flow control", asy
     await waitFor(() => fetchCalls.length === 2, "Antigravity request was not fetched");
     assert.equal(backgroundControls.length, 1);
     assert.equal(backgroundControls[0].userAgent, "antigravity-cli/test windows/amd64");
+
+    const userInfoId = "antigravity_userinfo_0001";
+    await sendEnvelope(protocol.envelope(protocol.MessageType.REQUEST_HEAD, {
+      id: userInfoId,
+      method: "GET",
+      url: "https://www.googleapis.com/oauth2/v2/userinfo",
+      headers: [],
+    }));
+    await sendEnvelope(protocol.envelope(protocol.MessageType.REQUEST_BODY, {
+      id: userInfoId,
+      seq: 0,
+      data: "",
+      end: true,
+    }));
+    await waitFor(
+      () => outbound.some(
+        (message) => message.type === protocol.MessageType.RESPONSE_BODY && message.id === userInfoId,
+      ),
+      "rewritten user-info response was not emitted",
+    );
+    const userInfoFrame = outbound.find(
+      (message) => message.type === protocol.MessageType.RESPONSE_BODY && message.id === userInfoId,
+    );
+    const userInfo = JSON.parse(
+      new TextDecoder().decode(protocol.base64ToBytes(userInfoFrame.data)),
+    );
+    assert.equal(
+      userInfo.picture,
+      "http://127.0.0.1:18888/antigravity-avatar/a/example=s96-c",
+    );
   } finally {
     globalThis.chrome = originalChrome;
     globalThis.fetch = originalFetch;
