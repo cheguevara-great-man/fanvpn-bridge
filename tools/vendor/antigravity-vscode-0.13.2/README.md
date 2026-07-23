@@ -22,7 +22,10 @@ text reach the VS Code chat view throughout generation instead of commonly
 appearing all at once when generation ends. The screen parser also understands
 the Antigravity CLI 1.1.5 model picker, where the new Effort slider separates
 the model rows from the keyboard footer; `/model` therefore surfaces clickable
-model choices instead of leaving the hidden TUI waiting indefinitely.
+model choices instead of leaving the hidden TUI waiting indefinitely. Local
+images generated inside an open workspace are converted to restricted webview
+resource URIs and rendered inline; the compatibility package therefore also
+includes the corresponding `media/main.js` and `media/main.css`.
 
 This fixes the upstream Unix-only call to:
 

@@ -142,6 +142,14 @@ Copy-Item `
     -Destination (Join-Path $outputAntigravityVsCodeVendor 'extension.js') `
     -Force
 Copy-Item `
+    -LiteralPath (Join-Path $antigravityVsCodeVendor 'main.js') `
+    -Destination (Join-Path $outputAntigravityVsCodeVendor 'main.js') `
+    -Force
+Copy-Item `
+    -LiteralPath (Join-Path $antigravityVsCodeVendor 'main.css') `
+    -Destination (Join-Path $outputAntigravityVsCodeVendor 'main.css') `
+    -Force
+Copy-Item `
     -LiteralPath (Join-Path $antigravityVsCodeVendor 'LICENSE') `
     -Destination (Join-Path $outputAntigravityVsCodeVendor 'LICENSE') `
     -Force

@@ -12,8 +12,8 @@ $bridgeBase = $BridgeUrl.TrimEnd('/')
 $browserBinary = Join-Path ([System.IO.Path]::GetFullPath($InstallDirectory)) 'agy-browser.exe'
 $settingsFullPath = [System.IO.Path]::GetFullPath($SettingsPath)
 $extensionVersion = '0.13.2'
-$windowsExtensionBundle = Join-Path $PSScriptRoot `
-    "vendor\antigravity-vscode-$extensionVersion\extension.js"
+$windowsExtensionBundleDirectory = Join-Path $PSScriptRoot `
+    "vendor\antigravity-vscode-$extensionVersion"
 $vsixPath = Join-Path ([System.IO.Path]::GetTempPath()) `
     ("antigravity-vscode-{0}.vsix" -f [Guid]::NewGuid().ToString('N'))
 
@@ -60,10 +60,17 @@ function Test-VsixIdentity {
 function Set-VsixWindowsCompatibility {
     param(
         [Parameter(Mandatory)][string]$Path,
-        [Parameter(Mandatory)][string]$BundlePath
+        [Parameter(Mandatory)][string]$BundleDirectory
     )
-    if (-not (Test-Path -LiteralPath $BundlePath -PathType Leaf)) {
-        throw "The bundled Windows compatibility build is missing: $BundlePath"
+    $replacements = [ordered]@{
+        'extension/dist/extension.js' = (Join-Path $BundleDirectory 'extension.js')
+        'extension/media/main.js' = (Join-Path $BundleDirectory 'main.js')
+        'extension/media/main.css' = (Join-Path $BundleDirectory 'main.css')
+    }
+    foreach ($sourcePath in $replacements.Values) {
+        if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+            throw "The bundled Windows compatibility file is missing: $sourcePath"
+        }
     }
     Add-Type -AssemblyName System.IO.Compression
     $stream = [System.IO.File]::Open(
@@ -79,22 +86,23 @@ function Set-VsixWindowsCompatibility {
             $false
         )
         try {
-            $entryPath = 'extension/dist/extension.js'
-            $original = $archive.GetEntry($entryPath)
-            if (-not $original) {
-                throw 'The Antigravity VSIX does not contain extension/dist/extension.js.'
-            }
-            $original.Delete()
-            $replacement = $archive.CreateEntry(
-                $entryPath,
-                [System.IO.Compression.CompressionLevel]::Optimal
-            )
-            $source = [System.IO.File]::OpenRead($BundlePath)
-            try {
-                $destination = $replacement.Open()
-                try { $source.CopyTo($destination) } finally { $destination.Dispose() }
-            } finally {
-                $source.Dispose()
+            foreach ($entryPath in $replacements.Keys) {
+                $original = $archive.GetEntry($entryPath)
+                if (-not $original) {
+                    throw "The Antigravity VSIX does not contain $entryPath."
+                }
+                $original.Delete()
+                $replacement = $archive.CreateEntry(
+                    $entryPath,
+                    [System.IO.Compression.CompressionLevel]::Optimal
+                )
+                $source = [System.IO.File]::OpenRead($replacements[$entryPath])
+                try {
+                    $destination = $replacement.Open()
+                    try { $source.CopyTo($destination) } finally { $destination.Dispose() }
+                } finally {
+                    $source.Dispose()
+                }
             }
         } finally {
             $archive.Dispose()
@@ -191,7 +199,7 @@ try {
     Test-VsixIdentity -Path $vsixPath -ExpectedVersion $extensionVersion
     Set-VsixWindowsCompatibility `
         -Path $vsixPath `
-        -BundlePath $windowsExtensionBundle
+        -BundleDirectory $windowsExtensionBundleDirectory
     $codeCommand = Get-CodeCommand
     & $codeCommand --install-extension $vsixPath --force
     if ($LASTEXITCODE -ne 0) { throw 'VS Code extension installation failed.' }
