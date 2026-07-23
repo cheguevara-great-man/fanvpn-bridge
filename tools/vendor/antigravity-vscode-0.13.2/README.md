@@ -8,7 +8,10 @@ The upstream extension is MIT-licensed; its license is included alongside the
 bundle. The local compatibility change keeps the upstream behavior on Unix and
 uses the ABI-compatible `node-pty` shipped by VS Code to create a Windows
 ConPTY session. It also passes `vscode.env.appRoot` to the interactive-session
-service so the bundled module can be located reliably.
+service so the bundled module can be located reliably. On Windows it detects
+the official `gemini:antigravity` Credential Manager entry instead of relying
+on the legacy plaintext token-file probe; it checks only the target name and
+never reads the credential secret.
 
 This fixes the upstream Unix-only call to:
 

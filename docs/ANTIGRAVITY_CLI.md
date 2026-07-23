@@ -11,7 +11,7 @@
 3. 通过 Chrome 下载 VS Code 社区扩展，并验证扩展身份后安装。
 4. 保留原有 VS Code 设置并写入 `antigravity.cliPath`。
 5. 设置用户级 `CLOUD_CODE_URL`。
-6. 为当前社区扩展创建不含凭据的登录状态兼容标记，并复查扩展确实安装成功。
+6. 清理旧版登录兼容标记，并复查扩展确实安装成功。
 7. 为社区扩展应用项目内置的 Windows ConPTY 兼容修复。
 
 配置完成后只需完全退出并重开一次 VS Code。CLI 不需要常驻：VS Code 插件会在创建会话时自动启动，在会话结束时退出。按钮显示“已配置”后，平时无需再点；需要检查官方 CLI 更新或修复配置时可以再次点击。
@@ -20,10 +20,10 @@
 
 社区扩展 `lyadhgod.antigravity-vscode` 0.13.2 仍通过旧文件
 `~/.gemini/antigravity-cli/antigravity-oauth-token` 判断是否已经登录；Windows 版官方
-Antigravity CLI 1.1.5 已改用 Windows 凭据管理器，不再创建该文件。一键配置会先确认真实的
-`gemini:antigravity` 凭据存在，之后才写入不含 Token 的兼容标记，让 VS Code 界面使用官方 CLI
-的实际登录状态。新电脑尚未登录时不会创建标记；旧版脚本遗留的误导性标记会被自动清理。如果未来
-CLI 创建了真实的非空文件，脚本不会覆盖它。
+Antigravity CLI 1.1.5 已改用 Windows 凭据管理器，不再创建该文件。项目内置的 Windows
+兼容版扩展会直接检查 `gemini:antigravity` 凭据是否存在（不会读取凭据内容），因此新电脑会正确
+显示登录界面，登录完成后也会立即识别。旧版脚本遗留的空标记或兼容标记会被自动清理；如果未来 CLI
+创建了真实的非空文件，脚本不会删除它。
 
 该社区扩展的原版交互会话通过 Linux/macOS 的 `script` 命令创建伪终端，在 Windows
 上会导致“The Antigravity session ended before it was ready”。一键配置固定安装经过身份
