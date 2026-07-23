@@ -13,7 +13,10 @@ the official `gemini:antigravity` Credential Manager entry instead of relying
 on the legacy plaintext token-file probe; it checks only the target name and
 never reads the credential secret. Visible lifecycle commands use an explicit
 `powershell.exe -NoProfile` terminal and the PowerShell call operator, so a
-quoted Windows executable path is executed instead of merely echoed.
+quoted Windows executable path is executed instead of merely echoed. Google
+sign-in opens in a separate PowerShell window on Windows; the extension polls
+Credential Manager and refreshes its chat view automatically when sign-in
+finishes.
 
 This fixes the upstream Unix-only call to:
 
