@@ -20,9 +20,10 @@
 
 社区扩展 `lyadhgod.antigravity-vscode` 0.13.2 仍通过旧文件
 `~/.gemini/antigravity-cli/antigravity-oauth-token` 判断是否已经登录；Windows 版官方
-Antigravity CLI 1.1.5 已改用自己的安全凭据存储，不再创建该文件。一键配置只在旧文件不存在或为空时
-写入不含 Token 的兼容标记，让 VS Code 界面使用官方 CLI 的实际登录状态；如果未来 CLI 创建了真实的
-非空文件，脚本不会覆盖它。
+Antigravity CLI 1.1.5 已改用 Windows 凭据管理器，不再创建该文件。一键配置会先确认真实的
+`gemini:antigravity` 凭据存在，之后才写入不含 Token 的兼容标记，让 VS Code 界面使用官方 CLI
+的实际登录状态。新电脑尚未登录时不会创建标记；旧版脚本遗留的误导性标记会被自动清理。如果未来
+CLI 创建了真实的非空文件，脚本不会覆盖它。
 
 该社区扩展的原版交互会话通过 Linux/macOS 的 `script` 命令创建伪终端，在 Windows
 上会导致“The Antigravity session ended before it was ready”。一键配置固定安装经过身份

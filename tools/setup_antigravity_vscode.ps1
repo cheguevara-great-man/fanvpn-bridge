@@ -156,14 +156,32 @@ function Set-AntigravityVsCodeCompatibilityMarker {
     # lyadhgod.antigravity-vscode 0.13.2 still uses this legacy file only as
     # a signed-in state probe. Antigravity CLI 1.1.5 keeps the real credential
     # in its own secure store and does not create the probe file on Windows.
-    # Never overwrite a future CLI's real, non-empty file.
-    if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf) -or
-        (Get-Item -LiteralPath $markerPath).Length -eq 0) {
+    # Only create the marker after Credential Manager confirms that the real
+    # CLI credential exists. Otherwise a new computer would look signed in
+    # while the CLI is actually waiting for OAuth.
+    $markerText = `
+        'browser-ai-bridge compatibility marker; real credentials remain managed by the official Antigravity CLI.'
+    $credentialList = (& cmdkey.exe /list 2>$null | Out-String)
+    $hasCredential = $credentialList -match 'gemini:antigravity(?:\s|$)'
+    if ($hasCredential -and (
+        -not (Test-Path -LiteralPath $markerPath -PathType Leaf) -or
+        (Get-Item -LiteralPath $markerPath).Length -eq 0
+    )) {
         [System.IO.File]::WriteAllText(
             $markerPath,
-            'browser-ai-bridge compatibility marker; real credentials remain managed by the official Antigravity CLI.',
+            $markerText,
             [System.Text.UTF8Encoding]::new($false)
         )
+    } elseif (-not $hasCredential -and
+        (Test-Path -LiteralPath $markerPath -PathType Leaf)) {
+        $existingMarker = [System.IO.File]::ReadAllText(
+            $markerPath,
+            [System.Text.Encoding]::UTF8
+        )
+        if ([string]::IsNullOrEmpty($existingMarker) -or
+            $existingMarker -eq $markerText) {
+            Remove-Item -LiteralPath $markerPath -Force
+        }
     }
 }
 
