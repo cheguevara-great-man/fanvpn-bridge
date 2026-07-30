@@ -148,6 +148,8 @@ enabled = false
 | 浏览器精简 | Browser Lean | 核心模型请求经 `18888 -> Chrome -> 浏览器代理扩展`，是稳定默认模式 |
 | 浏览器完整（实验） | Browser Full | 在 Lean 基础上转发 ChatGPT 产品后端、Apps、插件、连接器和 VS Code Codex 界面请求 |
 
+Codex CLI 与 VS Code Codex 共用 `~/.codex/config.toml` 和 `~/.codex/auth.json`；配置好 Browser Lean 且 Chrome、Bridge 与浏览器代理扩展正常运行后，可直接在 PowerShell 中执行 `codex` 使用同一条浏览器链路，无需额外适配或重新登录。
+
 切换前必须关闭所有 VS Code 窗口并等待 `Code.exe` 退出，再点击所需按钮。点击成功后，Bridge 会
 自动启动新的 VS Code；已有 VS Code 进程仍在运行时，Host 会拒绝切换，避免单实例进程继续使用旧环境。
 弹窗中的“上次托管配置”只表示磁盘配置，不表示某个已经运行的 VS Code 进程正在使用该模式。
