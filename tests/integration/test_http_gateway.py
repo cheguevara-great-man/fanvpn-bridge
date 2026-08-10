@@ -70,6 +70,10 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
                 gate.wait(2)
             if str(head["url"]).endswith("/v1/hang"):
                 return None
+            if str(head["url"]).endswith("/responses/compact"):
+                return 200, [["content-type", "application/json"]], [
+                    b'{"usage":{"input_tokens":19,"output_tokens":7,"total_tokens":26}}'
+                ]
             if "/backend-api/ps/plugins/missing" in str(head["url"]):
                 return 404, [["content-type", "application/json"]], [
                     b'{"detail":"missing endpoint","private":"diagnostic-value"}'
@@ -382,6 +386,33 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
             "x-openai-test",
         ):
             self.assertIn(required, header_names)
+
+    def test_compaction_usage_inherits_model_from_request(self) -> None:
+        class CapturingReporter:
+            def __init__(self):
+                self.events = []
+
+            def model_request_allowed(self):
+                return True
+
+            def record(self, usage, *, route):
+                self.events.append((usage, route))
+
+        reporter = CapturingReporter()
+        self.server.usage_reporter = reporter
+        status, _headers, _payload = self.request(
+            "POST",
+            "/chatgpt-codex/responses/compact",
+            b'{"input":[{"role":"user","content":"private"}],'
+            b'"model":"gpt-5.4-codex"}',
+            {"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(len(reporter.events), 1)
+        usage, route = reporter.events[0]
+        self.assertEqual(route, "chatgpt-codex")
+        self.assertEqual(usage.model, "gpt-5.4-codex")
+        self.assertEqual(usage.total_tokens, 26)
 
     def test_machine_credit_policy_blocks_only_model_posts(self) -> None:
         class BlockedReporter:

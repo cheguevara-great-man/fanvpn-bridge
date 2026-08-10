@@ -9,7 +9,12 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
-from fanvpn_bridge.usage_reporting import TokenUsage, UsageExtractor, UsageReporter
+from fanvpn_bridge.usage_reporting import (
+    RequestUsageMetadata,
+    TokenUsage,
+    UsageExtractor,
+    UsageReporter,
+)
 
 
 class ImmediateDispatcher:
@@ -76,6 +81,22 @@ class UsageReportingTests(unittest.TestCase):
             b'"completion_tokens":5,"total_tokens":12}}'
         )
         self.assertEqual(extractor.finish(), TokenUsage(7, 5, 12, model="gpt-json"))
+
+    def test_request_model_fills_response_usage_without_model(self) -> None:
+        metadata = RequestUsageMetadata()
+        metadata.feed(b'{"instructions":"private","mod')
+        metadata.feed(b'el":"gpt-5.4-codex","input":[]}')
+        usage = TokenUsage(7, 5, 12)
+        self.assertEqual(
+            metadata.apply(usage),
+            TokenUsage(7, 5, 12, model="gpt-5.4-codex"),
+        )
+
+    def test_response_model_takes_precedence_over_request_model(self) -> None:
+        metadata = RequestUsageMetadata()
+        metadata.feed(b'{"model":"requested-model"}')
+        usage = TokenUsage(7, 5, 12, model="response-model")
+        self.assertEqual(metadata.apply(usage), usage)
 
     def test_ignores_response_content_without_usage(self) -> None:
         extractor = UsageExtractor()

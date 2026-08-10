@@ -12,7 +12,7 @@ import threading
 import time
 import uuid
 from contextlib import closing
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
@@ -28,6 +28,8 @@ _CONFIG_NAME = "usage-reporting.json"
 _DATABASE_NAME = "usage-outbox.sqlite3"
 _MAX_EVENT_BYTES = 16 * 1024
 _MAX_CAPTURE_BYTES = 2 * 1024 * 1024
+_MAX_REQUEST_METADATA_BYTES = 64 * 1024
+_MODEL_FIELD = re.compile(rb'"model"\s*:\s*"([A-Za-z0-9][A-Za-z0-9._:/-]{0,127})"')
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +42,33 @@ class TokenUsage:
     model: str = "unknown"
     model_level: str = "default"
     service_tier: str = "default"
+
+
+class RequestUsageMetadata:
+    """Capture only accounting metadata needed when an upstream response omits it."""
+
+    def __init__(self) -> None:
+        self._prefix = bytearray()
+        self._model: str | None = None
+
+    @property
+    def model(self) -> str | None:
+        return self._model
+
+    def feed(self, data: bytes) -> None:
+        if self._model is not None or len(self._prefix) >= _MAX_REQUEST_METADATA_BYTES:
+            return
+        self._prefix.extend(data[: _MAX_REQUEST_METADATA_BYTES - len(self._prefix)])
+        match = _MODEL_FIELD.search(self._prefix)
+        if match is not None:
+            self._model = match.group(1).decode("ascii")
+            self._prefix.clear()
+
+    def apply(self, usage: TokenUsage | None) -> TokenUsage | None:
+        self._prefix.clear()
+        if usage is None or usage.model != "unknown" or self._model is None:
+            return usage
+        return replace(usage, model=self._model)
 
 
 class UsageExtractor:

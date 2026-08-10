@@ -39,7 +39,7 @@ from .diagnostics import (
 from .errors import BridgeError, ErrorCode
 from .product_cache import CachedResponse, ProductResponseCache
 from .routing import RouteTable
-from .usage_reporting import TokenUsage, UsageExtractor, UsageReporter
+from .usage_reporting import RequestUsageMetadata, TokenUsage, UsageExtractor, UsageReporter
 
 
 _HOP_BY_HOP = {
@@ -369,6 +369,14 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 max_body_bytes=server.bridge_config.protocol.max_request_body_bytes,
                 timeout=server.bridge_config.protocol.request_timeout_seconds,
             )
+            usage_metadata = None
+            if (
+                server.usage_reporter is not None
+                and method == "POST"
+                and route_name in {"chatgpt-codex", "openai"}
+            ):
+                usage_metadata = RequestUsageMetadata()
+                body = _capture_usage_metadata(body, usage_metadata)
             request_preview = bytearray()
             if server.diagnostics.level == "full" and family == "apps-mcp":
                 body = _capture_preview(body, request_preview)
@@ -405,7 +413,13 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 and metrics.token_usage is not None
                 and route_name is not None
             ):
-                server.usage_reporter.record(metrics.token_usage, route=route_name)
+                token_usage = (
+                    usage_metadata.apply(metrics.token_usage)
+                    if usage_metadata is not None
+                    else metrics.token_usage
+                )
+                if token_usage is not None:
+                    server.usage_reporter.record(token_usage, route=route_name)
             _LOG.info(
                 "request_complete request_id=%s route=%s family=%s method=%s status=%s response_head_ms=%s "
                 "first_body_ms=%s total_ms=%s complete=%s executor_queue_ms=%s fetch_head_ms=%s "
@@ -1014,6 +1028,14 @@ def _capture_preview(body: Iterable[bytes], preview: bytearray) -> Iterable[byte
         remaining = 4096 - len(preview)
         if remaining > 0:
             preview.extend(chunk[:remaining])
+        yield chunk
+
+
+def _capture_usage_metadata(
+    body: Iterable[bytes], metadata: RequestUsageMetadata
+) -> Iterable[bytes]:
+    for chunk in body:
+        metadata.feed(chunk)
         yield chunk
 
 
