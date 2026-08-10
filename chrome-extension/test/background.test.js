@@ -26,6 +26,7 @@ test("serializes native messages, caches the offscreen context, retries, and res
   const nativeMessages = eventTarget();
   const nativeDisconnect = eventTarget();
   const nativeOutbound = [];
+  const externalMessages = eventTarget();
   const offscreenInbound = [];
   let contextQueries = 0;
   let documentCreates = 0;
@@ -37,6 +38,7 @@ test("serializes native messages, caches the offscreen context, retries, and res
     postMessage(message) {
       nativeOutbound.push(message);
     },
+    disconnect() {},
   };
 
   const originalChrome = globalThis.chrome;
@@ -69,6 +71,7 @@ test("serializes native messages, caches the offscreen context, retries, and res
         return { ok: true };
       },
       onMessage: eventTarget(),
+      onMessageExternal: externalMessages,
       onInstalled: eventTarget(),
       onStartup: eventTarget(),
     },
@@ -167,6 +170,38 @@ test("serializes native messages, caches the offscreen context, retries, and res
       state: { ready: true, restart_vscode_required: false },
     });
     assert.equal((await antigravityResponse).state.ready, true);
+
+    const deviceResponse = new Promise((resolve) => {
+      const handled = externalMessages.emit(
+        {
+          kind: "device-config:apply",
+          config: {
+            machineId: "11111111-1111-4111-8111-111111111111",
+            machineName: "公司电脑-03",
+            reportToken: "device-token-secret-1234567890",
+            collectorUrl: "https://203.0.113.10:9443/v1/usage/events",
+            dashboardUrl: "https://203.0.113.10:9443/dashboard",
+          },
+        },
+        { id: "gjhcbooefgfcjbcdkjbbaljkoceghnkg" },
+        resolve,
+      );
+      assert.deepEqual(handled, [true]);
+    });
+    await waitFor(
+      () => nativeOutbound.some((message) => message.type === "control.device.apply"),
+      "device configuration request was not sent",
+    );
+    const deviceRequest = nativeOutbound.find((message) => message.type === "control.device.apply");
+    assert.equal(deviceRequest.config.machine_name, "公司电脑-03");
+    nativeMessages.emit({
+      v: 1,
+      type: "control.device.result",
+      id: deviceRequest.id,
+      ok: true,
+      state: { configured: true, restart_required: false },
+    });
+    assert.equal((await deviceResponse).ok, true);
 
     failNextSend = true;
     nativeMessages.emit({

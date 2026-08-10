@@ -28,6 +28,9 @@ export const MessageType = Object.freeze({
   CONTROL_ANTIGRAVITY_GET: "control.antigravity.get",
   CONTROL_ANTIGRAVITY_SETUP: "control.antigravity.setup",
   CONTROL_ANTIGRAVITY_RESULT: "control.antigravity.result",
+  CONTROL_DEVICE_GET: "control.device.get",
+  CONTROL_DEVICE_APPLY: "control.device.apply",
+  CONTROL_DEVICE_RESULT: "control.device.result",
 });
 
 export const ErrorCode = Object.freeze({

@@ -13,6 +13,7 @@ from .config import load_config
 from .antigravity_setup import AntigravitySetupController
 from .codex_login import CodexLoginError, run_codex_login
 from .dispatcher import NativeDispatcher
+from .device_config import DeviceConfigController
 from .errors import BridgeError
 from .framing import FramedMessageChannel
 from .forward_proxy import ForwardProxyError, run_forward_proxy
@@ -28,6 +29,12 @@ def run(config_path: Path) -> int:
     log = logging.getLogger("fanvpn_bridge.main")
     config = load_config(config_path)
     log.info("config_loaded pid=%s routes=%s", os.getpid(), ",".join(sorted(config.routes)))
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    cache_base = (
+        Path(local_app_data) / "FanVPNBridge"
+        if local_app_data
+        else Path.home() / ".fanvpn-bridge"
+    )
     channel = FramedMessageChannel(sys.stdin.buffer, sys.stdout.buffer)
     dispatcher = NativeDispatcher(
         channel,
@@ -37,15 +44,10 @@ def run(config_path: Path) -> int:
         request_timeout_seconds=config.protocol.request_timeout_seconds,
         mode_controller=CodexModeController(),
         antigravity_setup_controller=AntigravitySetupController(),
+        device_config_controller=DeviceConfigController(cache_base),
     )
     dispatcher.start()
     routes = RouteTable(config.routes)
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    cache_base = (
-        Path(local_app_data) / "FanVPNBridge"
-        if local_app_data
-        else Path.home() / ".fanvpn-bridge"
-    )
     product_cache = ProductResponseCache(
         persistent_directory=cache_base / "product-cache-v1"
     )

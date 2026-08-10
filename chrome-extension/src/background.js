@@ -12,6 +12,7 @@ const NATIVE_HOST_NAME = "com.fanvpn.bridge";
 const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 const OFFSCREEN_PATH = "offscreen.html";
+const BROWSER_GATEWAY_EXTENSION_ID = "gjhcbooefgfcjbcdkjbbaljkoceghnkg";
 const ANTIGRAVITY_HOST = "daily-cloudcode-pa.googleapis.com";
 const ANTIGRAVITY_USER_AGENT_RULE_ID = 1001;
 const CONTROL_HANDSHAKE_TIMEOUT_MS = 5000;
@@ -180,7 +181,8 @@ async function handleNativeMessage(message, port) {
   }
   if (
     message.type === MessageType.CONTROL_MODE_RESULT ||
-    message.type === MessageType.CONTROL_ANTIGRAVITY_RESULT
+    message.type === MessageType.CONTROL_ANTIGRAVITY_RESULT ||
+    message.type === MessageType.CONTROL_DEVICE_RESULT
   ) {
     const pending = pendingControls.get(message.id);
     if (!pending) return;
@@ -342,6 +344,25 @@ async function requestAntigravityControl(kind) {
   });
 }
 
+async function requestDeviceControl(kind, config = null) {
+  await waitForNativeHandshake();
+  const id = crypto.randomUUID().replaceAll("-", "");
+  const type = kind === "apply" ? MessageType.CONTROL_DEVICE_APPLY : MessageType.CONTROL_DEVICE_GET;
+  const fields = kind === "apply" ? { id, config } : { id };
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pendingControls.delete(id);
+      reject(new Error("设备配置超时"));
+    }, CONTROL_TIMEOUT_MS);
+    pendingControls.set(id, { resolve, reject, timeout });
+    if (!postNative(envelope(type, fields))) {
+      pendingControls.delete(id);
+      clearTimeout(timeout);
+      reject(new Error("Native Host 当前不可用"));
+    }
+  });
+}
+
 async function waitForNativeHandshake() {
   connectNative();
   const deadline = Date.now() + CONTROL_HANDSHAKE_TIMEOUT_MS;
@@ -431,6 +452,39 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       .catch((error) => sendResponse({ ok: false, message: error.message }));
     return true;
   }
+  return false;
+});
+
+chrome.runtime.onMessageExternal?.addListener((message, sender, sendResponse) => {
+  if (sender.id !== BROWSER_GATEWAY_EXTENSION_ID) {
+    sendResponse({ ok: false, message: "不受信任的扩展" });
+    return false;
+  }
+  if (message?.kind === "device-config:get") {
+    requestDeviceControl("get")
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, message: error.message }));
+    return true;
+  }
+  if (message?.kind === "device-config:apply") {
+    const value = message.config ?? {};
+    requestDeviceControl("apply", {
+      machine_id: value.machineId,
+      machine_name: value.machineName,
+      report_token: value.reportToken,
+      collector_url: value.collectorUrl,
+      dashboard_url: value.dashboardUrl,
+    })
+      .then((result) => {
+        sendResponse(result);
+        if (result?.ok === true && result?.state?.restart_required) {
+          setTimeout(() => nativePort?.disconnect(), 250);
+        }
+      })
+      .catch((error) => sendResponse({ ok: false, message: error.message }));
+    return true;
+  }
+  sendResponse({ ok: false, message: "不支持的外部操作" });
   return false;
 });
 

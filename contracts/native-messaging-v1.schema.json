@@ -20,7 +20,10 @@
     { "$ref": "#/$defs/controlModeResult" },
     { "$ref": "#/$defs/controlAntigravityGet" },
     { "$ref": "#/$defs/controlAntigravitySetup" },
-    { "$ref": "#/$defs/controlAntigravityResult" }
+    { "$ref": "#/$defs/controlAntigravityResult" },
+    { "$ref": "#/$defs/controlDeviceGet" },
+    { "$ref": "#/$defs/controlDeviceApply" },
+    { "$ref": "#/$defs/controlDeviceResult" }
   ],
   "$defs": {
     "protocolVersion": { "const": 1 },
@@ -368,6 +371,67 @@
             "id": { "$ref": "#/$defs/requestId" },
             "ok": { "type": "boolean" },
             "state": { "$ref": "#/$defs/antigravitySetupState" },
+            "message": { "type": "string", "maxLength": 512 }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "controlDeviceGet": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "id"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "control.device.get" },
+            "id": { "$ref": "#/$defs/requestId" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "deviceConfiguration": {
+      "type": "object",
+      "required": ["machine_id", "machine_name", "report_token", "collector_url", "dashboard_url"],
+      "properties": {
+        "machine_id": { "type": "string", "minLength": 36, "maxLength": 64 },
+        "machine_name": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "report_token": { "type": "string", "minLength": 20, "maxLength": 512 },
+        "collector_url": { "type": "string", "minLength": 12, "maxLength": 1024 },
+        "dashboard_url": { "type": "string", "minLength": 12, "maxLength": 1024 }
+      },
+      "additionalProperties": false
+    },
+    "controlDeviceApply": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "id", "config"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "control.device.apply" },
+            "id": { "$ref": "#/$defs/requestId" },
+            "config": { "$ref": "#/$defs/deviceConfiguration" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "controlDeviceResult": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "id", "ok"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "control.device.result" },
+            "id": { "$ref": "#/$defs/requestId" },
+            "ok": { "type": "boolean" },
+            "state": { "type": "object" },
             "message": { "type": "string", "maxLength": 512 }
           },
           "additionalProperties": false

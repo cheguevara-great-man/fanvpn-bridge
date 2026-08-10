@@ -13,7 +13,19 @@ Browser AI Bridge 负责在每台 Windows 电脑上采集并上报用量；中�
 
 不会上传提示词、回复正文、文件、工作区路径、Cookie、OpenAI 登录 Token 或 API Key。
 
-## 在一台电脑上启用
+## 在一台电脑上启用（推荐）
+
+1. 管理员在 Browser Gateway 的中央统计网页进入“设备额度”，输入设备名称并生成一次性注册码。
+2. 确认 Browser Gateway 扩展为 `0.3.0+`、FanVPN AI Bridge 与 Native Host 为 `3.4.0+`；在目标电脑
+   打开 Browser Gateway 插件，填写统计服务器和注册码，点击“注册这台设备”。
+3. Browser Gateway 插件会同时保存代理配置，并通过受限的扩展间消息把设备身份交给 FanVPN AI
+   Bridge；Native Host 原子写入 `usage-reporting.json` 后自动重连。
+4. 以后点击 Browser Gateway 插件中的“打开用量统计”，即可使用设备只读身份查看网页。
+
+所有电脑的设备权限相同：使用 Gateway、上报自己的用量、只读查看统计。管理员权限只属于中央网站
+的管理员账号，与具体电脑无关。
+
+## 旧版文件方式
 
 把服务器生成的 `deployment.local.json` 放到：
 

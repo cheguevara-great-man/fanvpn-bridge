@@ -20,6 +20,7 @@ from .contracts import (
     ResponseSink,
 )
 from .errors import BridgeError, ErrorCode
+from .device_config import DeviceConfigController, DeviceConfigError
 from .mode_control import CodexModeController, ModeControlError, SUPPORTED_MODES
 from .protocol import (
     FlowWindow,
@@ -31,7 +32,7 @@ from .protocol import (
 )
 
 
-HOST_VERSION = "3.3.1"
+HOST_VERSION = "3.4.0"
 _LOG = logging.getLogger("fanvpn_bridge.dispatcher")
 _LOG.addHandler(logging.NullHandler())
 
@@ -57,6 +58,7 @@ class NativeDispatcher:
         max_active_requests: int = 16,
         mode_controller: CodexModeController | None = None,
         antigravity_setup_controller: AntigravitySetupController | None = None,
+        device_config_controller: DeviceConfigController | None = None,
     ) -> None:
         self._channel = channel
         self._max_chunk_bytes = max_chunk_bytes
@@ -65,6 +67,7 @@ class NativeDispatcher:
         self._request_timeout = request_timeout_seconds
         self._mode_controller = mode_controller
         self._antigravity_setup_controller = antigravity_setup_controller
+        self._device_config_controller = device_config_controller
         self._control_lock = threading.Lock()
         self._pending: dict[str, _PendingRequest] = {}
         self._pending_lock = threading.Lock()
@@ -275,6 +278,9 @@ class NativeDispatcher:
             return
         if message_type in {"control.antigravity.get", "control.antigravity.setup"}:
             self._start_antigravity_control(message_type, message)
+            return
+        if message_type in {"control.device.get", "control.device.apply"}:
+            self._start_device_control(message_type, message)
             return
 
         request_id = message.get("id")
@@ -503,6 +509,50 @@ class NativeDispatcher:
             fields["message"] = message[:512]
         try:
             self._channel.send(envelope("control.antigravity.result", **fields))
+        except Exception:
+            return
+
+    def _start_device_control(self, message_type: str, message: Mapping[str, object]) -> None:
+        request_id = message.get("id")
+        if not isinstance(request_id, str) or not 16 <= len(request_id) <= 64:
+            raise BridgeError(ErrorCode.PROTOCOL_VIOLATION, "Invalid control request id")
+        threading.Thread(
+            target=self._run_device_control,
+            args=(request_id, message.get("config") if message_type.endswith(".apply") else None),
+            name="fanvpn-device-config",
+            daemon=True,
+        ).start()
+
+    def _run_device_control(self, request_id: str, config: object | None) -> None:
+        if not self._control_lock.acquire(blocking=False):
+            self._send_device_result(request_id, ok=False, message="Another Bridge configuration task is running")
+            return
+        try:
+            if self._device_config_controller is None:
+                raise DeviceConfigError("Device configuration is unavailable in this Native Host")
+            state = (
+                self._device_config_controller.status()
+                if config is None else self._device_config_controller.apply(config)
+            )
+            self._send_device_result(request_id, ok=True, state=state)
+        except DeviceConfigError as error:
+            self._send_device_result(request_id, ok=False, message=str(error))
+        except Exception:
+            self._send_device_result(request_id, ok=False, message="Device configuration failed unexpectedly")
+        finally:
+            self._control_lock.release()
+
+    def _send_device_result(
+        self, request_id: str, *, ok: bool, state: Mapping[str, object] | None = None,
+        message: str | None = None,
+    ) -> None:
+        fields: dict[str, object] = {"id": request_id, "ok": ok}
+        if state is not None:
+            fields["state"] = dict(state)
+        if message:
+            fields["message"] = message[:512]
+        try:
+            self._channel.send(envelope("control.device.result", **fields))
         except Exception:
             return
 
