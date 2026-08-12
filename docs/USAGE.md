@@ -256,6 +256,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File `
 Browser Full 必须通过扩展弹窗、上面的启动脚本或对应桌面入口打开。只运行
 `set_codex_network_mode.ps1` 再手工打开 VS Code 不会带入进程级 MCP 认证标记。
 
+使用配套 CC Switch 构建时，可以先完全关闭 VS Code，再在 CC 的 Codex 页面选择
+`OpenAI Login (Browser Bridge)`。CC 会保留 `auth.json`、清除第三方 API Key，随后从 Chrome
+当前注册的 Native Host 自动定位 Bridge 3.4.1+ 的 Browser Full 启动器并打开 VS Code；安装目录和
+当前 A/B 槽位不需要手工填写。如果 VS Code 尚未关闭、Bridge 太旧或未注册，CC 只保留已经完成的
+OpenAI 配置切换并给出提示，此时关闭 VS Code 后点击扩展弹窗的“浏览器完整”即可。
+
 直连模式会按需启动本地 `18889`，并只给这次启动的 VS Code 传入代理参数和环境变量；
 不会改 Windows 全局代理，也不会影响其他已经运行的软件。浏览器模式会停止 `18889`，
 但不会关闭 Chrome、修改浏览器代理扩展或改变 Clash 设置。
