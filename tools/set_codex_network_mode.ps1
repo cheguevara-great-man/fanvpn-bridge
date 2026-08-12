@@ -86,6 +86,18 @@ $providerPattern = '(?ms)^' + [regex]::Escape($providerBegin) + '.*?^' +
     [regex]::Escape($providerEnd) + '\s*'
 $content = [regex]::Replace($content, $providerPattern, '')
 
+# CC Switch stores a complete provider table in each profile.  When one of
+# those profiles is selected after a Bridge-managed mode, the markers above
+# disappear but the provider table remains.  Remove only the two names owned by
+# this script before appending their canonical definitions; otherwise the
+# resulting TOML contains duplicate tables and Codex may only partially load
+# product features such as Apps and plugins.
+foreach ($managedProviderName in @('browser_ai_bridge', 'browser_ai_direct')) {
+    $unmanagedProviderPattern = '(?ms)^\s*\[model_providers\.' +
+        [regex]::Escape($managedProviderName) + '\]\s*(?:\r?\n|$).*?(?=^\s*\[|\z)'
+    $content = [regex]::Replace($content, $unmanagedProviderPattern, '')
+}
+
 # Preserve the user's original ChatGPT product-backend setting while switching
 # between Browser Full and the modes that do not use the experimental route.
 $chatgptBegin = '# BEGIN Browser AI Bridge managed ChatGPT base URL'

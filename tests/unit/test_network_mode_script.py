@@ -183,6 +183,37 @@ class NetworkModeScriptTests(unittest.TestCase):
             self.assertNotIn("chatgpt_base_url", direct)
             self.assertNotIn("chatgpt-backend", direct)
 
+    def test_cc_switch_provider_snapshot_is_replaced_without_duplicate_tables(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            codex_home = Path(directory)
+            config_path = codex_home / "config.toml"
+            config_path.write_text(
+                'model_provider = "browser_ai_bridge"\n\n'
+                '[model_providers.browser_ai_bridge]\n'
+                'name = "CC Switch snapshot"\n'
+                'base_url = "http://127.0.0.1:18888/chatgpt-codex"\n'
+                'requires_openai_auth = true\n'
+                'wire_api = "responses"\n'
+                'supports_websockets = false\n\n'
+                '[windows]\nsandbox = "unelevated"\n',
+                encoding="utf-8",
+            )
+
+            full = self.run_mode(codex_home, "BrowserFull")
+
+            self.assertEqual(
+                full.count("[model_providers.browser_ai_bridge]"), 1
+            )
+            self.assertEqual(
+                full.count("[model_providers.browser_ai_direct]"), 1
+            )
+            self.assertNotIn("CC Switch snapshot", full)
+            self.assertIn('[windows]\nsandbox = "unelevated"', full)
+            self.assertIn(
+                'chatgpt_base_url = "http://127.0.0.1:18888/chatgpt-backend/backend-api/"',
+                full,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
