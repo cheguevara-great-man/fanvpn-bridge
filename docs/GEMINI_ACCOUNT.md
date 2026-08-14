@@ -50,9 +50,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File `
 ## 模型与强度
 
 Bridge 从当前 Google 账号动态读取可用模型目录。切换按钮会临时把 Codex 当前模型设为
-`gemini-3.6-flash-high`，让 VS Code 显示和真实模型保持一致；切回其他模式时会精确恢复原来的模型行。
-如果客户端仍请求非 Gemini 模型，Provider 也会安全地映射到该默认模型。可在 Codex 配置或启动参数中
-选择账号实际返回的其他 `gemini-*` 模型。
+`gemini-3.6-flash-high`，并生成一份仅供该模式使用的 Codex 模型目录。重新打开 VS Code 后，编辑框下方的
+模型菜单会显示 Gemini 3.6 Flash、Gemini 3.1 Pro 和 Gemini 2.5 Pro，而不是继续显示 GPT 型号。
+
+生成目录会复用当前 Codex 自带模型目录中的 Agent 指令和工具元数据，因此 Shell、文件编辑、MCP 和 Skills
+仍由 Codex 驱动。切回其他模式时，脚本会精确恢复原来的 `model` 与 `model_catalog_json` 设置，不影响
+OpenAI 或 CC Switch 的模型目录。如果客户端仍请求非 Gemini 模型，Provider 也会安全地映射到默认模型。
+
+注意：Codex 目前会用 OpenAI 登录状态决定是否显示自定义模型菜单，因此 Gemini 模式仍要求 Codex 中保留
+有效的 OpenAI 登录；OpenAI Token 只会发到本机 `127.0.0.1` 的 Bridge，不会转发给 Google。实际推理和
+额度消耗仍来自 Google 账号。
 
 Codex 的 `reasoning.effort` 会映射为 Gemini 的思考强度。Google 可能调整账号可用模型、额度和命名，
 因此模型目录以当前账号实时返回为准。

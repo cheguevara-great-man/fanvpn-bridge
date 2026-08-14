@@ -101,9 +101,15 @@ class NetworkModeScriptTests(unittest.TestCase):
                 'base_url = "http://127.0.0.1:18888/gemini-account/v1"',
                 gemini,
             )
-            self.assertIn("requires_openai_auth = false", gemini)
+            self.assertIn("requires_openai_auth = true", gemini)
             self.assertIn("apps = false", gemini)
             self.assertIn('model = "gemini-3.6-flash-high"', gemini)
+            self.assertIn("managed Gemini model catalog", gemini)
+            catalog_path = codex_home / "browser-ai-bridge-gemini-models.json"
+            self.assertTrue(catalog_path.exists())
+            catalog = catalog_path.read_text(encoding="utf-8")
+            self.assertIn('"slug":  "gemini-3.6-flash-high"', catalog)
+            self.assertIn('"slug":  "gemini-3.1-pro-high"', catalog)
             self.assertNotIn('model = "gpt-user-default"', gemini)
             self.assertIn("managed Gemini model", gemini)
 
@@ -115,6 +121,7 @@ class NetworkModeScriptTests(unittest.TestCase):
             self.assertIn('model = "gpt-user-default"', direct)
             self.assertNotIn('model = "gemini-3.6-flash-high"', direct)
             self.assertNotIn("managed Gemini model", direct)
+            self.assertNotIn("model_catalog_json", direct)
             self.assertIn("apps = true", direct)
             self.assertNotIn("managed lean mode", direct)
 

@@ -79,6 +79,107 @@ function ConvertFrom-RestoreValue {
     }
 }
 
+function Set-ObjectProperty {
+    param(
+        [Parameter(Mandatory)]$Object,
+        [Parameter(Mandatory)][string]$Name,
+        [AllowNull()]$Value
+    )
+    $Object | Add-Member -NotePropertyName $Name -NotePropertyValue $Value -Force
+}
+
+function New-GeminiModelCatalog {
+    param(
+        [Parameter(Mandatory)][string]$TargetPath,
+        [Parameter(Mandatory)][string]$HomePath
+    )
+
+    $template = $null
+    $cachePath = Join-Path $HomePath 'models_cache.json'
+    if (Test-Path -LiteralPath $cachePath) {
+        try {
+            $cache = [System.IO.File]::ReadAllText($cachePath) | ConvertFrom-Json
+            $template = @($cache.models | Where-Object {
+                $_.slug -eq 'gpt-5.6-terra' -and $_.model_messages.instructions_template
+            }) | Select-Object -First 1
+            if (-not $template) {
+                $template = @($cache.models | Where-Object {
+                    $_.visibility -eq 'list' -and $_.model_messages.instructions_template
+                }) | Select-Object -First 1
+            }
+        } catch {
+            $template = $null
+        }
+    }
+
+    if (-not $template) {
+        $repositoryRoot = Split-Path -Parent $PSScriptRoot
+        $fallbackPath = Join-Path $repositoryRoot 'config\gemini-account-model-template.json'
+        if (-not (Test-Path -LiteralPath $fallbackPath)) {
+            throw 'Gemini model catalog template is missing.'
+        }
+        $template = ([System.IO.File]::ReadAllText($fallbackPath) | ConvertFrom-Json).template
+    }
+
+    $specifications = @(
+        @('gemini-3.6-flash-high', 'Gemini 3.6 Flash High'),
+        @('gemini-3.6-flash-medium', 'Gemini 3.6 Flash Medium'),
+        @('gemini-3.6-flash-low', 'Gemini 3.6 Flash Low'),
+        @('gemini-3.1-pro-high', 'Gemini 3.1 Pro High'),
+        @('gemini-3.1-pro-low', 'Gemini 3.1 Pro Low'),
+        @('gemini-2.5-pro', 'Gemini 2.5 Pro')
+    )
+    $models = New-Object System.Collections.Generic.List[object]
+    foreach ($specification in $specifications) {
+        # A JSON round trip performs a deep copy. This keeps each model's
+        # nested instruction and reasoning objects independent.
+        $model = ($template | ConvertTo-Json -Depth 100 | ConvertFrom-Json)
+        Set-ObjectProperty $model 'slug' $specification[0]
+        Set-ObjectProperty $model 'display_name' $specification[1]
+        Set-ObjectProperty $model 'description' 'Google account model through Browser AI Bridge'
+        Set-ObjectProperty $model 'priority' ($models.Count + 1)
+        Set-ObjectProperty $model 'visibility' 'list'
+        Set-ObjectProperty $model 'supported_in_api' $true
+        Set-ObjectProperty $model 'prefer_websockets' $false
+        Set-ObjectProperty $model 'use_responses_lite' $false
+        Set-ObjectProperty $model 'default_reasoning_level' 'medium'
+        Set-ObjectProperty $model 'supported_reasoning_levels' @(
+            [pscustomobject]@{ effort = 'low'; description = 'Fast responses with lighter reasoning' },
+            [pscustomobject]@{ effort = 'medium'; description = 'Balanced speed and reasoning' },
+            [pscustomobject]@{ effort = 'high'; description = 'Deeper reasoning for complex tasks' }
+        )
+        foreach ($property in @(
+            'availability_nux', 'upgrade', 'available_in_plans',
+            'default_service_tier', 'service_tiers', 'additional_speed_tiers',
+            # `code_mode_only` changes the shell tool to an OpenAI-specific
+            # exec payload. Gemini uses the portable shell_command contract.
+            'tool_mode'
+        )) {
+            $model.PSObject.Properties.Remove($property)
+        }
+        if ($model.model_messages.instructions_template) {
+            $instructions = [string]$model.model_messages.instructions_template
+            $instructions = [regex]::Replace(
+                $instructions,
+                '^You are Codex, an agent based on GPT-5\.',
+                'You are Codex, an agent powered by Gemini. You remain the coding agent and use the tools supplied by Codex.'
+            )
+            $model.model_messages.instructions_template = $instructions
+        }
+        $models.Add($model)
+    }
+
+    $catalogJson = @{ models = $models.ToArray() } | ConvertTo-Json -Depth 100
+    $temporaryCatalog = "$TargetPath.tmp.$PID"
+    $utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
+    try {
+        [System.IO.File]::WriteAllText($temporaryCatalog, $catalogJson, $utf8WithoutBom)
+        Move-Item -LiteralPath $temporaryCatalog -Destination $TargetPath -Force
+    } finally {
+        Remove-Item -LiteralPath $temporaryCatalog -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # Remove provider definitions written by an earlier run; fresh definitions are appended below.
 $providerBegin = '# BEGIN Browser AI Bridge managed network providers'
 $providerEnd = '# END Browser AI Bridge managed network providers'
@@ -166,13 +267,73 @@ $chatgptEnd
     $content = $chatgptManaged.Trim() + "`r`n" + $content.TrimStart()
 }
 
+# The IDE model picker reads Codex's model catalog, not only the `model`
+# setting. Gemini mode installs a generated catalog based on the current Codex
+# metadata, then restores the user's exact catalog setting on exit.
+$geminiCatalogBegin = '# BEGIN Browser AI Bridge managed Gemini model catalog'
+$geminiCatalogEnd = '# END Browser AI Bridge managed Gemini model catalog'
+$geminiCatalogPattern = '(?ms)^' + [regex]::Escape($geminiCatalogBegin) + '.*?^' +
+    [regex]::Escape($geminiCatalogEnd) + '\s*'
+$geminiCatalogMatch = [regex]::Match($content, $geminiCatalogPattern)
+$previousCatalogLine = $null
+if ($geminiCatalogMatch.Success) {
+    $saved = [regex]::Match(
+        $geminiCatalogMatch.Value,
+        '(?m)^# previous-model-catalog-base64: (?<value>[A-Za-z0-9+/=]+|absent)\s*$'
+    )
+    if (-not $saved.Success) {
+        throw 'Managed Gemini model catalog block is missing its restore metadata.'
+    }
+    $previousCatalogLine = ConvertFrom-RestoreValue $saved.Groups['value'].Value
+    $content = [regex]::Replace($content, $geminiCatalogPattern, '', 1)
+}
+
+$firstTable = [regex]::Match($content, '(?m)^\s*\[')
+$topLength = if ($firstTable.Success) { $firstTable.Index } else { $content.Length }
+$top = $content.Substring(0, $topLength)
+$tables = $content.Substring($topLength)
+if ($previousCatalogLine -and -not [regex]::IsMatch($top, '(?m)^\s*model_catalog_json\s*=')) {
+    $top = $previousCatalogLine + "`r`n" + $top.TrimStart()
+}
+$content = $top + $tables
+
+if ($effectiveMode -eq 'GeminiAccount') {
+    $firstTable = [regex]::Match($content, '(?m)^\s*\[')
+    $topLength = if ($firstTable.Success) { $firstTable.Index } else { $content.Length }
+    $top = $content.Substring(0, $topLength)
+    $tables = $content.Substring($topLength)
+    $existingCatalog = [regex]::Match($top, '(?m)^\s*model_catalog_json\s*=.*$')
+    $catalogRestoreValue = 'absent'
+    if ($existingCatalog.Success) {
+        $originalCatalogLine = $existingCatalog.Value.TrimEnd("`r", "`n")
+        $catalogRestoreValue = ConvertTo-RestoreValue $originalCatalogLine
+        $top = [regex]::Replace(
+            $top,
+            '(?m)^\s*model_catalog_json\s*=.*(?:\r?\n|$)',
+            '',
+            1
+        )
+    }
+    $catalogPath = Join-Path $directory 'browser-ai-bridge-gemini-models.json'
+    New-GeminiModelCatalog -TargetPath $catalogPath -HomePath $directory
+    $catalogTomlPath = $catalogPath.Replace('\', '/')
+    $geminiCatalogBlock = @(
+        $geminiCatalogBegin,
+        "# previous-model-catalog-base64: $catalogRestoreValue",
+        "model_catalog_json = `"$catalogTomlPath`"",
+        $geminiCatalogEnd
+    )
+    $content = ($geminiCatalogBlock -join "`r`n") + "`r`n`r`n" +
+        $top.TrimStart() + $tables.TrimStart()
+}
+
 # Gemini account mode must also change the visible/current model.  Keeping a
 # GPT slug here makes the VS Code selector and conversation metadata claim GPT
 # even though the provider maps the request to Gemini.  Preserve the user's
 # exact original line and restore it when leaving Gemini mode.
 $geminiModelBegin = '# BEGIN Browser AI Bridge managed Gemini model'
 $geminiModelEnd = '# END Browser AI Bridge managed Gemini model'
-$geminiModelPattern = '(?ms)^' + [regex]::Escape($geminiModelBegin) + '.*?^' +
+$geminiModelPattern = '(?ms)^' + [regex]::Escape($geminiModelBegin) + '\r?\n.*?^' +
     [regex]::Escape($geminiModelEnd) + '\s*'
 $geminiModelMatch = [regex]::Match($content, $geminiModelPattern)
 $previousModelLine = $null
@@ -339,12 +500,22 @@ supports_websockets = false
 [model_providers.browser_ai_gemini_account]
 name = "Gemini through Google account (Codex agent)"
 base_url = "http://127.0.0.1:18888/gemini-account/v1"
-requires_openai_auth = false
+# Current VS Code builds gate the model picker behind Codex authentication,
+# even for a local custom provider. The bearer token is accepted only by the
+# loopback Bridge and is never forwarded to Google.
+requires_openai_auth = true
 wire_api = "responses"
 supports_websockets = false
 $providerEnd
 "@
 $content = $content.TrimEnd() + "`r`n`r`n" + $managedProviders.Trim() + "`r`n"
+
+# Keep the generated catalog block stable across repeated button clicks.
+$content = [regex]::Replace(
+    $content,
+    '(?ms)^(# END Browser AI Bridge managed Gemini model catalog)\s*(?=^\[)',
+    "`$1`r`n`r`n"
+)
 
 if (Test-Path -LiteralPath $configPath) {
     $backupPath = "$configPath.before-network-mode.bak"

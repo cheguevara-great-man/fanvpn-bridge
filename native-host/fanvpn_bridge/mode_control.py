@@ -116,6 +116,7 @@ class CodexModeController:
         managed_paths = (
             self._codex_home / "config.toml",
             Path(str(self._codex_home / "config.toml") + ".before-network-mode.bak"),
+            self._codex_home / "browser-ai-bridge-gemini-models.json",
             self._settings_path,
             Path(str(self._settings_path) + ".before-network-mode.bak"),
             self._state_path,

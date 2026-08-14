@@ -119,6 +119,12 @@ try {
 
 $outputDirectory = Join-Path $distDirectory 'browser-ai-bridge'
 Copy-Item -LiteralPath (Join-Path $root 'config\routes.example.json') -Destination (Join-Path $outputDirectory 'routes.json') -Force
+$outputConfig = Join-Path $outputDirectory 'config'
+New-Item -ItemType Directory -Path $outputConfig -Force | Out-Null
+Copy-Item `
+    -LiteralPath (Join-Path $root 'config\gemini-account-model-template.json') `
+    -Destination (Join-Path $outputConfig 'gemini-account-model-template.json') `
+    -Force
 $outputTools = Join-Path $outputDirectory 'tools'
 New-Item -ItemType Directory -Path $outputTools -Force | Out-Null
 foreach ($scriptName in @(
