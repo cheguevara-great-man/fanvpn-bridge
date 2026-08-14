@@ -32,7 +32,7 @@ from .protocol import (
 )
 
 
-HOST_VERSION = "3.5.0"
+HOST_VERSION = "3.5.1"
 _LOG = logging.getLogger("fanvpn_bridge.dispatcher")
 _LOG.addHandler(logging.NullHandler())
 

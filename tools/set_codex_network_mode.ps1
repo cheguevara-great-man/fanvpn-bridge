@@ -166,6 +166,58 @@ $chatgptEnd
     $content = $chatgptManaged.Trim() + "`r`n" + $content.TrimStart()
 }
 
+# Gemini account mode must also change the visible/current model.  Keeping a
+# GPT slug here makes the VS Code selector and conversation metadata claim GPT
+# even though the provider maps the request to Gemini.  Preserve the user's
+# exact original line and restore it when leaving Gemini mode.
+$geminiModelBegin = '# BEGIN Browser AI Bridge managed Gemini model'
+$geminiModelEnd = '# END Browser AI Bridge managed Gemini model'
+$geminiModelPattern = '(?ms)^' + [regex]::Escape($geminiModelBegin) + '.*?^' +
+    [regex]::Escape($geminiModelEnd) + '\s*'
+$geminiModelMatch = [regex]::Match($content, $geminiModelPattern)
+$previousModelLine = $null
+if ($geminiModelMatch.Success) {
+    $saved = [regex]::Match(
+        $geminiModelMatch.Value,
+        '(?m)^# previous-model-base64: (?<value>[A-Za-z0-9+/=]+|absent)\s*$'
+    )
+    if (-not $saved.Success) {
+        throw 'Managed Gemini model block is missing its restore metadata.'
+    }
+    $previousModelLine = ConvertFrom-RestoreValue $saved.Groups['value'].Value
+    $content = [regex]::Replace($content, $geminiModelPattern, '', 1)
+}
+
+$firstTable = [regex]::Match($content, '(?m)^\s*\[')
+$topLength = if ($firstTable.Success) { $firstTable.Index } else { $content.Length }
+$top = $content.Substring(0, $topLength)
+$tables = $content.Substring($topLength)
+if ($previousModelLine -and -not [regex]::IsMatch($top, '(?m)^\s*model\s*=')) {
+    $top = $previousModelLine + "`r`n" + $top.TrimStart()
+}
+$content = $top + $tables
+
+if ($effectiveMode -eq 'GeminiAccount') {
+    $firstTable = [regex]::Match($content, '(?m)^\s*\[')
+    $topLength = if ($firstTable.Success) { $firstTable.Index } else { $content.Length }
+    $top = $content.Substring(0, $topLength)
+    $tables = $content.Substring($topLength)
+    $existingModel = [regex]::Match($top, '(?m)^\s*model\s*=.*$')
+    $restoreValue = 'absent'
+    if ($existingModel.Success) {
+        $originalModelLine = $existingModel.Value.TrimEnd("`r", "`n")
+        $restoreValue = ConvertTo-RestoreValue $originalModelLine
+        $top = [regex]::Replace($top, '(?m)^\s*model\s*=.*(?:\r?\n|$)', '', 1)
+    }
+    $geminiModelBlock = @(
+        $geminiModelBegin,
+        "# previous-model-base64: $restoreValue",
+        'model = "gemini-3.6-flash-high"',
+        $geminiModelEnd
+    )
+    $content = ($geminiModelBlock -join "`r`n") + "`r`n`r`n" + $top.TrimStart() + $tables.TrimStart()
+}
+
 # Browser mode is deliberately lean: only the model Responses API is routed
 # through Chrome. Product-backend initialization is disabled until its endpoint
 # families can be added and tested independently. Direct mode restores the exact

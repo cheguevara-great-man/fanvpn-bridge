@@ -103,10 +103,18 @@ class NetworkModeScriptTests(unittest.TestCase):
             )
             self.assertIn("requires_openai_auth = false", gemini)
             self.assertIn("apps = false", gemini)
-            self.assertIn('model = "gpt-user-default"', gemini)
+            self.assertIn('model = "gemini-3.6-flash-high"', gemini)
+            self.assertNotIn('model = "gpt-user-default"', gemini)
+            self.assertIn("managed Gemini model", gemini)
+
+            gemini_second = self.run_mode(codex_home, "GeminiAccount")
+            self.assertEqual(gemini, gemini_second)
 
             direct = self.run_mode(codex_home, "Direct")
             self.assertIn('model_provider = "browser_ai_direct"', direct)
+            self.assertIn('model = "gpt-user-default"', direct)
+            self.assertNotIn('model = "gemini-3.6-flash-high"', direct)
+            self.assertNotIn("managed Gemini model", direct)
             self.assertIn("apps = true", direct)
             self.assertNotIn("managed lean mode", direct)
 

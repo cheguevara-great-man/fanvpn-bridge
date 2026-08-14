@@ -49,9 +49,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File `
 
 ## 模型与强度
 
-Bridge 从当前 Google 账号动态读取可用模型目录。默认使用 `gemini-3.6-flash-high`；如果 Codex 请求的
-模型名不是 Gemini 模型，会安全地映射到该默认模型。可在 Codex 配置或启动参数中选择账号实际返回的
-其他 `gemini-*` 模型。
+Bridge 从当前 Google 账号动态读取可用模型目录。切换按钮会临时把 Codex 当前模型设为
+`gemini-3.6-flash-high`，让 VS Code 显示和真实模型保持一致；切回其他模式时会精确恢复原来的模型行。
+如果客户端仍请求非 Gemini 模型，Provider 也会安全地映射到该默认模型。可在 Codex 配置或启动参数中
+选择账号实际返回的其他 `gemini-*` 模型。
 
 Codex 的 `reasoning.effort` 会映射为 Gemini 的思考强度。Google 可能调整账号可用模型、额度和命名，
 因此模型目录以当前账号实时返回为准。
