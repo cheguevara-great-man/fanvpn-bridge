@@ -18,6 +18,22 @@
 
 按钮不会安装通用代理、不会修改系统代理，也不会保存 Google 密码。
 
+### 首次账号登录
+
+“一键配置 Antigravity”负责安装和配置 CLI，但不会代替用户完成 Google 账号授权。首次使用时，
+先在普通 PowerShell 中运行：
+
+```powershell
+& "$env:LOCALAPPDATA\agy\bin\agy-browser.exe"
+```
+
+开头的调用运算符 `&` 不能省略；如果只输入带引号的路径，PowerShell 只会显示路径，不会启动
+程序。按 CLI 提示完成浏览器授权，确认命令行中可以正常对话后，完全退出并重新打开 VS Code。
+
+正常情况下，VS Code 扩展中的登录按钮也会打开独立 PowerShell 窗口。如果公司安全策略拦截
+子进程、窗口一闪而过或没有出现，直接使用上面的命令登录即可。登录信息由官方 CLI 保存在
+Windows 凭据管理器中，成功一次后无需每次重新登录。
+
 社区扩展 `lyadhgod.antigravity-vscode` 0.13.2 仍通过旧文件
 `~/.gemini/antigravity-cli/antigravity-oauth-token` 判断是否已经登录；Windows 版官方
 Antigravity CLI 1.1.5 已改用 Windows 凭据管理器，不再创建该文件。项目内置的 Windows

@@ -91,7 +91,8 @@ Codex、Claude Code 或 CC Switch。
 不需要手工输入三种模式的 provider。“服务器直连”只有在完成可选直连安装后才能使用。
 
 使用 Antigravity 时，在同一弹窗点击“一键配置 Antigravity”，完成后重启一次 VS Code。按钮显示
-“已配置”后，日常使用只需从 VS Code 的 Antigravity 面板新建会话，不需要再次运行安装命令。
+“已配置”后，首次使用还需按 [Antigravity 登录说明](docs/ANTIGRAVITY_CLI.md#首次账号登录)在
+PowerShell 中完成一次 Google 授权；此后只需从 VS Code 的 Antigravity 面板新建会话。
 
 如果还部署了配套的自有 HTTPS 代理，可按[安装文档](docs/INSTALLATION.md#可选安装-vs-code-直连模式)
 安装可选直连模式，再按[客户端使用指南](docs/USAGE.md#三种-vs-code-网络模式)选择入口。
