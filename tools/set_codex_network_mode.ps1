@@ -4,7 +4,9 @@ param(
     [ValidateSet('Browser', 'BrowserLean', 'BrowserFull', 'Direct', 'GeminiAccount')]
     [string]$Mode,
 
-    [string]$CodexHome = (Join-Path $HOME '.codex')
+    [string]$CodexHome = (Join-Path $HOME '.codex'),
+
+    [string]$GeminiModelsJson
 )
 
 $ErrorActionPreference = 'Stop'
@@ -91,7 +93,8 @@ function Set-ObjectProperty {
 function New-GeminiModelCatalog {
     param(
         [Parameter(Mandatory)][string]$TargetPath,
-        [Parameter(Mandatory)][string]$HomePath
+        [Parameter(Mandatory)][string]$HomePath,
+        [string[]]$AvailableModels
     )
 
     $template = $null
@@ -121,21 +124,48 @@ function New-GeminiModelCatalog {
         $template = ([System.IO.File]::ReadAllText($fallbackPath) | ConvertFrom-Json).template
     }
 
-    $specifications = @(
-        @('gemini-3.6-flash-high', 'Gemini 3.6 Flash High'),
-        @('gemini-3.6-flash-medium', 'Gemini 3.6 Flash Medium'),
-        @('gemini-3.6-flash-low', 'Gemini 3.6 Flash Low'),
-        @('gemini-3.1-pro-high', 'Gemini 3.1 Pro High'),
-        @('gemini-3.1-pro-low', 'Gemini 3.1 Pro Low'),
-        @('gemini-2.5-pro', 'Gemini 2.5 Pro')
-    )
+    $modelIds = @($AvailableModels | Where-Object {
+        $_ -match '^gemini-[a-z0-9.-]+$' -and
+        $_ -notmatch '(?:^|-)image(?:-|$)' -and
+        $_ -notmatch '(?:^|-)agent(?:-|$)'
+    } | Sort-Object -Unique)
+    if ($modelIds.Count -eq 0) {
+        $modelIds = @(
+            'gemini-3.7-flash-tiered',
+            'gemini-3.6-flash-tiered',
+            'gemini-3.6-flash-high',
+            'gemini-3.1-pro-high',
+            'gemini-2.5-pro'
+        )
+    }
+
+    $rankedModels = @($modelIds | ForEach-Object {
+        $version = [version]'0.0'
+        if ($_ -match '^gemini-(?<version>\d+(?:\.\d+){0,3})-') {
+            [void][version]::TryParse($Matches['version'], [ref]$version)
+        }
+        $tier = if ($_ -match '(?:^|-)tiered(?:-|$)') { 5 }
+            elseif ($_ -match '(?:^|-)high(?:-|$)') { 4 }
+            elseif ($_ -match '(?:^|-)pro(?:-|$)') { 3 }
+            elseif ($_ -match '(?:^|-)medium(?:-|$)') { 2 }
+            elseif ($_ -match '(?:^|-)low(?:-|$)') { 1 }
+            else { 0 }
+        [pscustomobject]@{ Id = $_; Version = $version; Tier = $tier }
+    } | Sort-Object Version, Tier, Id -Descending)
+    $defaultModel = $rankedModels[0].Id
+
     $models = New-Object System.Collections.Generic.List[object]
-    foreach ($specification in $specifications) {
+    foreach ($rankedModel in $rankedModels) {
+        $modelId = $rankedModel.Id
+        $displayName = (($modelId -split '-') | ForEach-Object {
+            if ($_ -match '^\d+(?:\.\d+)*$') { $_ }
+            else { (Get-Culture).TextInfo.ToTitleCase($_) }
+        }) -join ' '
         # A JSON round trip performs a deep copy. This keeps each model's
         # nested instruction and reasoning objects independent.
         $model = ($template | ConvertTo-Json -Depth 100 | ConvertFrom-Json)
-        Set-ObjectProperty $model 'slug' $specification[0]
-        Set-ObjectProperty $model 'display_name' $specification[1]
+        Set-ObjectProperty $model 'slug' $modelId
+        Set-ObjectProperty $model 'display_name' $displayName
         Set-ObjectProperty $model 'description' 'Google account model through Browser AI Bridge'
         Set-ObjectProperty $model 'priority' ($models.Count + 1)
         Set-ObjectProperty $model 'visibility' 'list'
@@ -177,6 +207,37 @@ function New-GeminiModelCatalog {
         Move-Item -LiteralPath $temporaryCatalog -Destination $TargetPath -Force
     } finally {
         Remove-Item -LiteralPath $temporaryCatalog -Force -ErrorAction SilentlyContinue
+    }
+    return $defaultModel
+}
+
+$availableGeminiModels = @()
+$availableModelsCachePath = Join-Path $directory 'browser-ai-bridge-gemini-available-models.json'
+if ($effectiveMode -eq 'GeminiAccount' -and $GeminiModelsJson) {
+    try {
+        $parsedGeminiModels = $GeminiModelsJson | ConvertFrom-Json
+        $availableGeminiModels = @(@($parsedGeminiModels) | Where-Object {
+            $_ -is [string] -and $_ -match '^gemini-[a-z0-9.-]+$'
+        } | Select-Object -First 100)
+    } catch {
+        throw 'Gemini model list is invalid.'
+    }
+    if ($availableGeminiModels.Count -eq 0) {
+        throw 'Gemini model list contains no valid models.'
+    }
+    $cacheJson = ConvertTo-Json -InputObject @($availableGeminiModels) -Compress
+    [System.IO.File]::WriteAllText(
+        $availableModelsCachePath,
+        $cacheJson,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+} elseif ($effectiveMode -eq 'GeminiAccount' -and (Test-Path -LiteralPath $availableModelsCachePath)) {
+    try {
+        $availableGeminiModels = @(
+            [System.IO.File]::ReadAllText($availableModelsCachePath) | ConvertFrom-Json
+        )
+    } catch {
+        $availableGeminiModels = @()
     }
 }
 
@@ -315,7 +376,10 @@ if ($effectiveMode -eq 'GeminiAccount') {
         )
     }
     $catalogPath = Join-Path $directory 'browser-ai-bridge-gemini-models.json'
-    New-GeminiModelCatalog -TargetPath $catalogPath -HomePath $directory
+    $geminiDefaultModel = New-GeminiModelCatalog `
+        -TargetPath $catalogPath `
+        -HomePath $directory `
+        -AvailableModels $availableGeminiModels
     $catalogTomlPath = $catalogPath.Replace('\', '/')
     $geminiCatalogBlock = @(
         $geminiCatalogBegin,
@@ -373,7 +437,7 @@ if ($effectiveMode -eq 'GeminiAccount') {
     $geminiModelBlock = @(
         $geminiModelBegin,
         "# previous-model-base64: $restoreValue",
-        'model = "gemini-3.6-flash-high"',
+        "model = `"$geminiDefaultModel`"",
         $geminiModelEnd
     )
     $content = ($geminiModelBlock -join "`r`n") + "`r`n`r`n" + $top.TrimStart() + $tables.TrimStart()

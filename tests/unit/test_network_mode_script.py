@@ -14,9 +14,10 @@ SCRIPT = ROOT / "tools" / "set_codex_network_mode.ps1"
 
 @unittest.skipUnless(os.name == "nt", "PowerShell network-mode test is Windows-only")
 class NetworkModeScriptTests(unittest.TestCase):
-    def run_mode(self, codex_home: Path, mode: str) -> str:
-        subprocess.run(
-            [
+    def run_mode(
+        self, codex_home: Path, mode: str, gemini_models_json: str | None = None
+    ) -> str:
+        command = [
                 "powershell",
                 "-NoProfile",
                 "-ExecutionPolicy",
@@ -27,7 +28,11 @@ class NetworkModeScriptTests(unittest.TestCase):
                 mode,
                 "-CodexHome",
                 str(codex_home),
-            ],
+            ]
+        if gemini_models_json is not None:
+            command.extend(["-GeminiModelsJson", gemini_models_json])
+        subprocess.run(
+            command,
             check=True,
             capture_output=True,
             text=True,
@@ -103,7 +108,7 @@ class NetworkModeScriptTests(unittest.TestCase):
             )
             self.assertIn("requires_openai_auth = true", gemini)
             self.assertIn("apps = false", gemini)
-            self.assertIn('model = "gemini-3.6-flash-high"', gemini)
+            self.assertIn('model = "gemini-3.7-flash-tiered"', gemini)
             self.assertIn("managed Gemini model catalog", gemini)
             catalog_path = codex_home / "browser-ai-bridge-gemini-models.json"
             self.assertTrue(catalog_path.exists())
@@ -119,11 +124,35 @@ class NetworkModeScriptTests(unittest.TestCase):
             direct = self.run_mode(codex_home, "Direct")
             self.assertIn('model_provider = "browser_ai_direct"', direct)
             self.assertIn('model = "gpt-user-default"', direct)
-            self.assertNotIn('model = "gemini-3.6-flash-high"', direct)
+            self.assertNotIn('model = "gemini-3.7-flash-tiered"', direct)
             self.assertNotIn("managed Gemini model", direct)
             self.assertNotIn("model_catalog_json", direct)
             self.assertIn("apps = true", direct)
             self.assertNotIn("managed lean mode", direct)
+
+    def test_gemini_catalog_uses_current_official_model_list(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            codex_home = Path(directory)
+            (codex_home / "config.toml").write_text(
+                'model = "gpt-user-default"\n', encoding="utf-8"
+            )
+            official_models = (
+                '["gemini-3.7-flash-tiered","gemini-3.8-flash-tiered",'
+                '"gemini-3.8-flash-image","gemini-pro-agent"]'
+            )
+
+            gemini = self.run_mode(
+                codex_home, "GeminiAccount", official_models
+            )
+            catalog = (
+                codex_home / "browser-ai-bridge-gemini-models.json"
+            ).read_text(encoding="utf-8")
+
+            self.assertIn('model = "gemini-3.8-flash-tiered"', gemini)
+            self.assertIn('"slug":  "gemini-3.8-flash-tiered"', catalog)
+            self.assertIn('"slug":  "gemini-3.7-flash-tiered"', catalog)
+            self.assertNotIn("gemini-3.8-flash-image", catalog)
+            self.assertNotIn("gemini-pro-agent", catalog)
 
     def test_full_and_lean_modes_switch_without_losing_user_settings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

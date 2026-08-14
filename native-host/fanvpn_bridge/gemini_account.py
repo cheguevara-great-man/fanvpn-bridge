@@ -26,7 +26,7 @@ import uuid
 
 
 _CREDENTIAL_TARGET = "gemini:antigravity"
-_DEFAULT_MODEL = "gemini-3.6-flash-high"
+_DEFAULT_MODEL = "gemini-3.7-flash-tiered"
 _MAX_CREDENTIAL_BYTES = 1024 * 1024
 _MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 _SIGNATURE_FALLBACK = "skip_thought_signature_validator"

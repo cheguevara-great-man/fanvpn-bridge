@@ -188,9 +188,14 @@ try {
             if (-not $geminiModels.data) {
                 throw 'Gemini account provider returned no available models.'
             }
+            $geminiModelIds = @($geminiModels.data | ForEach-Object { $_.id } | Where-Object {
+                $_ -is [string] -and $_ -match '^gemini-[a-z0-9.-]+$'
+            })
+            $geminiModelsJson = ConvertTo-Json -InputObject $geminiModelIds -Compress
         }
         & (Join-Path $PSScriptRoot 'set_vscode_codex_mode.ps1') -Mode $Mode `
-            -CodexHome $CodexHome -SettingsPath $SettingsPath -StatePath $StatePath
+            -CodexHome $CodexHome -SettingsPath $SettingsPath -StatePath $StatePath `
+            -GeminiModelsJson $geminiModelsJson
         if ($Mode -eq 'GeminiAccount') {
             Remove-Item Env:CODEX_REFRESH_TOKEN_URL_OVERRIDE -ErrorAction SilentlyContinue
             Remove-Item Env:CODEX_REVOKE_TOKEN_URL_OVERRIDE -ErrorAction SilentlyContinue

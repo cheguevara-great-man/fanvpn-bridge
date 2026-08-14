@@ -8,7 +8,9 @@ param(
 
     [string]$SettingsPath = (Join-Path $env:APPDATA 'Code\User\settings.json'),
 
-    [string]$StatePath = (Join-Path $env:LOCALAPPDATA 'FanVPNBridge\vscode-codex-endpoint.json')
+    [string]$StatePath = (Join-Path $env:LOCALAPPDATA 'FanVPNBridge\vscode-codex-endpoint.json'),
+
+    [string]$GeminiModelsJson
 )
 
 $ErrorActionPreference = 'Stop'
@@ -54,13 +56,16 @@ function Restore-FileState {
 $snapshots = @(
     Save-FileState -Path $configPath
     Save-FileState -Path "$configPath.before-network-mode.bak"
+    Save-FileState -Path (Join-Path ([System.IO.Path]::GetFullPath($CodexHome)) 'browser-ai-bridge-gemini-models.json')
+    Save-FileState -Path (Join-Path ([System.IO.Path]::GetFullPath($CodexHome)) 'browser-ai-bridge-gemini-available-models.json')
     Save-FileState -Path $SettingsPath
     Save-FileState -Path "$SettingsPath.before-network-mode.bak"
     Save-FileState -Path $StatePath
 )
 
 try {
-    & $networkScript -Mode $effectiveMode -CodexHome $CodexHome
+    & $networkScript -Mode $effectiveMode -CodexHome $CodexHome `
+        -GeminiModelsJson $GeminiModelsJson
     & $endpointScript -Mode $endpointMode -SettingsPath $SettingsPath -StatePath $StatePath
     & $claudeScript -Mode $claudeMode -SettingsPath $SettingsPath
 } catch {
