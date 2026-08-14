@@ -434,7 +434,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
   if (message?.target === "background" && message.kind === "codex-mode:set") {
-    if (!["direct", "browser_lean", "browser_full"].includes(message.mode)) {
+    if (!["direct", "browser_lean", "browser_full", "gemini_account"].includes(message.mode)) {
       sendResponse({ ok: false, mode: "unmanaged", message: "不支持的模式" });
       return false;
     }

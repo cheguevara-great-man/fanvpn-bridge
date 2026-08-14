@@ -37,6 +37,7 @@ from .diagnostics import (
     request_family,
 )
 from .errors import BridgeError, ErrorCode
+from .gemini_account import GeminiAccountError, GeminiAccountProvider
 from .product_cache import CachedResponse, ProductResponseCache
 from .routing import RouteTable
 from .usage_reporting import RequestUsageMetadata, TokenUsage, UsageExtractor, UsageReporter
@@ -139,6 +140,7 @@ class BridgeHTTPServer(ThreadingHTTPServer):
         product_auth: CodexProductAuth,
         product_cache: ProductResponseCache,
         usage_reporter: UsageReporter | None = None,
+        gemini_account: GeminiAccountProvider | None = None,
         product_api_alias: bool = False,
     ) -> None:
         self.bridge_config = config
@@ -149,6 +151,7 @@ class BridgeHTTPServer(ThreadingHTTPServer):
         self.product_auth = product_auth
         self.product_cache = product_cache
         self.usage_reporter = usage_reporter
+        self.gemini_account = gemini_account
         self.product_api_alias = product_api_alias
         super().__init__(server_address, BridgeRequestHandler)
 
@@ -231,6 +234,9 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(405, {"error": {"code": "METHOD_NOT_ALLOWED"}})
                 return
             self._handle_probe(server, self.path.removeprefix("/__bridge/probe/"))
+            return
+        if not server.product_api_alias and self.path.split("?", 1)[0].startswith("/gemini-account/"):
+            self._handle_gemini_account(server, method, request_id)
             return
 
         try:
@@ -965,6 +971,73 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             self.wfile.flush()
 
+    def _handle_gemini_account(
+        self,
+        server: BridgeHTTPServer,
+        method: str,
+        request_id: str,
+    ) -> None:
+        provider = server.gemini_account
+        headers_sent = False
+        if provider is None:
+            self._send_json(503, {"error": {"code": "gemini_account_unavailable"}})
+            return
+        path = self.path.split("?", 1)[0].rstrip("/")
+        try:
+            if path.endswith("/v1/models") and method == "GET":
+                self._send_json(200, provider.models_response())
+                return
+            if not path.endswith("/v1/responses"):
+                self._discard_small_rejected_body()
+                self._send_json(404, {"error": {"code": "not_found"}})
+                return
+            if method != "POST":
+                self._discard_small_rejected_body()
+                self._send_json(405, {"error": {"code": "method_not_allowed"}})
+                return
+            raw = b"".join(
+                self._request_body(
+                    server.bridge_config.protocol.max_chunk_bytes,
+                    max_body_bytes=server.bridge_config.protocol.max_request_body_bytes,
+                    timeout=server.bridge_config.protocol.request_timeout_seconds,
+                )
+            )
+            try:
+                payload = json.loads(raw.decode("utf-8"))
+            except (UnicodeError, json.JSONDecodeError) as exc:
+                raise GeminiAccountError("Responses request must be valid JSON", status=400) from exc
+            if not isinstance(payload, dict):
+                raise GeminiAccountError("Responses request must be a JSON object", status=400)
+            streaming, result = provider.responses(payload)
+            if not streaming:
+                self._send_json(200, result)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("X-FanVPN-Bridge", "v2")
+            self.send_header("X-FanVPN-Request-Id", request_id)
+            self.end_headers()
+            headers_sent = True
+            for chunk in cast(Iterable[bytes], result):
+                self._write_chunk(chunk)
+            self._write_chunk(b"")
+        except GeminiAccountError as error:
+            if not headers_sent:
+                self._send_json(
+                    error.status,
+                    {"error": {"message": str(error), "type": error.code, "code": error.code}},
+                )
+            else:
+                self.close_connection = True
+            _LOG.warning(
+                "gemini_account_failed request_id=%s code=%s status=%s",
+                request_id,
+                error.code,
+                error.status,
+            )
+
     def log_message(self, format: str, *args: object) -> None:
         # Runtime logging will be structured and secret-redacted in a later slice.
         return
@@ -1069,6 +1142,7 @@ def create_http_server(
     product_api_alias: bool = False,
     product_cache: ProductResponseCache | None = None,
     usage_reporter: UsageReporter | None = None,
+    gemini_account: GeminiAccountProvider | None = None,
 ) -> BridgeHTTPServer:
     auth_path = codex_auth_path or Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "auth.json"
     return BridgeHTTPServer(
@@ -1081,5 +1155,6 @@ def create_http_server(
         product_auth=CodexProductAuth(auth_path),
         product_cache=product_cache or ProductResponseCache(),
         usage_reporter=usage_reporter,
+        gemini_account=gemini_account,
         product_api_alias=product_api_alias,
     )

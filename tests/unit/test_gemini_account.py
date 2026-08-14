@@ -1,0 +1,164 @@
+from __future__ import annotations
+
+import json
+import unittest
+
+from fanvpn_bridge.gemini_account import (
+    ThoughtSignatureCache,
+    _gemini_to_responses_events,
+    _responses_to_gemini,
+)
+
+
+class GeminiAccountTranslationTests(unittest.TestCase):
+    def test_signature_cache_is_bounded_and_keeps_recent_calls(self) -> None:
+        signatures = ThoughtSignatureCache(limit=2)
+        signatures["call_1"] = "one"
+        signatures["call_2"] = "two"
+        self.assertEqual(signatures.get("call_1"), "one")
+        signatures["call_3"] = "three"
+
+        self.assertNotIn("call_2", signatures)
+        self.assertEqual(signatures.get("call_1"), "one")
+        self.assertEqual(signatures.get("call_3"), "three")
+
+    def test_codex_remains_agent_and_tools_become_gemini_declarations(self) -> None:
+        request = _responses_to_gemini(
+            {
+                "model": "gemini-3.6-flash-high",
+                "instructions": "You are Codex. Use the supplied tools.",
+                "input": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "Read README.md"}],
+                    }
+                ],
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "read_file",
+                        "description": "Read a workspace file",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"path": {"type": "string"}},
+                            "required": ["path"],
+                        },
+                    }
+                ],
+                "reasoning": {"effort": "high"},
+            },
+            {},
+        )
+
+        self.assertEqual(request["contents"][0]["role"], "user")
+        self.assertEqual(request["contents"][0]["parts"][0]["text"], "Read README.md")
+        self.assertIn("You are Codex", request["systemInstruction"]["parts"][0]["text"])
+        declaration = request["tools"][0]["functionDeclarations"][0]
+        self.assertEqual(declaration["name"], "read_file")
+        self.assertEqual(request["toolConfig"]["functionCallingConfig"]["mode"], "VALIDATED")
+        self.assertEqual(request["generationConfig"]["thinkingConfig"]["thinkingLevel"], "high")
+
+    def test_tool_result_round_trip_preserves_call_identity_and_signature(self) -> None:
+        request = _responses_to_gemini(
+            {
+                "input": [
+                    {
+                        "type": "function_call",
+                        "call_id": "call_read_1",
+                        "name": "read_file",
+                        "arguments": '{"path":"README.md"}',
+                    },
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call_read_1",
+                        "output": "contents",
+                    },
+                ]
+            },
+            {"call_read_1": "provider-signature"},
+        )
+
+        call = request["contents"][0]["parts"][0]
+        result = request["contents"][1]["parts"][0]
+        self.assertEqual(call["functionCall"]["id"], "call_read_1")
+        self.assertEqual(call["thoughtSignature"], "provider-signature")
+        self.assertEqual(result["functionResponse"]["id"], "call_read_1")
+        self.assertEqual(result["functionResponse"]["name"], "read_file")
+
+    def test_gemini_stream_becomes_responses_text_and_function_events(self) -> None:
+        signatures: dict[str, str] = {}
+        chunks = [
+            {
+                "response": {
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {"text": "I will inspect it."},
+                                    {
+                                        "functionCall": {
+                                            "id": "call_1",
+                                            "name": "read_file",
+                                            "args": {"path": "README.md"},
+                                        },
+                                        "thoughtSignature": "native-signature",
+                                    },
+                                ]
+                            }
+                        }
+                    ],
+                    "usageMetadata": {
+                        "promptTokenCount": 10,
+                        "candidatesTokenCount": 5,
+                        "totalTokenCount": 15,
+                    },
+                }
+            }
+        ]
+        raw_events = list(_gemini_to_responses_events(chunks, "gemini-test", signatures))
+        payloads = []
+        for raw in raw_events:
+            for line in raw.decode().splitlines():
+                if line.startswith("data: {"):
+                    payloads.append(json.loads(line[6:]))
+        types = [payload["type"] for payload in payloads]
+        self.assertIn("response.output_text.delta", types)
+        self.assertIn("response.function_call_arguments.done", types)
+        self.assertEqual(types[-1], "response.completed")
+        self.assertEqual(signatures["call_1"], "native-signature")
+        completed = payloads[-1]["response"]
+        self.assertEqual(completed["usage"]["total_tokens"], 15)
+        self.assertEqual([item["type"] for item in completed["output"]], ["message", "function_call"])
+
+    def test_output_order_is_preserved_when_function_call_precedes_text(self) -> None:
+        chunks = [
+            {
+                "response": {
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {"functionCall": {"id": "call_1", "name": "inspect", "args": {}}},
+                                    {"text": "After the call."},
+                                ]
+                            }
+                        }
+                    ]
+                }
+            }
+        ]
+        payloads = []
+        for raw in _gemini_to_responses_events(chunks, "gemini-test", {}):
+            for line in raw.decode().splitlines():
+                if line.startswith("data: {"):
+                    payloads.append(json.loads(line[6:]))
+
+        completed = payloads[-1]["response"]
+        self.assertEqual([item["type"] for item in completed["output"]], ["function_call", "message"])
+        text_events = [item for item in payloads if item["type"] == "response.output_text.delta"]
+        self.assertEqual(text_events[0]["output_index"], 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

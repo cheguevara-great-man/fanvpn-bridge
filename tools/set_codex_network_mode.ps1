@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('Browser', 'BrowserLean', 'BrowserFull', 'Direct')]
+    [ValidateSet('Browser', 'BrowserLean', 'BrowserFull', 'Direct', 'GeminiAccount')]
     [string]$Mode,
 
     [string]$CodexHome = (Join-Path $HOME '.codex')
@@ -92,7 +92,7 @@ $content = [regex]::Replace($content, $providerPattern, '')
 # this script before appending their canonical definitions; otherwise the
 # resulting TOML contains duplicate tables and Codex may only partially load
 # product features such as Apps and plugins.
-foreach ($managedProviderName in @('browser_ai_bridge', 'browser_ai_direct')) {
+foreach ($managedProviderName in @('browser_ai_bridge', 'browser_ai_direct', 'browser_ai_gemini_account')) {
     $unmanagedProviderPattern = '(?ms)^\s*\[model_providers\.' +
         [regex]::Escape($managedProviderName) + '\]\s*(?:\r?\n|$).*?(?=^\s*\[|\z)'
     $content = [regex]::Replace($content, $unmanagedProviderPattern, '')
@@ -195,7 +195,7 @@ if ($leanMatch.Success) {
     $content = [regex]::Replace($content, $leanPattern, '', 1)
 }
 
-if ($effectiveMode -eq 'BrowserLean') {
+if ($effectiveMode -in @('BrowserLean', 'GeminiAccount')) {
     $metadata = New-Object System.Collections.Generic.List[string]
     foreach ($setting in $settings) {
         if (-not $leanMatch.Success) {
@@ -251,7 +251,13 @@ if ($effectiveMode -ne 'Direct') {
     $content = Set-TomlKeyLine -Text $content -Table 'features' -Key 'shell_snapshot' -Line $previousSnapshotLine
 }
 
-$provider = if ($effectiveMode -eq 'Direct') { 'browser_ai_direct' } else { 'browser_ai_bridge' }
+$provider = if ($effectiveMode -eq 'Direct') {
+    'browser_ai_direct'
+} elseif ($effectiveMode -eq 'GeminiAccount') {
+    'browser_ai_gemini_account'
+} else {
+    'browser_ai_bridge'
+}
 $modelProviderPattern = '(?m)^model_provider\s*=\s*"[^"]*"\s*$'
 $firstTable = [regex]::Match($content, '(?m)^\s*\[')
 $topLength = if ($firstTable.Success) { $firstTable.Index } else { $content.Length }
@@ -277,6 +283,13 @@ base_url = "https://chatgpt.com/backend-api/codex"
 requires_openai_auth = true
 wire_api = "responses"
 supports_websockets = false
+
+[model_providers.browser_ai_gemini_account]
+name = "Gemini through Google account (Codex agent)"
+base_url = "http://127.0.0.1:18888/gemini-account/v1"
+requires_openai_auth = false
+wire_api = "responses"
+supports_websockets = false
 $providerEnd
 "@
 $content = $content.TrimEnd() + "`r`n`r`n" + $managedProviders.Trim() + "`r`n"
@@ -298,6 +311,8 @@ try {
 Write-Host "Codex network provider: $provider"
 if ($effectiveMode -eq 'BrowserLean') {
     Write-Host 'Browser lean mode: Apps, plugins, remote plugin catalog, and analytics are disabled.'
+} elseif ($effectiveMode -eq 'GeminiAccount') {
+    Write-Host 'Gemini account mode: Codex remains the agent and Google supplies only model inference.'
 } elseif ($effectiveMode -eq 'BrowserFull') {
     Write-Host 'Browser full mode: ChatGPT product backend, Apps, and plugin settings are enabled as configured.'
 } else {

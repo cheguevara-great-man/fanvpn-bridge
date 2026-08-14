@@ -17,6 +17,7 @@ from .device_config import DeviceConfigController
 from .errors import BridgeError
 from .framing import FramedMessageChannel
 from .forward_proxy import ForwardProxyError, run_forward_proxy
+from .gemini_account import GeminiAccountProvider
 from .http_server import create_http_server
 from .mode_control import CodexModeController
 from .product_cache import ProductResponseCache
@@ -52,6 +53,10 @@ def run(config_path: Path) -> int:
         persistent_directory=cache_base / "product-cache-v1"
     )
     usage_reporter = UsageReporter.load(cache_base, dispatcher)
+    gemini_account = GeminiAccountProvider(
+        bridge_url=f"http://{config.listen_host}:{config.listen_port}",
+        timeout_seconds=config.protocol.request_timeout_seconds,
+    )
     if usage_reporter is None:
         log.info("usage_reporting_disabled")
     else:
@@ -63,6 +68,7 @@ def run(config_path: Path) -> int:
         dispatcher,
         product_cache=product_cache,
         usage_reporter=usage_reporter,
+        gemini_account=gemini_account,
     )
     server_thread = threading.Thread(
         target=server.serve_forever,
@@ -81,6 +87,7 @@ def run(config_path: Path) -> int:
             product_api_alias=True,
             product_cache=product_cache,
             usage_reporter=usage_reporter,
+            gemini_account=gemini_account,
         )
     except OSError as error:
         log.warning("vscode_product_api_unavailable listen=%s:8000 error=%s", config.listen_host, error)

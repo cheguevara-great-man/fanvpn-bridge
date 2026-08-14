@@ -43,10 +43,10 @@ Claude Code 使用 Gemini 时，由 CC Switch 转换 Anthropic Messages 与 Gemi
 - 仅监听 `127.0.0.1`，校验本地 Host/Origin，上游由静态 allowlist 限制。
 - Chrome 出口不可用时失败关闭，不回退到系统直连。
 - Codex 首次登录可通过一次性助手完成，无需复制其他电脑的 `auth.json`。
-- Codex 提供稳定的 Browser Lean、Browser Full（浏览器完整，实验）和可选 Direct 三种模式；
+- Codex 提供稳定的 Browser Lean、Browser Full（浏览器完整，实验）、Google 账号 Gemini 和可选 Direct 四种模式；
   `Browser` 默认等同 Browser Lean。
-- Chrome 扩展弹窗提供“服务器直连”“浏览器精简”“浏览器完整（实验）”三个按钮；关闭全部
-  VS Code 后点击，Bridge 会事务式更新托管配置并按所选模式启动 VS Code。三种模式都应从按钮启动，
+- Chrome 扩展弹窗提供“服务器直连”“浏览器精简”“浏览器完整”和“Codex + Gemini 账号”四个按钮；关闭全部
+  VS Code 后点击，Bridge 会事务式更新托管配置并按所选模式启动 VS Code。四种模式都应从按钮启动，
   不能只看上次磁盘配置后再从普通 VS Code 图标打开。
 - A/B 事务式更新，切换前自动冒烟测试，失败时恢复旧注册。
 - Windows 登录后自动启动 Chrome 并等待 Bridge ready。
@@ -88,7 +88,7 @@ Codex、Claude Code 或 CC Switch。
 
 完成 Codex 登录后，推荐完全退出 VS Code，打开 FanVPN AI Bridge 弹窗并点击“浏览器精简”或
 “浏览器完整（实验）”。按钮会写入受管理的 provider 和产品端点配置，再自动启动 VS Code；
-不需要手工输入三种模式的 provider。“服务器直连”只有在完成可选直连安装后才能使用。
+不需要手工输入各模式的 provider。“服务器直连”只有在完成可选直连安装后才能使用。
 
 使用 Antigravity 时，在同一弹窗点击“一键配置 Antigravity”，完成后重启一次 VS Code。按钮显示
 “已配置”后，首次使用还需按 [Antigravity 登录说明](docs/ANTIGRAVITY_CLI.md#首次账号登录)在
@@ -111,6 +111,7 @@ PowerShell 中完成一次 Google 授权；此后只需从 VS Code 的 Antigravi
 | Gemini Native | `http://127.0.0.1:18888/gemini` |
 | Gemini OpenAI compatibility | `http://127.0.0.1:18888/gemini-openai/v1` |
 | Antigravity CLI Cloud Code | `http://127.0.0.1:18888/antigravity` |
+| Codex + Google 账号 Gemini | `http://127.0.0.1:18888/gemini-account/v1` |
 
 路由来自 `config/routes.example.json`。API Key 不应写入路由配置。
 
@@ -128,6 +129,7 @@ Browser Full（浏览器完整，实验）会把产品后端也交给 Chrome，�
 | [Windows 安装](docs/INSTALLATION.md) | 构建、安装、更新、自动启动和卸载 |
 | [客户端使用](docs/USAGE.md) | Codex、Claude Code、CC Switch 和 Gemini 模式 |
 | [Antigravity CLI 浏览器链路](docs/ANTIGRAVITY_CLI.md) | 通过 Chrome 安装并运行官方 Antigravity CLI |
+| [Codex + Gemini 账号](docs/GEMINI_ACCOUNT.md) | Codex 担任 Agent，Google 登录账号只提供 Gemini 模型推理 |
 | [开发指南](docs/DEVELOPMENT.md) | 目录、测试、构建和开发约束 |
 | [故障排查](docs/TROUBLESHOOTING.md) | 面向当前版本的诊断步骤 |
 | [问题与解决记录](docs/PROBLEM_SOLVING.md) | 开发过程中的问题、原因和经验 |

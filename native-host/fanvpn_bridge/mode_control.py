@@ -14,12 +14,14 @@ import msvcrt
 MODE_DIRECT = "direct"
 MODE_BROWSER_LEAN = "browser_lean"
 MODE_BROWSER_FULL = "browser_full"
+MODE_GEMINI_ACCOUNT = "gemini_account"
 MODE_UNMANAGED = "unmanaged"
-SUPPORTED_MODES = frozenset({MODE_DIRECT, MODE_BROWSER_LEAN, MODE_BROWSER_FULL})
+SUPPORTED_MODES = frozenset({MODE_DIRECT, MODE_BROWSER_LEAN, MODE_BROWSER_FULL, MODE_GEMINI_ACCOUNT})
 _SCRIPT_MODES = {
     MODE_DIRECT: "Direct",
     MODE_BROWSER_LEAN: "BrowserLean",
     MODE_BROWSER_FULL: "BrowserFull",
+    MODE_GEMINI_ACCOUNT: "GeminiAccount",
 }
 _MAX_CONFIG_BYTES = 2 * 1024 * 1024
 
@@ -75,6 +77,8 @@ class CodexModeController:
         provider = provider_match.group("value")
         if provider == "browser_ai_direct":
             return MODE_DIRECT
+        if provider == "browser_ai_gemini_account":
+            return MODE_GEMINI_ACCOUNT
         if provider != "browser_ai_bridge":
             return MODE_UNMANAGED
         if re.search(

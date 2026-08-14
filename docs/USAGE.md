@@ -99,7 +99,7 @@ C:\Users\<你的 Windows 用户名>\.codex\auth.json
 如果脚本提示当前 Host 不包含 `auth-openai`，先按[安装文档](INSTALLATION.md)更新
 Native Host，并刷新 Chrome 扩展。
 
-2.6.0 起，使用扩展弹窗时不需要手工输入三种模式的托管 provider。完成登录后可以直接关闭全部
+使用扩展弹窗时不需要手工输入各模式的托管 provider。完成登录后可以直接关闭全部
 VS Code 窗口，在 FanVPN AI Bridge 弹窗中点击“浏览器精简”；Bridge 会保留其他 Codex 配置，
 创建 `browser_ai_bridge` / `browser_ai_direct` provider，并在第一次修改前生成
 `config.toml.before-network-mode.bak`。下面的复制方式仍可用于不使用模式管理的手工配置，但旧的
@@ -138,7 +138,7 @@ enabled = false
 `~/.codex/auth.json`。成功判据是：Codex 直接进入聊天页，并能在关闭 Clash 的情况下
 完成一次真实对话。
 
-## 三种 VS Code 网络模式
+## 四种 VS Code 网络模式
 
 2.6.0 起，推荐直接从 FanVPN AI Bridge 扩展弹窗选择：
 
@@ -147,6 +147,7 @@ enabled = false
 | 服务器直连 | Direct | `VS Code -> 127.0.0.1:18889 -> 自有 HTTPS 代理`，不经过 Chrome；需先完成可选直连安装 |
 | 浏览器精简 | Browser Lean | 核心模型请求经 `18888 -> Chrome -> 浏览器代理扩展`，是稳定默认模式 |
 | 浏览器完整（实验） | Browser Full | 在 Lean 基础上转发 ChatGPT 产品后端、Apps、插件、连接器和 VS Code Codex 界面请求 |
+| Codex + Gemini 账号 | Gemini Account | Codex 继续执行工具和 Agent 循环，Gemini 使用 Google 登录账号额度提供模型推理 |
 
 Codex CLI 与 VS Code Codex 共用 `~/.codex/config.toml` 和 `~/.codex/auth.json`；配置好 Browser Lean 且 Chrome、Bridge 与浏览器代理扩展正常运行后，可直接在 PowerShell 中执行 `codex` 使用同一条浏览器链路，无需额外适配或重新登录。
 
@@ -161,7 +162,7 @@ Direct 未安装凭据时会显示错误并失败关闭，不会回退到浏览�
 **VS Code - Browser Full (Experimental)** 和 **VS Code - Direct US Proxy**。扩展弹窗中的两个
 浏览器模式不要求安装 Direct；桌面入口和命令行只是备用方式。
 
-三种模式都会
+四种模式都会
 保留 `~/.codex/config.toml` 中的其他内容。Browser Lean 会暂时把 `apps`、`plugins`、
 `remote_plugin` 和 `analytics.enabled` 设为 `false`；Browser Full 与 Direct 会恢复切换前每一项的
 原始值或“原本不存在”的状态。Browser Full 还会临时写入产品后端地址，离开 Full 时精确恢复。
@@ -251,7 +252,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File `
 # 可选服务器直连
 powershell -NoProfile -ExecutionPolicy Bypass -File `
   .\tools\start_vscode_network_mode.ps1 -Mode Direct
+
+# Codex Agent + Google 账号 Gemini 模型
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  .\tools\start_vscode_network_mode.ps1 -Mode GeminiAccount
 ```
+
+Gemini Account 模式不需要 Gemini API Key。第一次使用前需在 PowerShell 中运行一次
+`& "$env:LOCALAPPDATA\agy\bin\agy-browser.exe"` 完成 Google 登录，详细说明见
+[Codex + Gemini 账号](GEMINI_ACCOUNT.md)。正常问答仍由 Codex 担任 Agent，官方 CLI 只用于登录和
+必要的 Token 刷新。
 
 Browser Full 必须通过扩展弹窗、上面的启动脚本或对应桌面入口打开。只运行
 `set_codex_network_mode.ps1` 再手工打开 VS Code 不会带入进程级 MCP 认证标记。

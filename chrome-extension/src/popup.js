@@ -11,6 +11,7 @@ const errorBox = document.getElementById("error");
 const modeButtons = [...document.querySelectorAll("button[data-mode]")];
 
 const MODE_LABELS = {
+  gemini_account: "Codex + Gemini 账号",
   direct: "服务器直连",
   browser_lean: "浏览器精简",
   browser_full: "浏览器完整",

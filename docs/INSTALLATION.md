@@ -102,8 +102,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 - 协议握手：完成。
 - 浏览器执行器：`offscreen`。
 - ChatGPT 网站权限：已授权。
-- 弹窗下方出现“启动 VS Code 网络模式”，并提供“服务器直连”“浏览器精简”和
-  “浏览器完整（实验）”三个按钮。
+- 弹窗下方出现“VS Code Codex 模式”，并提供“服务器直连”“浏览器精简”、
+  “浏览器完整”和“Codex + Gemini 账号”四个按钮。
 
 第一次选择前，弹窗可能显示“未由 Bridge 管理”；这只表示现有 Codex provider 还不是 2.6.0 的
 托管配置，不代表 Native Messaging 故障。三模式按钮要求 Chrome 扩展和正在运行的 Native Host

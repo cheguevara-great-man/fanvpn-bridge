@@ -13,6 +13,7 @@ from fanvpn_bridge.mode_control import (
     MODE_BROWSER_FULL,
     MODE_BROWSER_LEAN,
     MODE_DIRECT,
+    MODE_GEMINI_ACCOUNT,
     MODE_UNMANAGED,
     ModeControlError,
     _friendly_failure,
@@ -50,6 +51,9 @@ class CodexModeControllerTests(unittest.TestCase):
 
             self.write_config(root, 'model_provider = "browser_ai_bridge"\n')
             self.assertEqual(controller.get_mode(), MODE_BROWSER_LEAN)
+
+            self.write_config(root, 'model_provider = "browser_ai_gemini_account"\n')
+            self.assertEqual(controller.get_mode(), MODE_GEMINI_ACCOUNT)
 
             self.write_config(
                 root,

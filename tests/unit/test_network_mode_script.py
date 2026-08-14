@@ -86,6 +86,30 @@ class NetworkModeScriptTests(unittest.TestCase):
             self.assertNotIn("remote_plugin =", direct)
             self.assertNotIn("enabled =", direct)
 
+    def test_gemini_account_mode_uses_local_responses_provider_and_restores_cleanly(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            codex_home = Path(directory)
+            config_path = codex_home / "config.toml"
+            config_path.write_text(
+                'model = "gpt-user-default"\n\n[features]\napps = true\n',
+                encoding="utf-8",
+            )
+
+            gemini = self.run_mode(codex_home, "GeminiAccount")
+            self.assertIn('model_provider = "browser_ai_gemini_account"', gemini)
+            self.assertIn(
+                'base_url = "http://127.0.0.1:18888/gemini-account/v1"',
+                gemini,
+            )
+            self.assertIn("requires_openai_auth = false", gemini)
+            self.assertIn("apps = false", gemini)
+            self.assertIn('model = "gpt-user-default"', gemini)
+
+            direct = self.run_mode(codex_home, "Direct")
+            self.assertIn('model_provider = "browser_ai_direct"', direct)
+            self.assertIn("apps = true", direct)
+            self.assertNotIn("managed lean mode", direct)
+
     def test_full_and_lean_modes_switch_without_losing_user_settings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             codex_home = Path(directory)

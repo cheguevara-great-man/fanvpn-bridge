@@ -9,7 +9,7 @@
       .row { display: flex; justify-content: space-between; gap: 12px; margin: 6px 0; }
       .ok { color: #137333; }
       .bad { color: #b3261e; }
-      .modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+      .modes { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
       button { border: 1px solid #dadce0; border-radius: 8px; background: #fff; padding: 8px 6px; cursor: pointer; color: #3c4043; }
       button:hover { background: #f8fafd; }
       button.active { border-color: #1a73e8; background: #e8f0fe; color: #174ea6; font-weight: 600; }
@@ -23,18 +23,19 @@
     </style>
   </head>
   <body>
-    <h1>FanVPN AI Bridge</h1>
+    <h1>Browser AI Bridge</h1>
     <div class="row"><span>Native Host</span><strong id="native">检查中</strong></div>
     <div class="row"><span>协议握手</span><strong id="handshake">检查中</strong></div>
     <div class="row"><span>浏览器执行器</span><strong id="executor">-</strong></div>
     <div class="row"><span>ChatGPT 网站权限</span><strong id="site-access">检查中</strong></div>
     <div class="row"><span>版本</span><span id="version">-</span></div>
 
-    <h2>VS Code Codex 网络模式</h2>
+    <h2>VS Code Codex 模式</h2>
     <div class="modes">
       <button type="button" data-mode="direct">服务器直连</button>
       <button type="button" data-mode="browser_lean">浏览器精简</button>
       <button type="button" data-mode="browser_full">浏览器完整</button>
+      <button type="button" data-mode="gemini_account">Codex + Gemini 账号</button>
     </div>
     <div id="mode-note">正在读取上次托管配置……</div>
 

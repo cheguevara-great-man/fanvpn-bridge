@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('Browser', 'BrowserLean', 'BrowserFull', 'Direct')]
+    [ValidateSet('Browser', 'BrowserLean', 'BrowserFull', 'Direct', 'GeminiAccount')]
     [string]$Mode,
 
     [string]$CodexHome = (Join-Path $HOME '.codex'),
@@ -179,10 +179,25 @@ try {
         if (-not $productApiReady.ready -or $productApiReady.mode -ne 'native-host-http-server') {
             throw 'The service on 127.0.0.1:8000 is not a ready Browser AI Bridge product endpoint.'
         }
+        if ($Mode -eq 'GeminiAccount') {
+            try {
+                $geminiModels = Invoke-RestMethod 'http://127.0.0.1:18888/gemini-account/v1/models' -Proxy $null -TimeoutSec 15
+            } catch {
+                throw 'Gemini account provider is not ready. Update/restart the Native Host and sign in once with agy-browser.exe.'
+            }
+            if (-not $geminiModels.data) {
+                throw 'Gemini account provider returned no available models.'
+            }
+        }
         & (Join-Path $PSScriptRoot 'set_vscode_codex_mode.ps1') -Mode $Mode `
             -CodexHome $CodexHome -SettingsPath $SettingsPath -StatePath $StatePath
-        $env:CODEX_REFRESH_TOKEN_URL_OVERRIDE = 'http://127.0.0.1:18888/auth-openai/oauth/token'
-        $env:CODEX_REVOKE_TOKEN_URL_OVERRIDE = 'http://127.0.0.1:18888/auth-openai/oauth/revoke'
+        if ($Mode -eq 'GeminiAccount') {
+            Remove-Item Env:CODEX_REFRESH_TOKEN_URL_OVERRIDE -ErrorAction SilentlyContinue
+            Remove-Item Env:CODEX_REVOKE_TOKEN_URL_OVERRIDE -ErrorAction SilentlyContinue
+        } else {
+            $env:CODEX_REFRESH_TOKEN_URL_OVERRIDE = 'http://127.0.0.1:18888/auth-openai/oauth/token'
+            $env:CODEX_REVOKE_TOKEN_URL_OVERRIDE = 'http://127.0.0.1:18888/auth-openai/oauth/revoke'
+        }
         if ($Mode -eq 'BrowserFull') {
             # Codex otherwise downgrades its built-in ChatGPT MCP authentication to
             # OAuth when chatgpt_base_url points at loopback, causing unnecessary

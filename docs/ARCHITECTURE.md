@@ -11,9 +11,10 @@ FanVPN 已建立的浏览器网络出口访问预先允许的 AI API。
 2. **传输层**：FanVPN Bridge 选择静态路由、传输 HTTP 字节并报告网络状态。
 3. **浏览器出口层**：Chrome 扩展通过 Offscreen Document 执行 `fetch`，请求由 FanVPN 承载。
 
-Bridge 不承担 Responses、Chat Completions、Anthropic Messages 或 Gemini Native
-之间的转换，也不保存模型会话状态。Gemini 工具调用所需的 `thoughtSignature`
-由 CC Switch 等协议适配器处理。
+常规静态路由不承担 Responses、Chat Completions、Anthropic Messages 或 Gemini Native
+之间的转换，也不保存模型会话状态。唯一例外是显式选择的 `gemini-account` 本地 Provider：它在
+Codex Responses 与 Google 账号模型协议之间做无状态适配，并在进程内短期保存工具调用需要的
+`thoughtSignature`；Agent 循环和工具执行仍属于 Codex。
 
 ## 运行时拓扑
 
@@ -47,7 +48,7 @@ Chrome 扩展弹窗
   -> 事务式更新托管配置并启动 VS Code
 ```
 
-扩展只能提交 `direct`、`browser_lean`、`browser_full` 三个枚举值，不能指定命令、脚本路径或任意
+扩展只能提交 `direct`、`browser_lean`、`browser_full`、`gemini_account` 四个枚举值，不能指定命令、脚本路径或任意
 参数。启动器在修改前快照 Codex 配置、VS Code 设置、备份文件和端点状态；任何配置步骤或 VS Code
 启动失败时恢复快照，并恢复切换前的 Direct 代理进程状态。
 
@@ -64,7 +65,8 @@ Chrome 扩展弹窗
 - `dispatcher.py`：按 request id 隔离并发请求、超时和取消。
 - `http_server.py`：loopback HTTP/1.1 网关与诊断端点。
 - `product_cache.py`：按账号和 Authorization 摘要隔离、有限容量、仅进程内存在的只读产品元数据缓存。
-- `mode_control.py`：读取托管模式，只允许通过固定启动器切换三种 VS Code 网络模式。
+- `mode_control.py`：读取托管模式，只允许通过固定启动器切换四种 VS Code 网络模式。
+- `gemini_account.py`：读取 Windows 中的 Google OAuth 凭据，适配 Codex Responses 与 Google 账号模型流。
 - `runtime_logging.py`：脱敏、轮转的本地运行日志。
 - `codex_login.py`：一次性 OAuth PKCE 登录、loopback 回调、凭据备份和原子写入。
 - `main.py`：组合根和进程生命周期。
@@ -77,7 +79,7 @@ Chrome 扩展弹窗
 - `offscreen.js`：组装请求、执行 fetch、处理取消和回传响应。
 - `stream.js`：立即转发响应 chunk，并用独立空 frame 表示结束。
 - `protocol.js`：浏览器端协议常量和校验。
-- `popup.js`：连接、握手、执行器、站点权限、上次托管配置和三模式启动按钮。
+- `popup.js`：连接、握手、执行器、站点权限、上次托管配置和四模式启动按钮。
 
 ### 构建布局
 
@@ -88,8 +90,13 @@ A/B 更新流程负责验证和切换；构建缓存与当前注册的运行槽�
 
 ## 本地 HTTP 接口
 
-客户端使用 `http://127.0.0.1:18888/{route}`。`route` 必须存在于运行时
-`routes.json`，客户端不能提供任意上游 URL。
+常规透明转发使用 `http://127.0.0.1:18888/{route}`，其中 `route` 必须存在于运行时
+`routes.json`，客户端不能提供任意上游 URL。`/gemini-account/v1/models` 和
+`/gemini-account/v1/responses` 是 Host 内置的受限协议适配端点，不接受客户端指定上游。
+
+Gemini Account Provider 从 Windows 凭据管理器读取 Google OAuth 登录，通过已有 `antigravity`
+静态路由访问固定 Google Code Assist 接口。它只转换消息、工具定义、工具结果与流式事件；文件、Shell、
+MCP、Skills 和整个 Agent 循环继续由 Codex 控制。工具调用签名只保存在当前 Host 进程内，重启即清空。
 
 `chatgpt-codex` 承载登录后的 Codex 模型请求和模型目录。Browser Lean 只接管这条模型数据通道，
 同时在 Codex 配置中关闭 Apps、插件同步、远程插件目录和分析请求。`auth-openai` 承载 Token
@@ -227,6 +234,6 @@ loopback，只允许目标端口 80/443，拒绝私有和本地目标；上游 T
 证书。凭据从 `%LOCALAPPDATA%\FanVPNBridge\direct-proxy.json` 读取，不写入仓库或日志。
 上游失败时请求失败，不回退到本机公网直连。
 
-三种模式由扩展弹窗、桌面入口或启动器显式选择。启动器只给新启动的 VS Code 进程注入代理环境，并使用
+四种模式由扩展弹窗、桌面入口或启动器显式选择。启动器只给新启动的 VS Code 进程注入所需环境，并使用
 VS Code 的 Chromium 代理参数，不设置 Windows 全局代理。由于 VS Code 是单实例应用，
 切换前必须关闭全部 VS Code 窗口。
