@@ -94,7 +94,7 @@ function New-GeminiModelCatalog {
     param(
         [Parameter(Mandatory)][string]$TargetPath,
         [Parameter(Mandatory)][string]$HomePath,
-        [string[]]$AvailableModels
+        [object[]]$AvailableModels
     )
 
     $template = $null
@@ -124,10 +124,15 @@ function New-GeminiModelCatalog {
         $template = ([System.IO.File]::ReadAllText($fallbackPath) | ConvertFrom-Json).template
     }
 
-    $availableModelIds = @($AvailableModels | Where-Object {
-        $_ -match '^gemini-[a-z0-9.-]+$' -and
-        $_ -notmatch '(?:^|-)image(?:-|$)' -and
-        $_ -notmatch '(?:^|-)agent(?:-|$)'
+    $modelMetadata = @{}
+    $availableModelIds = @($AvailableModels | ForEach-Object {
+        $modelId = if ($_ -is [string]) { [string]$_ } else { [string]$_.id }
+        if ($modelId -match '^gemini-[a-z0-9.-]+$' -and
+            $modelId -notmatch '(?:^|-)image(?:-|$)' -and
+            $modelId -notmatch '(?:^|-)agent(?:-|$)') {
+            if ($_ -isnot [string]) { $modelMetadata[$modelId] = $_ }
+            $modelId
+        }
     } | Sort-Object -Unique)
     if ($availableModelIds.Count -eq 0) {
         $availableModelIds = @(
@@ -167,18 +172,23 @@ function New-GeminiModelCatalog {
             elseif ($_ -match '(?:^|-)medium(?:-|$)') { 2 }
             elseif ($_ -match '(?:^|-)low(?:-|$)') { 1 }
             else { 0 }
-        [pscustomobject]@{ Id = $_; Version = $version; Tier = $tier }
+        [pscustomobject]@{ Id = $_; Version = $version; Tier = $tier; Metadata = $modelMetadata[$_] }
     } | Sort-Object Version, Tier, Id -Descending)
     $defaultModel = $rankedModels[0].Id
 
     $models = New-Object System.Collections.Generic.List[object]
     foreach ($rankedModel in $rankedModels) {
         $modelId = $rankedModel.Id
-        $displayModelId = $modelId -replace '-tiered$', ''
-        $displayName = (($displayModelId -split '-') | ForEach-Object {
-            if ($_ -match '^\d+(?:\.\d+)*$') { $_ }
-            else { (Get-Culture).TextInfo.ToTitleCase($_) }
-        }) -join ' '
+        $metadata = $rankedModel.Metadata
+        $displayName = if ($metadata -and $metadata.display_name) {
+            [string]$metadata.display_name
+        } else {
+            $displayModelId = $modelId -replace '-tiered$', ''
+            (($displayModelId -split '-') | ForEach-Object {
+                if ($_ -match '^\d+(?:\.\d+)*$') { $_ }
+                else { (Get-Culture).TextInfo.ToTitleCase($_) }
+            }) -join ' '
+        }
         # A JSON round trip performs a deep copy. This keeps each model's
         # nested instruction and reasoning objects independent.
         $model = ($template | ConvertTo-Json -Depth 100 | ConvertFrom-Json)
@@ -190,22 +200,42 @@ function New-GeminiModelCatalog {
         Set-ObjectProperty $model 'supported_in_api' $true
         Set-ObjectProperty $model 'prefer_websockets' $false
         Set-ObjectProperty $model 'use_responses_lite' $false
-        $fixedEffort = $null
-        if ($modelId -match '-high$') { $fixedEffort = 'high' }
-        elseif ($modelId -match '-medium$') { $fixedEffort = 'medium' }
-        elseif ($modelId -match '-(?:extra-low|low)$') { $fixedEffort = 'low' }
-        if ($fixedEffort) {
-            Set-ObjectProperty $model 'default_reasoning_level' $fixedEffort
-            Set-ObjectProperty $model 'supported_reasoning_levels' @(
-                [pscustomobject]@{ effort = $fixedEffort; description = 'Reasoning level fixed by this Google model alias' }
-            )
+        $metadataEfforts = @()
+        if ($metadata) {
+            $metadataEfforts = @($metadata.supported_reasoning_levels | Where-Object {
+                $_ -in @('low', 'medium', 'high')
+            } | Select-Object -Unique)
+        }
+        if ($metadataEfforts.Count -gt 0) {
+            $defaultEffort = [string]$metadata.default_reasoning_level
+            if ($defaultEffort -notin $metadataEfforts) { $defaultEffort = $metadataEfforts[0] }
+            Set-ObjectProperty $model 'default_reasoning_level' $defaultEffort
+            Set-ObjectProperty $model 'supported_reasoning_levels' @($metadataEfforts | ForEach-Object {
+                $description = switch ($_) {
+                    'low' { 'Fast responses with lighter reasoning' }
+                    'medium' { 'Balanced speed and reasoning' }
+                    'high' { 'Deeper reasoning for complex tasks' }
+                }
+                [pscustomobject]@{ effort = $_; description = $description }
+            })
         } else {
-            Set-ObjectProperty $model 'default_reasoning_level' 'medium'
-            Set-ObjectProperty $model 'supported_reasoning_levels' @(
-                [pscustomobject]@{ effort = 'low'; description = 'Fast responses with lighter reasoning' },
-                [pscustomobject]@{ effort = 'medium'; description = 'Balanced speed and reasoning' },
-                [pscustomobject]@{ effort = 'high'; description = 'Deeper reasoning for complex tasks' }
-            )
+            $fixedEffort = $null
+            if ($modelId -match '-high$') { $fixedEffort = 'high' }
+            elseif ($modelId -match '-medium$') { $fixedEffort = 'medium' }
+            elseif ($modelId -match '-(?:extra-low|low)$') { $fixedEffort = 'low' }
+            if ($fixedEffort) {
+                Set-ObjectProperty $model 'default_reasoning_level' $fixedEffort
+                Set-ObjectProperty $model 'supported_reasoning_levels' @(
+                    [pscustomobject]@{ effort = $fixedEffort; description = 'Reasoning level fixed by this Google model alias' }
+                )
+            } else {
+                Set-ObjectProperty $model 'default_reasoning_level' 'medium'
+                Set-ObjectProperty $model 'supported_reasoning_levels' @(
+                    [pscustomobject]@{ effort = 'low'; description = 'Fast responses with lighter reasoning' },
+                    [pscustomobject]@{ effort = 'medium'; description = 'Balanced speed and reasoning' },
+                    [pscustomobject]@{ effort = 'high'; description = 'Deeper reasoning for complex tasks' }
+                )
+            }
         }
         foreach ($property in @(
             'availability_nux', 'upgrade', 'available_in_plans',
@@ -245,8 +275,22 @@ $availableModelsCachePath = Join-Path $directory 'browser-ai-bridge-gemini-avail
 if ($effectiveMode -eq 'GeminiAccount' -and $GeminiModelsJson) {
     try {
         $parsedGeminiModels = $GeminiModelsJson | ConvertFrom-Json
-        $availableGeminiModels = @(@($parsedGeminiModels) | Where-Object {
-            $_ -is [string] -and $_ -match '^gemini-[a-z0-9.-]+$'
+        $availableGeminiModels = @(@($parsedGeminiModels) | ForEach-Object {
+            if ($_ -is [string] -and $_ -match '^gemini-[a-z0-9.-]+$') {
+                $_
+            } elseif ($_.id -is [string] -and $_.id -match '^gemini-[a-z0-9.-]+$') {
+                $efforts = @($_.supported_reasoning_levels | Where-Object {
+                    $_ -in @('low', 'medium', 'high')
+                } | Select-Object -Unique)
+                if ($efforts.Count -gt 0) {
+                    [pscustomobject]@{
+                        id = [string]$_.id
+                        display_name = [string]$_.display_name
+                        default_reasoning_level = [string]$_.default_reasoning_level
+                        supported_reasoning_levels = $efforts
+                    }
+                }
+            }
         } | Select-Object -First 100)
     } catch {
         throw 'Gemini model list is invalid.'

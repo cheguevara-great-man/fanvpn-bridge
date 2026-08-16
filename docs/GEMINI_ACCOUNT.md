@@ -55,6 +55,10 @@ Bridge 在每次点击“Codex + Gemini 账号”时，从当前 Google 账号�
 `gemini-3.7-flash-tiered` 显示为 Gemini 3.7 Flash，并被自动选为默认模型。同一家族同时返回的
 High、Medium、Low 别名会自动合并，避免模型名称和 Codex 推理强度重复。
 
+所有支持的系列都使用同一套两级菜单：Model 只显示模型家族，Reasoning 再显示该家族真实支持的
+强度。Gemini 3.7、3.6 和 3.5 Flash 提供 Light、Medium、High；Gemini 3.1 Pro 提供 Light、High。
+Bridge 会把选择映射到 Google 账号目录中的正确内部型号，而不只是修改菜单文字。
+
 仅用于图片生成或 Google 自身 Agent 的型号不会加入 Codex 推理菜单。官方目录临时读取失败时，会继续使用
 上一次成功取得的目录；从未成功读取过时才使用随程序附带的兼容备用目录。
 

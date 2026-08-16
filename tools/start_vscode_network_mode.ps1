@@ -188,10 +188,17 @@ try {
             if (-not $geminiModels.data) {
                 throw 'Gemini account provider returned no available models.'
             }
-            $geminiModelIds = @($geminiModels.data | ForEach-Object { $_.id } | Where-Object {
-                $_ -is [string] -and $_ -match '^gemini-[a-z0-9.-]+$'
+            $geminiCatalogModels = @($geminiModels.data | Where-Object {
+                $_.id -is [string] -and $_.id -match '^gemini-[a-z0-9.-]+$'
+            } | ForEach-Object {
+                [pscustomobject]@{
+                    id = [string]$_.id
+                    display_name = [string]$_.display_name
+                    default_reasoning_level = [string]$_.default_reasoning_level
+                    supported_reasoning_levels = @($_.supported_reasoning_levels)
+                }
             })
-            $geminiModelsJson = ConvertTo-Json -InputObject $geminiModelIds -Compress
+            $geminiModelsJson = ConvertTo-Json -InputObject $geminiCatalogModels -Depth 5 -Compress
         }
         & (Join-Path $PSScriptRoot 'set_vscode_codex_mode.ps1') -Mode $Mode `
             -CodexHome $CodexHome -SettingsPath $SettingsPath -StatePath $StatePath `

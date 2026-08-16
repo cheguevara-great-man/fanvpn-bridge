@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import threading
 import time
@@ -26,7 +27,8 @@ import uuid
 
 
 _CREDENTIAL_TARGET = "gemini:antigravity"
-_DEFAULT_MODEL = "gemini-3.7-flash-tiered"
+_DEFAULT_MODEL = "gemini-3.7-flash"
+_DEFAULT_UPSTREAM_MODEL = "gemini-3.7-flash-tiered"
 _MAX_CREDENTIAL_BYTES = 1024 * 1024
 _MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 _SIGNATURE_FALLBACK = "skip_thought_signature_validator"
@@ -50,6 +52,93 @@ class GoogleAccountCredential:
     @property
     def needs_refresh(self) -> bool:
         return not self.access_token or (self.expires_at > 0 and self.expires_at <= time.time() + 120)
+
+
+@dataclass(frozen=True, slots=True)
+class GeminiModelChoice:
+    id: str
+    display_name: str
+    default_reasoning_level: str
+    supported_reasoning_levels: tuple[str, ...]
+    routes: tuple[tuple[str, str], ...]
+
+
+def _model_display_name(model_id: str) -> str:
+    return " ".join(part if re.fullmatch(r"\d+(?:\.\d+)*", part) else part.title() for part in model_id.split("-"))
+
+
+def _normalize_available_models(models_value: object) -> tuple[GeminiModelChoice, ...]:
+    """Turn Code Assist's internal aliases into user-facing model families."""
+    if not isinstance(models_value, dict):
+        return (
+            GeminiModelChoice(
+                _DEFAULT_MODEL,
+                _model_display_name(_DEFAULT_MODEL),
+                "medium",
+                ("low", "medium", "high"),
+                tuple((effort, _DEFAULT_UPSTREAM_MODEL) for effort in ("low", "medium", "high")),
+            ),
+        )
+
+    tiered: dict[str, str] = {}
+    fixed: dict[str, dict[str, str]] = {}
+    display_names: dict[str, str] = {}
+    display_pattern = re.compile(
+        r"^Gemini\s+(?P<version>\d+(?:\.\d+)*)\s+(?P<family>.+?)\s+\((?P<effort>Low|Medium|High)\)$",
+        re.IGNORECASE,
+    )
+    for raw_id, raw_metadata in models_value.items():
+        raw_id = str(raw_id)
+        if not raw_id.startswith("gemini-"):
+            continue
+        tiered_match = re.fullmatch(r"(?P<base>gemini-[a-z0-9.-]+)-tiered", raw_id)
+        if tiered_match:
+            tiered[tiered_match.group("base")] = raw_id
+            continue
+        metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+        display_name = str(metadata.get("displayName") or "").strip()
+        display_match = display_pattern.fullmatch(display_name)
+        if not display_match:
+            continue
+        family = re.sub(r"[^a-z0-9]+", "-", display_match.group("family").lower()).strip("-")
+        base = f"gemini-{display_match.group('version')}-{family}"
+        effort = display_match.group("effort").lower()
+        routes = fixed.setdefault(base, {})
+        existing = routes.get(effort, "")
+        prefer_agent = effort == "high" and "agent" in raw_id and "agent" not in existing
+        prefer_non_agent = effort != "high" and "agent" in existing and "agent" not in raw_id
+        if not existing or prefer_agent or prefer_non_agent:
+            routes[effort] = raw_id
+        display_names[base] = re.sub(r"\s+\((?:Low|Medium|High)\)$", "", display_name, flags=re.IGNORECASE)
+
+    choices: list[GeminiModelChoice] = []
+    for base in sorted(set(tiered) | set(fixed)):
+        if base in tiered:
+            levels = ("low", "medium", "high")
+            routes = tuple((effort, tiered[base]) for effort in levels)
+        else:
+            routes_by_effort = fixed[base]
+            levels = tuple(effort for effort in ("low", "medium", "high") if effort in routes_by_effort)
+            routes = tuple((effort, routes_by_effort[effort]) for effort in levels)
+        if not levels:
+            continue
+        default = "medium" if "medium" in levels else "high" if "high" in levels else levels[0]
+        choices.append(
+            GeminiModelChoice(
+                base,
+                display_names.get(base) or _model_display_name(base),
+                default,
+                levels,
+                routes,
+            )
+        )
+
+    def rank(choice: GeminiModelChoice) -> tuple[tuple[int, ...], int, str]:
+        match = re.match(r"^gemini-(\d+(?:\.\d+)*)-", choice.id)
+        version = tuple(int(part) for part in match.group(1).split(".")) if match else (0,)
+        return version, 1 if "flash" in choice.id else 0, choice.id
+
+    return tuple(sorted(choices, key=rank, reverse=True)) or _normalize_available_models(None)
 
 
 class ThoughtSignatureCache(MutableMapping[str, str]):
@@ -172,7 +261,7 @@ class GeminiAccountProvider:
         self._project_lock = threading.Lock()
         self._project_id = ""
         self._project_token_digest = b""
-        self._models: tuple[str, ...] = ()
+        self._models: tuple[GeminiModelChoice, ...] = ()
         self._models_at = 0.0
         self._models_token_digest = b""
         self._signatures: MutableMapping[str, str] = ThoughtSignatureCache()
@@ -183,16 +272,34 @@ class GeminiAccountProvider:
         return {
             "object": "list",
             "data": [
-                {"id": model, "object": "model", "created": now, "owned_by": "google-account"}
+                {
+                    "id": model.id,
+                    "object": "model",
+                    "created": now,
+                    "owned_by": "google-account",
+                    "display_name": model.display_name,
+                    "default_reasoning_level": model.default_reasoning_level,
+                    "supported_reasoning_levels": list(model.supported_reasoning_levels),
+                }
                 for model in models
             ],
         }
 
     def responses(self, payload: dict[str, Any]) -> tuple[bool, dict[str, Any] | Iterator[bytes]]:
         requested_model = str(payload.get("model") or "").strip()
-        model = requested_model if requested_model.startswith("gemini-") else _DEFAULT_MODEL
+        models = self._available_models()
+        selected = next((item for item in models if item.id == requested_model), models[0])
+        reasoning = payload.get("reasoning")
+        requested_effort = str(reasoning.get("effort") or "").lower() if isinstance(reasoning, dict) else ""
+        effort = requested_effort if requested_effort in selected.supported_reasoning_levels else selected.default_reasoning_level
+        routes = dict(selected.routes)
+        model = routes[effort]
         stream = bool(payload.get("stream", False))
-        upstream_request = _responses_to_gemini(payload, self._signatures)
+        normalized_payload = dict(payload)
+        normalized_reasoning = dict(reasoning) if isinstance(reasoning, dict) else {}
+        normalized_reasoning["effort"] = effort
+        normalized_payload["reasoning"] = normalized_reasoning
+        upstream_request = _responses_to_gemini(normalized_payload, self._signatures)
         credential = self._valid_credential()
         project = self._project(credential.access_token)
         wrapper = {
@@ -204,7 +311,7 @@ class GeminiAccountProvider:
             "requestType": "agent",
         }
         chunks = self._stream_generate(wrapper, credential.access_token)
-        events = _gemini_to_responses_events(chunks, model, self._signatures)
+        events = _gemini_to_responses_events(chunks, selected.id, self._signatures)
         if stream:
             return True, events
         output_events = list(events)
@@ -281,7 +388,7 @@ class GeminiAccountProvider:
             self._project_token_digest = token_digest
             return project
 
-    def _available_models(self) -> tuple[str, ...]:
+    def _available_models(self) -> tuple[GeminiModelChoice, ...]:
         credential = self._valid_credential()
         token_digest = _token_digest(credential.access_token)
         if self._models and self._models_token_digest == token_digest and time.monotonic() - self._models_at < 300:
@@ -292,13 +399,7 @@ class GeminiAccountProvider:
             credential.access_token,
         )
         models_value = payload.get("models")
-        if isinstance(models_value, dict):
-            models = tuple(sorted(str(name) for name in models_value if str(name).startswith("gemini-")))
-        elif isinstance(models_value, list):
-            models = tuple(sorted(str(item.get("id") or item.get("name")) for item in models_value if isinstance(item, dict)))
-        else:
-            models = ()
-        self._models = models or (_DEFAULT_MODEL,)
+        self._models = _normalize_available_models(models_value)
         self._models_at = time.monotonic()
         self._models_token_digest = token_digest
         return self._models

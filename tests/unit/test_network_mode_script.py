@@ -161,9 +161,21 @@ class NetworkModeScriptTests(unittest.TestCase):
             (codex_home / "config.toml").write_text(
                 'model = "gpt-user-default"\n', encoding="utf-8"
             )
-            official_models = (
-                '["gemini-3.7-flash-tiered","gemini-3.8-flash-tiered",'
-                '"gemini-3.8-flash-image","gemini-pro-agent"]'
+            official_models = json.dumps(
+                [
+                    {
+                        "id": "gemini-3.7-flash",
+                        "display_name": "Gemini 3.7 Flash",
+                        "default_reasoning_level": "medium",
+                        "supported_reasoning_levels": ["low", "medium", "high"],
+                    },
+                    {
+                        "id": "gemini-3.8-flash",
+                        "display_name": "Gemini 3.8 Flash",
+                        "default_reasoning_level": "medium",
+                        "supported_reasoning_levels": ["low", "medium", "high"],
+                    },
+                ]
             )
 
             gemini = self.run_mode(
@@ -176,15 +188,17 @@ class NetworkModeScriptTests(unittest.TestCase):
             )
             models = {item["slug"]: item for item in catalog["models"]}
 
-            self.assertIn('model = "gemini-3.8-flash-tiered"', gemini)
-            self.assertIn("gemini-3.8-flash-tiered", models)
-            self.assertIn("gemini-3.7-flash-tiered", models)
+            self.assertIn('model = "gemini-3.8-flash"', gemini)
+            self.assertIn("gemini-3.8-flash", models)
+            self.assertIn("gemini-3.7-flash", models)
             self.assertEqual(
-                models["gemini-3.8-flash-tiered"]["display_name"],
+                models["gemini-3.8-flash"]["display_name"],
                 "Gemini 3.8 Flash",
             )
-            self.assertNotIn("gemini-3.8-flash-image", models)
-            self.assertNotIn("gemini-pro-agent", models)
+            self.assertEqual(
+                [level["effort"] for level in models["gemini-3.8-flash"]["supported_reasoning_levels"]],
+                ["low", "medium", "high"],
+            )
 
     def test_full_and_lean_modes_switch_without_losing_user_settings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

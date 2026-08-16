@@ -6,11 +6,49 @@ import unittest
 from fanvpn_bridge.gemini_account import (
     ThoughtSignatureCache,
     _gemini_to_responses_events,
+    _normalize_available_models,
     _responses_to_gemini,
 )
 
 
 class GeminiAccountTranslationTests(unittest.TestCase):
+    def test_internal_aliases_become_one_model_family_with_real_effort_routes(self) -> None:
+        choices = _normalize_available_models(
+            {
+                "gemini-3.7-flash-tiered": {"thinkingBudget": -1},
+                "gemini-3.6-flash-tiered": {"thinkingBudget": -1},
+                "gemini-3.6-flash-high": {"displayName": "Gemini 3.6 Flash (High)"},
+                "gemini-3.5-flash-extra-low": {"displayName": "Gemini 3.5 Flash (Low)"},
+                "gemini-3.5-flash-low": {"displayName": "Gemini 3.5 Flash (Medium)"},
+                "gemini-3-flash-agent": {"displayName": "Gemini 3.5 Flash (High)"},
+                "gemini-3.1-pro-low": {"displayName": "Gemini 3.1 Pro (Low)"},
+                "gemini-3.1-pro-high": {"displayName": "Gemini 3.1 Pro (High)"},
+                "gemini-pro-agent": {"displayName": "Gemini 3.1 Pro (High)"},
+                "gemini-2.5-pro": {"displayName": "Gemini 2.5 Pro"},
+            }
+        )
+        by_id = {choice.id: choice for choice in choices}
+
+        self.assertEqual(
+            list(by_id),
+            ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-pro"],
+        )
+        self.assertEqual(by_id["gemini-3.7-flash"].supported_reasoning_levels, ("low", "medium", "high"))
+        self.assertEqual(set(dict(by_id["gemini-3.6-flash"].routes).values()), {"gemini-3.6-flash-tiered"})
+        self.assertEqual(
+            dict(by_id["gemini-3.5-flash"].routes),
+            {
+                "low": "gemini-3.5-flash-extra-low",
+                "medium": "gemini-3.5-flash-low",
+                "high": "gemini-3-flash-agent",
+            },
+        )
+        self.assertEqual(by_id["gemini-3.1-pro"].supported_reasoning_levels, ("low", "high"))
+        self.assertEqual(
+            dict(by_id["gemini-3.1-pro"].routes),
+            {"low": "gemini-3.1-pro-low", "high": "gemini-pro-agent"},
+        )
+
     def test_signature_cache_is_bounded_and_keeps_recent_calls(self) -> None:
         signatures = ThoughtSignatureCache(limit=2)
         signatures["call_1"] = "one"
