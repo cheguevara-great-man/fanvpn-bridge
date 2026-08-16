@@ -14,6 +14,9 @@ from fanvpn_bridge.mode_control import (
     MODE_BROWSER_LEAN,
     MODE_DIRECT,
     MODE_GEMINI_ACCOUNT,
+    MODE_HYBRID_CONFIGURED,
+    MODE_HYBRID_FORCE,
+    MODE_HYBRID_NATIVE,
     MODE_UNMANAGED,
     ModeControlError,
     _friendly_failure,
@@ -62,6 +65,24 @@ class CodexModeControllerTests(unittest.TestCase):
             )
             self.assertEqual(controller.get_mode(), MODE_BROWSER_FULL)
 
+            state = root / "state.json"
+            state.parent.mkdir(parents=True, exist_ok=True)
+            self.write_config(
+                root,
+                'model_provider = "browser_ai_bridge"\n\n'
+                '[model_providers.browser_ai_bridge]\n'
+                'base_url = "http://127.0.0.1:18888/hybrid/v1"\n',
+            )
+            for policy, expected in (
+                ("force_gemini_37_high", MODE_HYBRID_FORCE),
+                ("configured", MODE_HYBRID_CONFIGURED),
+                ("native", MODE_HYBRID_NATIVE),
+            ):
+                (root / "subagent-policy.json").write_text(
+                    '{"mode":"' + policy + '"}', encoding="utf-8"
+                )
+                self.assertEqual(controller.get_mode(), expected)
+
     def test_set_mode_uses_complete_vscode_launcher(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -108,15 +129,23 @@ class CodexModeControllerTests(unittest.TestCase):
             controller = self.make_controller(root)
             self.write_config(root, 'model_provider = "user_provider"\n')
             original = (root / "codex" / "config.toml").read_bytes()
+            agents = root / "codex" / "agents"
+            agents.mkdir()
+            active_role = agents / "browser-ai-bridge-reviewer.toml"
+            disabled_role = agents / "browser-ai-bridge-reviewer.toml.disabled"
+            active_role.write_text('name = "reviewer"\n', encoding="utf-8")
 
             def run(_command: list[str], **_kwargs: object) -> SimpleNamespace:
                 self.write_config(root, 'model_provider = "browser_ai_bridge"\n')
+                active_role.replace(disabled_role)
                 return SimpleNamespace(returncode=1, stdout=b"", stderr=b"unexpected")
 
             with patch("fanvpn_bridge.mode_control.subprocess.run", side_effect=run):
                 with self.assertRaises(ModeControlError):
                     controller.set_mode(MODE_BROWSER_LEAN)
             self.assertEqual((root / "codex" / "config.toml").read_bytes(), original)
+            self.assertTrue(active_role.is_file())
+            self.assertFalse(disabled_role.exists())
 
     def test_browser_timing_parser_is_strict(self) -> None:
         timing = NativeDispatcher._parse_browser_timing(

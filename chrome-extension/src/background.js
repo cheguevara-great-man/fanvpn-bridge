@@ -182,7 +182,8 @@ async function handleNativeMessage(message, port) {
   if (
     message.type === MessageType.CONTROL_MODE_RESULT ||
     message.type === MessageType.CONTROL_ANTIGRAVITY_RESULT ||
-    message.type === MessageType.CONTROL_DEVICE_RESULT
+    message.type === MessageType.CONTROL_DEVICE_RESULT ||
+    message.type === MessageType.CONTROL_SUBAGENTS_RESULT
   ) {
     const pending = pendingControls.get(message.id);
     if (!pending) return;
@@ -363,6 +364,27 @@ async function requestDeviceControl(kind, config = null) {
   });
 }
 
+async function requestSubagentControl(kind, config = null) {
+  await waitForNativeHandshake();
+  const id = crypto.randomUUID().replaceAll("-", "");
+  const type = kind === "apply"
+    ? MessageType.CONTROL_SUBAGENTS_APPLY
+    : MessageType.CONTROL_SUBAGENTS_GET;
+  const fields = kind === "apply" ? { id, config } : { id };
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pendingControls.delete(id);
+      reject(new Error("子 Agent 配置超时"));
+    }, CONTROL_TIMEOUT_MS);
+    pendingControls.set(id, { resolve, reject, timeout });
+    if (!postNative(envelope(type, fields))) {
+      pendingControls.delete(id);
+      clearTimeout(timeout);
+      reject(new Error("Native Host 当前不可用"));
+    }
+  });
+}
+
 async function waitForNativeHandshake() {
   connectNative();
   const deadline = Date.now() + CONTROL_HANDSHAKE_TIMEOUT_MS;
@@ -434,7 +456,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
   if (message?.target === "background" && message.kind === "codex-mode:set") {
-    if (!["direct", "browser_lean", "browser_full", "gemini_account"].includes(message.mode)) {
+    if (!["direct", "browser_lean", "browser_full", "gemini_account", "hybrid_force", "hybrid_configured", "hybrid_native"].includes(message.mode)) {
       sendResponse({ ok: false, mode: "unmanaged", message: "不支持的模式" });
       return false;
     }
@@ -448,6 +470,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     ["antigravity-setup:get", "antigravity-setup:run"].includes(message.kind)
   ) {
     requestAntigravityControl(message.kind.endsWith(":run") ? "setup" : "get")
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, message: error.message }));
+    return true;
+  }
+  if (
+    message?.target === "background" &&
+    ["subagents:get", "subagents:apply"].includes(message.kind)
+  ) {
+    requestSubagentControl(message.kind.endsWith(":apply") ? "apply" : "get", message.config)
       .then(sendResponse)
       .catch((error) => sendResponse({ ok: false, message: error.message }));
     return true;

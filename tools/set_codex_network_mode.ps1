@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('Browser', 'BrowserLean', 'BrowserFull', 'Direct', 'GeminiAccount')]
+    [ValidateSet('Browser', 'BrowserLean', 'BrowserFull', 'Direct', 'GeminiAccount', 'HybridForce', 'HybridConfigured', 'HybridNative')]
     [string]$Mode,
 
     [string]$CodexHome = (Join-Path $HOME '.codex'),
@@ -94,7 +94,8 @@ function New-GeminiModelCatalog {
     param(
         [Parameter(Mandatory)][string]$TargetPath,
         [Parameter(Mandatory)][string]$HomePath,
-        [object[]]$AvailableModels
+        [object[]]$AvailableModels,
+        [switch]$IncludeOpenAI
     )
 
     $template = $null
@@ -177,6 +178,21 @@ function New-GeminiModelCatalog {
     $defaultModel = $rankedModels[0].Id
 
     $models = New-Object System.Collections.Generic.List[object]
+    if ($IncludeOpenAI -and (Test-Path -LiteralPath $cachePath)) {
+        try {
+            $officialCache = [System.IO.File]::ReadAllText($cachePath) | ConvertFrom-Json
+            foreach ($officialModel in @($officialCache.models | Where-Object {
+                $_.slug -is [string] -and $_.slug -notmatch '^gemini-'
+            })) {
+                $copy = $officialModel | ConvertTo-Json -Depth 100 | ConvertFrom-Json
+                Set-ObjectProperty $copy 'priority' ($models.Count + 1)
+                $models.Add($copy)
+            }
+        } catch {
+            # The Gemini entries still make Hybrid usable when Codex has not
+            # populated its official model cache yet.
+        }
+    }
     foreach ($rankedModel in $rankedModels) {
         $modelId = $rankedModel.Id
         $metadata = $rankedModel.Metadata
@@ -270,9 +286,10 @@ function New-GeminiModelCatalog {
     return $defaultModel
 }
 
+$isHybrid = $effectiveMode -in @('HybridForce', 'HybridConfigured', 'HybridNative')
 $availableGeminiModels = @()
 $availableModelsCachePath = Join-Path $directory 'browser-ai-bridge-gemini-available-models.json'
-if ($effectiveMode -eq 'GeminiAccount' -and $GeminiModelsJson) {
+if (($effectiveMode -eq 'GeminiAccount' -or $isHybrid) -and $GeminiModelsJson) {
     try {
         $parsedGeminiModels = $GeminiModelsJson | ConvertFrom-Json
         $availableGeminiModels = @(@($parsedGeminiModels) | ForEach-Object {
@@ -304,7 +321,7 @@ if ($effectiveMode -eq 'GeminiAccount' -and $GeminiModelsJson) {
         $cacheJson,
         (New-Object System.Text.UTF8Encoding($false))
     )
-} elseif ($effectiveMode -eq 'GeminiAccount' -and (Test-Path -LiteralPath $availableModelsCachePath)) {
+} elseif (($effectiveMode -eq 'GeminiAccount' -or $isHybrid) -and (Test-Path -LiteralPath $availableModelsCachePath)) {
     try {
         $availableGeminiModels = @(
             [System.IO.File]::ReadAllText($availableModelsCachePath) | ConvertFrom-Json
@@ -372,7 +389,7 @@ if ($previousChatgptLine -and -not [regex]::IsMatch($top, '(?m)^chatgpt_base_url
 }
 $content = $top + $tables
 
-if ($effectiveMode -eq 'BrowserFull') {
+if ($effectiveMode -eq 'BrowserFull' -or $isHybrid) {
     $firstTable = [regex]::Match($content, '(?m)^\s*\[')
     $topLength = if ($firstTable.Success) { $firstTable.Index } else { $content.Length }
     $top = $content.Substring(0, $topLength)
@@ -431,7 +448,7 @@ if ($previousCatalogLine -and -not [regex]::IsMatch($top, '(?m)^\s*model_catalog
 }
 $content = $top + $tables
 
-if ($effectiveMode -eq 'GeminiAccount') {
+if ($effectiveMode -eq 'GeminiAccount' -or $isHybrid) {
     $firstTable = [regex]::Match($content, '(?m)^\s*\[')
     $topLength = if ($firstTable.Success) { $firstTable.Index } else { $content.Length }
     $top = $content.Substring(0, $topLength)
@@ -452,7 +469,8 @@ if ($effectiveMode -eq 'GeminiAccount') {
     $geminiDefaultModel = New-GeminiModelCatalog `
         -TargetPath $catalogPath `
         -HomePath $directory `
-        -AvailableModels $availableGeminiModels
+        -AvailableModels $availableGeminiModels `
+        -IncludeOpenAI:$isHybrid
     $catalogTomlPath = $catalogPath.Replace('\', '/')
     $geminiCatalogBlock = @(
         $geminiCatalogBegin,
@@ -618,11 +636,12 @@ if ([regex]::IsMatch($top, $modelProviderPattern)) {
 }
 $content = "model_provider = `"$provider`"`r`n" + $top.TrimStart() + $tables
 
+$bridgeBaseUrl = if ($isHybrid) { 'http://127.0.0.1:18888/hybrid/v1' } else { 'http://127.0.0.1:18888/chatgpt-codex' }
 $managedProviders = @"
 $providerBegin
 [model_providers.browser_ai_bridge]
-name = "ChatGPT Codex through Browser AI Bridge"
-base_url = "http://127.0.0.1:18888/chatgpt-codex"
+name = "GPT and Gemini through Browser AI Bridge"
+base_url = "$bridgeBaseUrl"
 requires_openai_auth = true
 wire_api = "responses"
 supports_websockets = false
@@ -646,6 +665,43 @@ supports_websockets = false
 $providerEnd
 "@
 $content = $content.TrimEnd() + "`r`n`r`n" + $managedProviders.Trim() + "`r`n"
+
+# Restore any previous Bridge-managed subagent defaults before applying the
+# newly selected policy. This makes all three Hybrid choices reversible.
+$agentsBegin = '# BEGIN Browser AI Bridge managed subagent defaults'
+$agentsEnd = '# END Browser AI Bridge managed subagent defaults'
+$agentsPattern = '(?ms)^' + [regex]::Escape($agentsBegin) + '.*?^' +
+    [regex]::Escape($agentsEnd) + '\s*'
+$agentsMatch = [regex]::Match($content, $agentsPattern)
+$previousSubagentModel = $null
+$previousSubagentEffort = $null
+if ($agentsMatch.Success) {
+    $savedModel = [regex]::Match($agentsMatch.Value, '(?m)^# previous-subagent-model-base64: (?<value>[A-Za-z0-9+/=]+|absent)\s*$')
+    $savedEffort = [regex]::Match($agentsMatch.Value, '(?m)^# previous-subagent-effort-base64: (?<value>[A-Za-z0-9+/=]+|absent)\s*$')
+    if (-not $savedModel.Success -or -not $savedEffort.Success) {
+        throw 'Managed subagent defaults block is missing restore metadata.'
+    }
+    $previousSubagentModel = ConvertFrom-RestoreValue $savedModel.Groups['value'].Value
+    $previousSubagentEffort = ConvertFrom-RestoreValue $savedEffort.Groups['value'].Value
+    $content = [regex]::Replace($content, $agentsPattern, '', 1)
+    $content = Set-TomlKeyLine -Text $content -Table 'agents' -Key 'default_subagent_model' -Line $previousSubagentModel
+    $content = Set-TomlKeyLine -Text $content -Table 'agents' -Key 'default_subagent_reasoning_effort' -Line $previousSubagentEffort
+}
+if ($effectiveMode -eq 'HybridConfigured') {
+    if (-not $agentsMatch.Success) {
+        $previousSubagentModel = Get-TomlKeyLine -Text $content -Table 'agents' -Key 'default_subagent_model'
+        $previousSubagentEffort = Get-TomlKeyLine -Text $content -Table 'agents' -Key 'default_subagent_reasoning_effort'
+    }
+    $content = Set-TomlKeyLine -Text $content -Table 'agents' -Key 'default_subagent_model' -Line 'default_subagent_model = "gemini-3.7-flash"'
+    $content = Set-TomlKeyLine -Text $content -Table 'agents' -Key 'default_subagent_reasoning_effort' -Line 'default_subagent_reasoning_effort = "high"'
+    $agentsBlock = @(
+        $agentsBegin,
+        "# previous-subagent-model-base64: $(ConvertTo-RestoreValue $previousSubagentModel)",
+        "# previous-subagent-effort-base64: $(ConvertTo-RestoreValue $previousSubagentEffort)",
+        $agentsEnd
+    )
+    $content = ($agentsBlock -join "`r`n") + "`r`n" + $content.TrimStart()
+}
 
 # Keep the generated catalog block stable across repeated button clicks.
 $content = [regex]::Replace(
@@ -677,6 +733,45 @@ if ($effectiveMode -eq 'BrowserLean') {
     Write-Host 'Browser full mode: ChatGPT product backend, Apps, and plugin settings are enabled as configured.'
 } else {
     Write-Host 'Direct mode: previously saved Apps, plugin, and analytics settings are restored.'
+}
+
+# Hybrid subagent policy is intentionally separate from the provider. Native
+# mode removes only Bridge-managed defaults; Configured adds ordinary Codex
+# defaults; Force is enforced at request time using x-openai-subagent.
+$policyPath = Join-Path $env:LOCALAPPDATA 'FanVPNBridge\subagent-policy.json'
+$policyMode = if ($isHybrid) {
+    switch ($effectiveMode) {
+        'HybridForce' { 'force_gemini_37_high' }
+        'HybridConfigured' { 'configured' }
+        default { 'native' }
+    }
+} else { 'native' }
+$policy = [ordered]@{
+    mode = $policyMode
+    default_model = 'gemini-3.7-flash'
+    default_reasoning_effort = 'high'
+} | ConvertTo-Json
+$policyDirectory = Split-Path -Parent $policyPath
+New-Item -ItemType Directory -Path $policyDirectory -Force | Out-Null
+[System.IO.File]::WriteAllText($policyPath, $policy, $utf8WithoutBom)
+
+# Custom roles created by the popup are active only in Configured mode. Other
+# modes keep their files with a non-TOML suffix so Codex cannot select them,
+# while the user's settings remain available for the next Configured session.
+$managedAgentsDirectory = Join-Path $directory 'agents'
+if (Test-Path -LiteralPath $managedAgentsDirectory -PathType Container) {
+    if ($effectiveMode -eq 'HybridConfigured') {
+        Get-ChildItem -LiteralPath $managedAgentsDirectory -Filter 'browser-ai-bridge-*.toml.disabled' -File |
+            ForEach-Object {
+                $activePath = $_.FullName.Substring(0, $_.FullName.Length - '.disabled'.Length)
+                Move-Item -LiteralPath $_.FullName -Destination $activePath -Force
+            }
+    } else {
+        Get-ChildItem -LiteralPath $managedAgentsDirectory -Filter 'browser-ai-bridge-*.toml' -File |
+            ForEach-Object {
+                Move-Item -LiteralPath $_.FullName -Destination ($_.FullName + '.disabled') -Force
+            }
+    }
 }
 if ($effectiveMode -ne 'Direct') {
     Write-Host 'Windows compatibility: unsupported PowerShell shell snapshot is disabled.'

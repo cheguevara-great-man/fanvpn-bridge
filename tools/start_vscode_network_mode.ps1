@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('Browser', 'BrowserLean', 'BrowserFull', 'Direct', 'GeminiAccount')]
+    [ValidateSet('Browser', 'BrowserLean', 'BrowserFull', 'Direct', 'GeminiAccount', 'HybridForce', 'HybridConfigured', 'HybridNative')]
     [string]$Mode,
 
     [string]$CodexHome = (Join-Path $HOME '.codex'),
@@ -143,12 +143,30 @@ $codeExecutable = Get-CodeExecutable
 $configPath = Join-Path ([System.IO.Path]::GetFullPath($CodexHome)) 'config.toml'
 $settingsFullPath = [System.IO.Path]::GetFullPath($SettingsPath)
 $stateFullPath = [System.IO.Path]::GetFullPath($StatePath)
+$managedRolePaths = New-Object System.Collections.Generic.HashSet[string]
+$agentsDirectory = Join-Path ([System.IO.Path]::GetFullPath($CodexHome)) 'agents'
+if (Test-Path -LiteralPath $agentsDirectory -PathType Container) {
+    Get-ChildItem -LiteralPath $agentsDirectory -File | Where-Object {
+        $_.Name -like 'browser-ai-bridge-*.toml' -or $_.Name -like 'browser-ai-bridge-*.toml.disabled'
+    } | ForEach-Object {
+        [void]$managedRolePaths.Add($_.FullName)
+        if ($_.Name.EndsWith('.toml.disabled')) {
+            [void]$managedRolePaths.Add($_.FullName.Substring(0, $_.FullName.Length - '.disabled'.Length))
+        } else {
+            [void]$managedRolePaths.Add($_.FullName + '.disabled')
+        }
+    }
+}
 $snapshots = @(
     Save-FileState -Path $configPath
     Save-FileState -Path "$configPath.before-network-mode.bak"
+    Save-FileState -Path (Join-Path ([System.IO.Path]::GetFullPath($CodexHome)) 'browser-ai-bridge-gemini-models.json')
+    Save-FileState -Path (Join-Path ([System.IO.Path]::GetFullPath($CodexHome)) 'browser-ai-bridge-gemini-available-models.json')
+    Save-FileState -Path (Join-Path $env:LOCALAPPDATA 'FanVPNBridge\subagent-policy.json')
     Save-FileState -Path $settingsFullPath
     Save-FileState -Path "$settingsFullPath.before-network-mode.bak"
     Save-FileState -Path $stateFullPath
+    foreach ($rolePath in $managedRolePaths) { Save-FileState -Path $rolePath }
 )
 $directProxyWasRunning = Test-DirectProxyHealthy
 
@@ -179,7 +197,7 @@ try {
         if (-not $productApiReady.ready -or $productApiReady.mode -ne 'native-host-http-server') {
             throw 'The service on 127.0.0.1:8000 is not a ready Browser AI Bridge product endpoint.'
         }
-        if ($Mode -eq 'GeminiAccount') {
+        if ($Mode -eq 'GeminiAccount' -or $Mode -in @('HybridForce', 'HybridConfigured', 'HybridNative')) {
             try {
                 $geminiModels = Invoke-RestMethod 'http://127.0.0.1:18888/gemini-account/v1/models' -Proxy $null -TimeoutSec 15
             } catch {
@@ -210,7 +228,7 @@ try {
             $env:CODEX_REFRESH_TOKEN_URL_OVERRIDE = 'http://127.0.0.1:18888/auth-openai/oauth/token'
             $env:CODEX_REVOKE_TOKEN_URL_OVERRIDE = 'http://127.0.0.1:18888/auth-openai/oauth/revoke'
         }
-        if ($Mode -eq 'BrowserFull') {
+        if ($Mode -eq 'BrowserFull' -or $Mode -in @('HybridForce', 'HybridConfigured', 'HybridNative')) {
             # Codex otherwise downgrades its built-in ChatGPT MCP authentication to
             # OAuth when chatgpt_base_url points at loopback, causing unnecessary
             # GET/.well-known discovery.  This non-secret sentinel tells Codex that

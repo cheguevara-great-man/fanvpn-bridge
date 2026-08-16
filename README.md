@@ -27,7 +27,8 @@ Codex / Claude Code / CC Switch
  OpenAI / Anthropic / Google Gemini
 ```
 
-Bridge 只负责安全、透明的 HTTP 传输。AI 协议转换不在 Bridge 中完成：例如
+Bridge 的常规 API 路由只负责安全、透明的 HTTP 传输。两个显式选择的本地 Provider 例外：Google 账号
+Gemini 和 Hybrid 会在本机转换模型推理协议；例如
 Claude Code 使用 Gemini 时，由 CC Switch 转换 Anthropic Messages 与 Gemini Native，
 并维护 Gemini 的 `thoughtSignature`。
 
@@ -43,10 +44,11 @@ Claude Code 使用 Gemini 时，由 CC Switch 转换 Anthropic Messages 与 Gemi
 - 仅监听 `127.0.0.1`，校验本地 Host/Origin，上游由静态 allowlist 限制。
 - Chrome 出口不可用时失败关闭，不回退到系统直连。
 - Codex 首次登录可通过一次性助手完成，无需复制其他电脑的 `auth.json`。
-- Codex 提供稳定的 Browser Lean、Browser Full（浏览器完整，实验）、Google 账号 Gemini 和可选 Direct 四种模式；
+- Codex 提供 Browser Lean、Browser Full、Google 账号 Gemini、GPT+Gemini Hybrid 和可选 Direct；
   `Browser` 默认等同 Browser Lean。
-- Chrome 扩展弹窗提供“服务器直连”“浏览器精简”“浏览器完整”和“Codex + Gemini 账号”四个按钮；关闭全部
-  VS Code 后点击，Bridge 会事务式更新托管配置并按所选模式启动 VS Code。四种模式都应从按钮启动，
+- Chrome 扩展弹窗还提供三种 Hybrid 子 Agent 策略；主 Agent 可从同一菜单选择 GPT/Gemini，子 Agent可选择
+  固定 Gemini、默认 Gemini 但允许 Codex 覆盖，或完全原生决策。关闭全部
+  VS Code 后点击，Bridge 会事务式更新托管配置并按所选模式启动 VS Code。需要进程级环境的模式都应从按钮启动，
   不能只看上次磁盘配置后再从普通 VS Code 图标打开。
 - A/B 事务式更新，切换前自动冒烟测试，失败时恢复旧注册。
 - Windows 登录后自动启动 Chrome 并等待 Bridge ready。
@@ -112,6 +114,7 @@ PowerShell 中完成一次 Google 授权；此后只需从 VS Code 的 Antigravi
 | Gemini OpenAI compatibility | `http://127.0.0.1:18888/gemini-openai/v1` |
 | Antigravity CLI Cloud Code | `http://127.0.0.1:18888/antigravity` |
 | Codex + Google 账号 Gemini | `http://127.0.0.1:18888/gemini-account/v1` |
+| Codex Hybrid（GPT + Gemini） | `http://127.0.0.1:18888/hybrid/v1` |
 
 路由来自 `config/routes.example.json`。API Key 不应写入路由配置。
 
@@ -130,6 +133,7 @@ Browser Full（浏览器完整，实验）会把产品后端也交给 Chrome，�
 | [客户端使用](docs/USAGE.md) | Codex、Claude Code、CC Switch 和 Gemini 模式 |
 | [Antigravity CLI 浏览器链路](docs/ANTIGRAVITY_CLI.md) | 通过 Chrome 安装并运行官方 Antigravity CLI |
 | [Codex + Gemini 账号](docs/GEMINI_ACCOUNT.md) | Codex 担任 Agent，Google 登录账号只提供 Gemini 模型推理 |
+| [Codex Hybrid](docs/HYBRID_CODEX.md) | 同一模型菜单使用 GPT/Gemini，并配置子 Agent模型策略 |
 | [开发指南](docs/DEVELOPMENT.md) | 目录、测试、构建和开发约束 |
 | [故障排查](docs/TROUBLESHOOTING.md) | 面向当前版本的诊断步骤 |
 | [问题与解决记录](docs/PROBLEM_SOLVING.md) | 开发过程中的问题、原因和经验 |

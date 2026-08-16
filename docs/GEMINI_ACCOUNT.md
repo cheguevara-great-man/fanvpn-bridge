@@ -76,6 +76,9 @@ Google 可能调整账号可用模型、额度和命名，
 
 ## 与其他模式的关系
 
+如果希望 GPT 与 Gemini 同时出现在一个 Codex 模型菜单，并让主 Agent 与子 Agent分别选择模型，请使用
+[Codex Hybrid](HYBRID_CODEX.md)。“仅 Gemini”模式保留为隔离测试和兼容回退入口。
+
 | 模式 | Agent | 模型与额度 | 网络出口 |
 |---|---|---|---|
 | 浏览器精简 / 完整 | Codex | OpenAI 登录账号 | Chrome 浏览器链路 |

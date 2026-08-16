@@ -40,6 +40,7 @@ from .errors import BridgeError, ErrorCode
 from .gemini_account import GeminiAccountError, GeminiAccountProvider
 from .product_cache import CachedResponse, ProductResponseCache
 from .routing import RouteTable
+from .subagent_policy import SubagentPolicyStore
 from .usage_reporting import RequestUsageMetadata, TokenUsage, UsageExtractor, UsageReporter
 
 
@@ -141,6 +142,7 @@ class BridgeHTTPServer(ThreadingHTTPServer):
         product_cache: ProductResponseCache,
         usage_reporter: UsageReporter | None = None,
         gemini_account: GeminiAccountProvider | None = None,
+        subagent_policy: SubagentPolicyStore | None = None,
         product_api_alias: bool = False,
     ) -> None:
         self.bridge_config = config
@@ -152,6 +154,7 @@ class BridgeHTTPServer(ThreadingHTTPServer):
         self.product_cache = product_cache
         self.usage_reporter = usage_reporter
         self.gemini_account = gemini_account
+        self.subagent_policy = subagent_policy
         self.product_api_alias = product_api_alias
         super().__init__(server_address, BridgeRequestHandler)
 
@@ -188,6 +191,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         request_started = time.monotonic()
         route_name: str | None = None
         family = "none"
+        preloaded_body: bytes | None = None
         cache_policy = None
         cache_owner = False
         try:
@@ -241,6 +245,63 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
 
         try:
             local_target = self.path
+            if not server.product_api_alias and self.path.split("?", 1)[0].startswith("/hybrid/v1/"):
+                hybrid_path = self.path.split("?", 1)[0].rstrip("/")
+                if hybrid_path.endswith("/models") and method == "GET":
+                    provider = server.gemini_account
+                    if provider is None:
+                        self._send_json(503, {"error": {"code": "gemini_account_unavailable"}})
+                    else:
+                        self._send_json(200, provider.models_response())
+                    return
+                if hybrid_path.endswith("/responses") and method == "POST":
+                    preloaded_body = b"".join(
+                        self._request_body(
+                            server.bridge_config.protocol.max_chunk_bytes,
+                            max_body_bytes=server.bridge_config.protocol.max_request_body_bytes,
+                            timeout=server.bridge_config.protocol.request_timeout_seconds,
+                        )
+                    )
+                    try:
+                        hybrid_payload = json.loads(preloaded_body.decode("utf-8"))
+                    except (UnicodeError, json.JSONDecodeError) as exc:
+                        raise BridgeError(
+                            ErrorCode.REQUEST_BODY_INVALID,
+                            "Hybrid Responses request must be valid JSON",
+                        ) from exc
+                    if not isinstance(hybrid_payload, dict):
+                        raise BridgeError(
+                            ErrorCode.REQUEST_BODY_INVALID,
+                            "Hybrid Responses request must be a JSON object",
+                        )
+                    local_headers = self._request_headers()
+                    applied = (
+                        server.subagent_policy.apply(hybrid_payload, local_headers)
+                        if server.subagent_policy is not None
+                        else None
+                    )
+                    if applied is not None:
+                        hybrid_payload = applied.payload
+                        if applied.overridden:
+                            _LOG.info(
+                                "subagent_model_override request_id=%s kind=%s model=gemini-3.7-flash effort=high",
+                                request_id,
+                                applied.subagent_kind,
+                            )
+                    preloaded_body = json.dumps(
+                        hybrid_payload, ensure_ascii=False, separators=(",", ":")
+                    ).encode("utf-8")
+                    requested_model = str(hybrid_payload.get("model") or "").strip()
+                    if requested_model.startswith("gemini-"):
+                        self._handle_gemini_payload(server, hybrid_payload, request_id)
+                        return
+                    local_target = "/chatgpt-codex/responses"
+                else:
+                    # Compaction and future non-model endpoints remain on the
+                    # native ChatGPT Codex route. They are product lifecycle
+                    # operations, not interchangeable model inference calls.
+                    suffix = self.path[len("/hybrid/v1") :]
+                    local_target = "/chatgpt-codex" + suffix
             if server.product_api_alias:
                 if self.path == "/api" or self.path.startswith("/api/"):
                     local_target = "/chatgpt-backend/backend-api" + self.path[4:]
@@ -370,10 +431,14 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                                 ErrorCode.REQUEST_TIMEOUT,
                                 "Timed out waiting for an identical product metadata request",
                             )
-            body = self._request_body(
-                server.bridge_config.protocol.max_chunk_bytes,
-                max_body_bytes=server.bridge_config.protocol.max_request_body_bytes,
-                timeout=server.bridge_config.protocol.request_timeout_seconds,
+            body = (
+                iter((preloaded_body,))
+                if preloaded_body is not None
+                else self._request_body(
+                    server.bridge_config.protocol.max_chunk_bytes,
+                    max_body_bytes=server.bridge_config.protocol.max_request_body_bytes,
+                    timeout=server.bridge_config.protocol.request_timeout_seconds,
+                )
             )
             usage_metadata = None
             if (
@@ -1008,6 +1073,35 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 raise GeminiAccountError("Responses request must be valid JSON", status=400) from exc
             if not isinstance(payload, dict):
                 raise GeminiAccountError("Responses request must be a JSON object", status=400)
+            self._handle_gemini_payload(server, payload, request_id)
+            return
+        except GeminiAccountError as error:
+            if not headers_sent:
+                self._send_json(
+                    error.status,
+                    {"error": {"message": str(error), "type": error.code, "code": error.code}},
+                )
+            else:
+                self.close_connection = True
+            _LOG.warning(
+                "gemini_account_failed request_id=%s code=%s status=%s",
+                request_id,
+                error.code,
+                error.status,
+            )
+
+    def _handle_gemini_payload(
+        self,
+        server: BridgeHTTPServer,
+        payload: dict[str, object],
+        request_id: str,
+    ) -> None:
+        provider = server.gemini_account
+        if provider is None:
+            self._send_json(503, {"error": {"code": "gemini_account_unavailable"}})
+            return
+        headers_sent = False
+        try:
             streaming, result = provider.responses(payload)
             if not streaming:
                 self._send_json(200, result)
@@ -1143,6 +1237,7 @@ def create_http_server(
     product_cache: ProductResponseCache | None = None,
     usage_reporter: UsageReporter | None = None,
     gemini_account: GeminiAccountProvider | None = None,
+    subagent_policy: SubagentPolicyStore | None = None,
 ) -> BridgeHTTPServer:
     auth_path = codex_auth_path or Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "auth.json"
     return BridgeHTTPServer(
@@ -1156,5 +1251,6 @@ def create_http_server(
         product_cache=product_cache or ProductResponseCache(),
         usage_reporter=usage_reporter,
         gemini_account=gemini_account,
+        subagent_policy=subagent_policy,
         product_api_alias=product_api_alias,
     )

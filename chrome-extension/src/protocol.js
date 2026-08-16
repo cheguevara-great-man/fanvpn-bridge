@@ -31,6 +31,9 @@ export const MessageType = Object.freeze({
   CONTROL_DEVICE_GET: "control.device.get",
   CONTROL_DEVICE_APPLY: "control.device.apply",
   CONTROL_DEVICE_RESULT: "control.device.result",
+  CONTROL_SUBAGENTS_GET: "control.subagents.get",
+  CONTROL_SUBAGENTS_APPLY: "control.subagents.apply",
+  CONTROL_SUBAGENTS_RESULT: "control.subagents.result",
 });
 
 export const ErrorCode = Object.freeze({

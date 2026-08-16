@@ -12,9 +12,10 @@ FanVPN 已建立的浏览器网络出口访问预先允许的 AI API。
 3. **浏览器出口层**：Chrome 扩展通过 Offscreen Document 执行 `fetch`，请求由 FanVPN 承载。
 
 常规静态路由不承担 Responses、Chat Completions、Anthropic Messages 或 Gemini Native
-之间的转换，也不保存模型会话状态。唯一例外是显式选择的 `gemini-account` 本地 Provider：它在
-Codex Responses 与 Google 账号模型协议之间做无状态适配，并在进程内短期保存工具调用需要的
-`thoughtSignature`；Agent 循环和工具执行仍属于 Codex。
+之间的转换，也不保存模型会话状态。例外是显式选择的 `gemini-account` 与 `hybrid` 本地 Provider：
+它们在 Codex Responses 与 Google 账号模型协议之间做无状态适配，并在进程内短期保存工具调用需要的
+`thoughtSignature`；Agent 循环和工具执行仍属于 Codex。Hybrid 还会按请求中的模型名在 GPT 与
+Gemini 推理后端之间选择，但客户端不能提供任意上游地址。
 
 ## 运行时拓扑
 
@@ -37,7 +38,7 @@ Windows 用户登录
 Chrome 的 Native Messaging Port 维持 Host 和扩展 Service Worker 的生命周期。
 端口断开后扩展按退避策略重连；Host 收到 stdin EOF 后停止接收请求、取消在途请求并退出。
 
-三模式控制复用同一条受信 Native Messaging 通道：
+全部托管模式复用同一条受信 Native Messaging 通道：
 
 ```text
 Chrome 扩展弹窗
@@ -48,8 +49,9 @@ Chrome 扩展弹窗
   -> 事务式更新托管配置并启动 VS Code
 ```
 
-扩展只能提交 `direct`、`browser_lean`、`browser_full`、`gemini_account` 四个枚举值，不能指定命令、脚本路径或任意
-参数。启动器在修改前快照 Codex 配置、VS Code 设置、备份文件和端点状态；任何配置步骤或 VS Code
+扩展只能提交 `direct`、`browser_lean`、`browser_full`、`gemini_account`、`hybrid_force`、
+`hybrid_configured`、`hybrid_native` 七个固定枚举值，不能指定命令、脚本路径或任意参数。启动器在修改前
+快照 Codex 配置、VS Code 设置、备份文件和端点状态；任何配置步骤或 VS Code
 启动失败时恢复快照，并恢复切换前的 Direct 代理进程状态。
 
 ## 组件
@@ -65,8 +67,10 @@ Chrome 扩展弹窗
 - `dispatcher.py`：按 request id 隔离并发请求、超时和取消。
 - `http_server.py`：loopback HTTP/1.1 网关与诊断端点。
 - `product_cache.py`：按账号和 Authorization 摘要隔离、有限容量、仅进程内存在的只读产品元数据缓存。
-- `mode_control.py`：读取托管模式，只允许通过固定启动器切换四种 VS Code 网络模式。
+- `mode_control.py`：读取托管模式，只允许通过固定启动器切换受支持的 VS Code 网络模式。
 - `gemini_account.py`：读取 Windows 中的 Google OAuth 凭据，适配 Codex Responses 与 Google 账号模型流。
+- `subagent_policy.py`：保存并应用 Hybrid 子 Agent 请求策略，只识别 Codex 自带的子 Agent 标记。
+- `subagent_config.py`：管理 Hybrid 默认模型与 Bridge 自建角色，不改动用户自己的 Agent 文件。
 - `runtime_logging.py`：脱敏、轮转的本地运行日志。
 - `codex_login.py`：一次性 OAuth PKCE 登录、loopback 回调、凭据备份和原子写入。
 - `main.py`：组合根和进程生命周期。
@@ -79,7 +83,7 @@ Chrome 扩展弹窗
 - `offscreen.js`：组装请求、执行 fetch、处理取消和回传响应。
 - `stream.js`：立即转发响应 chunk，并用独立空 frame 表示结束。
 - `protocol.js`：浏览器端协议常量和校验。
-- `popup.js`：连接、握手、执行器、站点权限、上次托管配置和四模式启动按钮。
+- `popup.js`：连接、握手、执行器、站点权限、托管模式按钮和 Hybrid 子 Agent 配置。
 
 ### 构建布局
 
@@ -91,8 +95,9 @@ A/B 更新流程负责验证和切换；构建缓存与当前注册的运行槽�
 ## 本地 HTTP 接口
 
 常规透明转发使用 `http://127.0.0.1:18888/{route}`，其中 `route` 必须存在于运行时
-`routes.json`，客户端不能提供任意上游 URL。`/gemini-account/v1/models` 和
-`/gemini-account/v1/responses` 是 Host 内置的受限协议适配端点，不接受客户端指定上游。
+`routes.json`，客户端不能提供任意上游 URL。`/gemini-account/v1/*` 和 `/hybrid/v1/*` 是 Host 内置的
+受限协议适配端点，不接受客户端指定上游。Hybrid 的 `/responses` 按 `gemini-` 模型前缀选择 Google
+账号适配器，其余模型进入固定 `chatgpt-codex` 路由；`/responses/compact` 等维护接口始终走 GPT 链路。
 
 Gemini Account Provider 从 Windows 凭据管理器读取 Google OAuth 登录，通过已有 `antigravity`
 静态路由访问固定 Google Code Assist 接口。它只转换消息、工具定义、工具结果与流式事件；文件、Shell、
@@ -234,6 +239,6 @@ loopback，只允许目标端口 80/443，拒绝私有和本地目标；上游 T
 证书。凭据从 `%LOCALAPPDATA%\FanVPNBridge\direct-proxy.json` 读取，不写入仓库或日志。
 上游失败时请求失败，不回退到本机公网直连。
 
-四种模式由扩展弹窗、桌面入口或启动器显式选择。启动器只给新启动的 VS Code 进程注入所需环境，并使用
+托管模式由扩展弹窗、桌面入口或启动器显式选择。启动器只给新启动的 VS Code 进程注入所需环境，并使用
 VS Code 的 Chromium 代理参数，不设置 Windows 全局代理。由于 VS Code 是单实例应用，
 切换前必须关闭全部 VS Code 窗口。

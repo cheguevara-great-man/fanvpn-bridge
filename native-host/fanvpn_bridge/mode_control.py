@@ -15,13 +15,22 @@ MODE_DIRECT = "direct"
 MODE_BROWSER_LEAN = "browser_lean"
 MODE_BROWSER_FULL = "browser_full"
 MODE_GEMINI_ACCOUNT = "gemini_account"
+MODE_HYBRID_FORCE = "hybrid_force"
+MODE_HYBRID_CONFIGURED = "hybrid_configured"
+MODE_HYBRID_NATIVE = "hybrid_native"
 MODE_UNMANAGED = "unmanaged"
-SUPPORTED_MODES = frozenset({MODE_DIRECT, MODE_BROWSER_LEAN, MODE_BROWSER_FULL, MODE_GEMINI_ACCOUNT})
+SUPPORTED_MODES = frozenset({
+    MODE_DIRECT, MODE_BROWSER_LEAN, MODE_BROWSER_FULL, MODE_GEMINI_ACCOUNT,
+    MODE_HYBRID_FORCE, MODE_HYBRID_CONFIGURED, MODE_HYBRID_NATIVE,
+})
 _SCRIPT_MODES = {
     MODE_DIRECT: "Direct",
     MODE_BROWSER_LEAN: "BrowserLean",
     MODE_BROWSER_FULL: "BrowserFull",
     MODE_GEMINI_ACCOUNT: "GeminiAccount",
+    MODE_HYBRID_FORCE: "HybridForce",
+    MODE_HYBRID_CONFIGURED: "HybridConfigured",
+    MODE_HYBRID_NATIVE: "HybridNative",
 }
 _MAX_CONFIG_BYTES = 2 * 1024 * 1024
 
@@ -31,7 +40,7 @@ class ModeControlError(RuntimeError):
 
 
 class CodexModeController:
-    """Read and atomically switch only the three supported Codex modes."""
+    """Read and atomically switch the supported Codex modes."""
 
     def __init__(
         self,
@@ -81,6 +90,19 @@ class CodexModeController:
             return MODE_GEMINI_ACCOUNT
         if provider != "browser_ai_bridge":
             return MODE_UNMANAGED
+        if re.search(r'(?m)^\s*base_url\s*=\s*"http://127\.0\.0\.1:18888/hybrid/v1"', content):
+            policy_path = self._state_path.parent / "subagent-policy.json"
+            try:
+                import json
+                policy = json.loads(policy_path.read_text(encoding="utf-8"))
+                policy_mode = policy.get("mode") if isinstance(policy, dict) else None
+            except (OSError, UnicodeError, ValueError):
+                policy_mode = None
+            return {
+                "force_gemini_37_high": MODE_HYBRID_FORCE,
+                "configured": MODE_HYBRID_CONFIGURED,
+                "native": MODE_HYBRID_NATIVE,
+            }.get(policy_mode, MODE_HYBRID_NATIVE)
         if re.search(
             r'(?m)^\s*chatgpt_base_url\s*=\s*"http://127\.0\.0\.1:18888/chatgpt-backend/',
             top,
@@ -113,17 +135,27 @@ class CodexModeController:
             "-StatePath",
             str(self._state_path),
         ]
-        managed_paths = (
+        managed_paths = [
             self._codex_home / "config.toml",
             Path(str(self._codex_home / "config.toml") + ".before-network-mode.bak"),
             self._codex_home / "browser-ai-bridge-gemini-models.json",
             self._codex_home / "browser-ai-bridge-gemini-available-models.json",
+            self._state_path.parent / "subagent-policy.json",
             self._settings_path,
             Path(str(self._settings_path) + ".before-network-mode.bak"),
             self._state_path,
-        )
+        ]
+        agents_directory = self._codex_home / "agents"
+        role_paths = set(agents_directory.glob("browser-ai-bridge-*.toml"))
+        role_paths.update(agents_directory.glob("browser-ai-bridge-*.toml.disabled"))
+        for role_path in tuple(role_paths):
+            if role_path.name.endswith(".toml.disabled"):
+                role_paths.add(role_path.with_name(role_path.name.removesuffix(".disabled")))
+            else:
+                role_paths.add(role_path.with_name(role_path.name + ".disabled"))
+        managed_paths.extend(sorted(role_paths))
         with _exclusive_switch(self._lock_path):
-            snapshots = _snapshot_files(managed_paths)
+            snapshots = _snapshot_files(tuple(managed_paths))
             creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
             try:
                 completed = subprocess.run(

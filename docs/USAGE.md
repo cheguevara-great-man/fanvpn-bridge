@@ -138,7 +138,7 @@ enabled = false
 `~/.codex/auth.json`。成功判据是：Codex 直接进入聊天页，并能在关闭 Clash 的情况下
 完成一次真实对话。
 
-## 四种 VS Code 网络模式
+## VS Code 网络模式
 
 2.6.0 起，推荐直接从 FanVPN AI Bridge 扩展弹窗选择：
 
@@ -148,6 +148,9 @@ enabled = false
 | 浏览器精简 | Browser Lean | 核心模型请求经 `18888 -> Chrome -> 浏览器代理扩展`，是稳定默认模式 |
 | 浏览器完整（实验） | Browser Full | 在 Lean 基础上转发 ChatGPT 产品后端、Apps、插件、连接器和 VS Code Codex 界面请求 |
 | Codex + Gemini 账号 | Gemini Account | Codex 继续执行工具和 Agent 循环，Gemini 使用 Google 登录账号额度提供模型推理 |
+| 子 Agent 固定 Gemini | Hybrid Force | 主 Agent 菜单同时提供 GPT/Gemini；可见协作与审查子 Agent 固定为 Gemini 3.7 Flash High |
+| 子 Agent 默认 Gemini | Hybrid Configured | 主 Agent 菜单同时提供 GPT/Gemini；使用可被显式选择覆盖的子 Agent 默认值和自定义角色 |
+| Codex 原生决策 | Hybrid Native | 主 Agent 菜单同时提供 GPT/Gemini；不改写 Codex 的子 Agent 选择 |
 
 Codex CLI 与 VS Code Codex 共用 `~/.codex/config.toml` 和 `~/.codex/auth.json`；配置好 Browser Lean 且 Chrome、Bridge 与浏览器代理扩展正常运行后，可直接在 PowerShell 中执行 `codex` 使用同一条浏览器链路，无需额外适配或重新登录。
 
@@ -162,7 +165,7 @@ Direct 未安装凭据时会显示错误并失败关闭，不会回退到浏览�
 **VS Code - Browser Full (Experimental)** 和 **VS Code - Direct US Proxy**。扩展弹窗中的两个
 浏览器模式不要求安装 Direct；桌面入口和命令行只是备用方式。
 
-四种模式都会
+所有托管模式都会
 保留 `~/.codex/config.toml` 中的其他内容。Browser Lean 会暂时把 `apps`、`plugins`、
 `remote_plugin` 和 `analytics.enabled` 设为 `false`；Browser Full 与 Direct 会恢复切换前每一项的
 原始值或“原本不存在”的状态。Browser Full 还会临时写入产品后端地址，离开 Full 时精确恢复。
@@ -256,12 +259,26 @@ powershell -NoProfile -ExecutionPolicy Bypass -File `
 # Codex Agent + Google 账号 Gemini 模型
 powershell -NoProfile -ExecutionPolicy Bypass -File `
   .\tools\start_vscode_network_mode.ps1 -Mode GeminiAccount
+
+# GPT/Gemini 同一菜单；子 Agent 固定为 Gemini 3.7 Flash High
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  .\tools\start_vscode_network_mode.ps1 -Mode HybridForce
+
+# GPT/Gemini 同一菜单；子 Agent 使用可配置默认值与角色
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  .\tools\start_vscode_network_mode.ps1 -Mode HybridConfigured
+
+# GPT/Gemini 同一菜单；不改变 Codex 原生子 Agent 决策
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  .\tools\start_vscode_network_mode.ps1 -Mode HybridNative
 ```
 
 Gemini Account 模式不需要 Gemini API Key。第一次使用前需在 PowerShell 中运行一次
 `& "$env:LOCALAPPDATA\agy\bin\agy-browser.exe"` 完成 Google 登录，详细说明见
 [Codex + Gemini 账号](GEMINI_ACCOUNT.md)。正常问答仍由 Codex 担任 Agent，官方 CLI 只用于登录和
 必要的 Token 刷新。
+
+Hybrid 的三种子 Agent 策略、优先级和角色配置见 [Codex Hybrid](HYBRID_CODEX.md)。
 
 Browser Full 必须通过扩展弹窗、上面的启动脚本或对应桌面入口打开。只运行
 `set_codex_network_mode.ps1` 再手工打开 VS Code 不会带入进程级 MCP 认证标记。

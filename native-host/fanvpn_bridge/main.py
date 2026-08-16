@@ -23,6 +23,8 @@ from .mode_control import CodexModeController
 from .product_cache import ProductResponseCache
 from .routing import RouteTable
 from .runtime_logging import configure_runtime_logging
+from .subagent_policy import SubagentPolicyStore
+from .subagent_config import SubagentConfigurationController
 from .usage_reporting import UsageReporter
 
 
@@ -37,6 +39,7 @@ def run(config_path: Path) -> int:
         else Path.home() / ".fanvpn-bridge"
     )
     channel = FramedMessageChannel(sys.stdin.buffer, sys.stdout.buffer)
+    subagent_policy = SubagentPolicyStore(cache_base / "subagent-policy.json")
     dispatcher = NativeDispatcher(
         channel,
         max_chunk_bytes=config.protocol.max_chunk_bytes,
@@ -46,6 +49,9 @@ def run(config_path: Path) -> int:
         mode_controller=CodexModeController(),
         antigravity_setup_controller=AntigravitySetupController(),
         device_config_controller=DeviceConfigController(cache_base),
+        subagent_config_controller=SubagentConfigurationController(
+            Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")), subagent_policy
+        ),
     )
     dispatcher.start()
     routes = RouteTable(config.routes)
@@ -69,6 +75,7 @@ def run(config_path: Path) -> int:
         product_cache=product_cache,
         usage_reporter=usage_reporter,
         gemini_account=gemini_account,
+        subagent_policy=subagent_policy,
     )
     server_thread = threading.Thread(
         target=server.serve_forever,
@@ -88,6 +95,7 @@ def run(config_path: Path) -> int:
             product_cache=product_cache,
             usage_reporter=usage_reporter,
             gemini_account=gemini_account,
+            subagent_policy=subagent_policy,
         )
     except OSError as error:
         log.warning("vscode_product_api_unavailable listen=%s:8000 error=%s", config.listen_host, error)

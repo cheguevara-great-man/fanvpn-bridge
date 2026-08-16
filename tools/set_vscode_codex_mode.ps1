@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('Browser', 'BrowserLean', 'BrowserFull', 'Direct', 'GeminiAccount')]
+    [ValidateSet('Browser', 'BrowserLean', 'BrowserFull', 'Direct', 'GeminiAccount', 'HybridForce', 'HybridConfigured', 'HybridNative')]
     [string]$Mode,
 
     [string]$CodexHome = (Join-Path $HOME '.codex'),
@@ -51,16 +51,32 @@ function Restore-FileState {
     }
 }
 
-# The two existing scripts each write atomically. This wrapper also snapshots
-# all three managed files so a failure between them cannot leave a mixed mode.
+# The scripts each write atomically. This wrapper also snapshots every managed
+# file so a failure between them cannot leave a mixed mode.
+$managedRolePaths = New-Object System.Collections.Generic.HashSet[string]
+$agentsDirectory = Join-Path ([System.IO.Path]::GetFullPath($CodexHome)) 'agents'
+if (Test-Path -LiteralPath $agentsDirectory -PathType Container) {
+    Get-ChildItem -LiteralPath $agentsDirectory -File | Where-Object {
+        $_.Name -like 'browser-ai-bridge-*.toml' -or $_.Name -like 'browser-ai-bridge-*.toml.disabled'
+    } | ForEach-Object {
+        [void]$managedRolePaths.Add($_.FullName)
+        if ($_.Name.EndsWith('.toml.disabled')) {
+            [void]$managedRolePaths.Add($_.FullName.Substring(0, $_.FullName.Length - '.disabled'.Length))
+        } else {
+            [void]$managedRolePaths.Add($_.FullName + '.disabled')
+        }
+    }
+}
 $snapshots = @(
     Save-FileState -Path $configPath
     Save-FileState -Path "$configPath.before-network-mode.bak"
     Save-FileState -Path (Join-Path ([System.IO.Path]::GetFullPath($CodexHome)) 'browser-ai-bridge-gemini-models.json')
     Save-FileState -Path (Join-Path ([System.IO.Path]::GetFullPath($CodexHome)) 'browser-ai-bridge-gemini-available-models.json')
+    Save-FileState -Path (Join-Path $env:LOCALAPPDATA 'FanVPNBridge\subagent-policy.json')
     Save-FileState -Path $SettingsPath
     Save-FileState -Path "$SettingsPath.before-network-mode.bak"
     Save-FileState -Path $StatePath
+    foreach ($rolePath in $managedRolePaths) { Save-FileState -Path $rolePath }
 )
 
 try {

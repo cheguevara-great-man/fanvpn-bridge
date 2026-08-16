@@ -20,6 +20,14 @@
       .hint { margin-top: 5px; color: #80868b; font-size: 12px; }
       #notice { margin-top: 10px; padding: 8px; background: #e6f4ea; color: #137333; border-radius: 6px; }
       #error { margin-top: 10px; padding: 8px; background: #fce8e6; color: #b3261e; border-radius: 6px; word-break: break-word; }
+      details { margin-top: 10px; border: 1px solid #dadce0; border-radius: 8px; padding: 8px; }
+      summary { cursor: pointer; font-weight: 600; }
+      label { display: block; margin-top: 8px; color: #5f6368; }
+      select, input, textarea { box-sizing: border-box; width: 100%; margin-top: 3px; border: 1px solid #dadce0; border-radius: 6px; padding: 6px; font: inherit; }
+      textarea { min-height: 54px; resize: vertical; }
+      .role { margin-top: 10px; border-top: 1px solid #e8eaed; padding-top: 8px; }
+      .role-head { display: flex; justify-content: space-between; align-items: center; }
+      .role-head button { padding: 3px 8px; color: #b3261e; }
     </style>
   </head>
   <body>
@@ -35,8 +43,24 @@
       <button type="button" data-mode="direct">服务器直连</button>
       <button type="button" data-mode="browser_lean">浏览器精简</button>
       <button type="button" data-mode="browser_full">浏览器完整</button>
-      <button type="button" data-mode="gemini_account">Codex + Gemini 账号</button>
+      <button type="button" data-mode="gemini_account">仅 Gemini</button>
     </div>
+    <h2>Hybrid：GPT + Gemini</h2>
+    <div class="modes">
+      <button type="button" data-mode="hybrid_force">子 Agent 固定 Gemini</button>
+      <button type="button" data-mode="hybrid_configured">子 Agent 默认 Gemini</button>
+      <button type="button" data-mode="hybrid_native">Codex 原生决策</button>
+    </div>
+    <div class="hint">主 Agent 始终可在 Codex 模型菜单中自由选择 GPT 或 Gemini。</div>
+    <details id="subagent-settings">
+      <summary>配置“默认 Gemini”与自定义角色</summary>
+      <label>默认子 Agent 模型<select id="subagent-model"></select></label>
+      <label>默认推理强度<select id="subagent-effort"></select></label>
+      <div id="subagent-roles"></div>
+      <button type="button" id="add-role">新增角色</button>
+      <button type="button" class="primary" id="save-subagents">保存子 Agent 配置</button>
+      <div class="hint">角色由 Codex 按描述选择；显式指定的角色/模型仍优先于默认值。</div>
+    </details>
     <div id="mode-note">正在读取上次托管配置……</div>
 
     <h2>Antigravity for VS Code</h2>

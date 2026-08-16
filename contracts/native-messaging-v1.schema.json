@@ -23,7 +23,10 @@
     { "$ref": "#/$defs/controlAntigravityResult" },
     { "$ref": "#/$defs/controlDeviceGet" },
     { "$ref": "#/$defs/controlDeviceApply" },
-    { "$ref": "#/$defs/controlDeviceResult" }
+    { "$ref": "#/$defs/controlDeviceResult" },
+    { "$ref": "#/$defs/controlSubagentsGet" },
+    { "$ref": "#/$defs/controlSubagentsApply" },
+    { "$ref": "#/$defs/controlSubagentsResult" }
   ],
   "$defs": {
     "protocolVersion": { "const": 1 },
@@ -429,6 +432,55 @@
           "properties": {
             "v": { "$ref": "#/$defs/protocolVersion" },
             "type": { "const": "control.device.result" },
+            "id": { "$ref": "#/$defs/requestId" },
+            "ok": { "type": "boolean" },
+            "state": { "type": "object" },
+            "message": { "type": "string", "maxLength": 512 }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "controlSubagentsGet": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "id"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "control.subagents.get" },
+            "id": { "$ref": "#/$defs/requestId" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "controlSubagentsApply": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "id", "config"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "control.subagents.apply" },
+            "id": { "$ref": "#/$defs/requestId" },
+            "config": { "type": "object" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "controlSubagentsResult": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "id", "ok"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "control.subagents.result" },
             "id": { "$ref": "#/$defs/requestId" },
             "ok": { "type": "boolean" },
             "state": { "type": "object" },

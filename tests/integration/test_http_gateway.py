@@ -15,7 +15,22 @@ from fanvpn_bridge.diagnostics import DiagnosticOptions
 from fanvpn_bridge.http_server import create_http_server
 from fanvpn_bridge.product_cache import ProductResponseCache
 from fanvpn_bridge.routing import RouteTable
+from fanvpn_bridge.subagent_policy import SubagentPolicyConfig, SubagentPolicyStore
 from tests.helpers import FakeExtension, channel_pair
+
+
+class _FakeGeminiAccount:
+    def models_response(self):
+        return {"object": "list", "data": [{"id": "gemini-3.7-flash"}]}
+
+    def responses(self, payload):
+        return False, {
+            "id": "resp_gemini_test",
+            "object": "response",
+            "model": payload.get("model"),
+            "reasoning": payload.get("reasoning"),
+            "output": [],
+        }
 
 
 class HttpGatewayIntegrationTests(unittest.TestCase):
@@ -119,6 +134,7 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
         )
         self.dispatcher.start(handshake_timeout=2)
         self.product_cache = ProductResponseCache()
+        self.subagent_policy = SubagentPolicyStore(Path(self.temp.name) / "subagent-policy.json")
         self.server = create_http_server(
             self.config,
             RouteTable(self.config.routes),
@@ -126,6 +142,8 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
             self.dispatcher,
             codex_auth_path=self.auth_path,
             product_cache=self.product_cache,
+            gemini_account=_FakeGeminiAccount(),
+            subagent_policy=self.subagent_policy,
         )
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -139,6 +157,8 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
             listen_port=0,
             product_api_alias=True,
             product_cache=self.product_cache,
+            gemini_account=_FakeGeminiAccount(),
+            subagent_policy=self.subagent_policy,
         )
         self.product_thread = threading.Thread(
             target=self.product_server.serve_forever,
@@ -188,6 +208,39 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
             health["routes"],
             ["chatgpt-backend", "chatgpt-codex", "gemini", "openai"],
         )
+
+    def test_hybrid_routes_gpt_and_gemini_by_model(self) -> None:
+        status, _headers, body = self.request(
+            "POST",
+            "/hybrid/v1/responses",
+            json.dumps({"model": "gpt-5.6-sol", "input": "hello"}).encode(),
+            {"content-type": "application/json"},
+        )
+        self.assertEqual(status, 200)
+        forwarded = json.loads(body)
+        self.assertEqual(forwarded["url"], "https://chatgpt.com/backend-api/codex/responses")
+
+        status, _headers, body = self.request(
+            "POST",
+            "/hybrid/v1/responses",
+            json.dumps({"model": "gemini-3.7-flash", "input": "hello"}).encode(),
+            {"content-type": "application/json"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["model"], "gemini-3.7-flash")
+
+    def test_hybrid_force_policy_changes_only_marked_subagent(self) -> None:
+        self.subagent_policy.write(SubagentPolicyConfig(mode="force_gemini_37_high"))
+        status, _headers, body = self.request(
+            "POST",
+            "/hybrid/v1/responses",
+            json.dumps({"model": "gpt-5.6-sol", "input": "child"}).encode(),
+            {"content-type": "application/json", "x-openai-subagent": "collab_spawn"},
+        )
+        self.assertEqual(status, 200)
+        response = json.loads(body)
+        self.assertEqual(response["model"], "gemini-3.7-flash")
+        self.assertEqual(response["reasoning"]["effort"], "high")
 
     def test_root_health_ready_and_routes_are_local_diagnostics(self) -> None:
         status, _headers, payload = self.request("GET", "/health")
@@ -335,6 +388,12 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
                 "/chatgpt-backend/backend-api/ps/plugins/missing?scope=GLOBAL",
                 headers={"Authorization": "Bearer test-secret"},
             )
+            deadline = time.monotonic() + 1.0
+            while (
+                not any("response_diagnostic" in line for line in captured.output)
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.01)
         self.assertEqual(status, 404)
         rendered = "\n".join(captured.output)
         self.assertIn("request_diagnostic", rendered)
@@ -354,6 +413,16 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
                 body,
                 {"Content-Type": "application/json"},
             )
+            # The loopback client can finish reading the final response bytes
+            # just before the request-handler thread emits its completion
+            # diagnostics. Wait for that log record instead of making this
+            # integration assertion depend on thread scheduling.
+            deadline = time.monotonic() + 1.0
+            while (
+                not any("request_body_diagnostic" in line for line in captured.output)
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.01)
         self.assertEqual(status, 400)
         rendered = "\n".join(captured.output)
         self.assertIn("request_body_diagnostic", rendered)
@@ -408,6 +477,9 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
             {"Content-Type": "application/json"},
         )
         self.assertEqual(status, 200)
+        deadline = time.monotonic() + 1.0
+        while not reporter.events and time.monotonic() < deadline:
+            time.sleep(0.01)
         self.assertEqual(len(reporter.events), 1)
         usage, route = reporter.events[0]
         self.assertEqual(route, "chatgpt-codex")

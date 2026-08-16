@@ -328,6 +328,53 @@ class NetworkModeScriptTests(unittest.TestCase):
                 full,
             )
 
+    def test_hybrid_modes_merge_catalog_and_restore_configured_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            codex_home = Path(directory)
+            config_path = codex_home / "config.toml"
+            config_path.write_text(
+                'model = "gpt-5.6-sol"\n\n'
+                '[agents]\n'
+                'default_subagent_model = "gpt-user-choice"\n'
+                'default_subagent_reasoning_effort = "low"\n',
+                encoding="utf-8",
+            )
+            (codex_home / "models_cache.json").write_text(
+                json.dumps({
+                    "models": [{
+                        "slug": "gpt-5.6-sol",
+                        "display_name": "GPT-5.6 Sol",
+                        "visibility": "list",
+                        "model_messages": {"instructions_template": "You are Codex."},
+                    }]
+                }),
+                encoding="utf-8",
+            )
+            models = json.dumps([{
+                "id": "gemini-3.7-flash",
+                "display_name": "Gemini 3.7 Flash",
+                "default_reasoning_level": "medium",
+                "supported_reasoning_levels": ["low", "medium", "high"],
+            }])
+
+            configured = self.run_mode(codex_home, "HybridConfigured", models)
+            self.assertIn('base_url = "http://127.0.0.1:18888/hybrid/v1"', configured)
+            self.assertIn('chatgpt_base_url = "http://127.0.0.1:18888/chatgpt-backend/backend-api/"', configured)
+            self.assertIn('default_subagent_model = "gemini-3.7-flash"', configured)
+            catalog = json.loads((codex_home / "browser-ai-bridge-gemini-models.json").read_text(encoding="utf-8"))
+            slugs = {item["slug"] for item in catalog["models"]}
+            self.assertIn("gpt-5.6-sol", slugs)
+            self.assertIn("gemini-3.7-flash", slugs)
+
+            native = self.run_mode(codex_home, "HybridNative", models)
+            self.assertIn('default_subagent_model = "gpt-user-choice"', native)
+            self.assertIn('default_subagent_reasoning_effort = "low"', native)
+            self.assertNotIn("managed subagent defaults", native)
+
+            force = self.run_mode(codex_home, "HybridForce", models)
+            self.assertIn('model = "gpt-5.6-sol"', force)
+            self.assertNotIn('default_subagent_model = "gemini-3.7-flash"', force)
+
 
 if __name__ == "__main__":
     unittest.main()

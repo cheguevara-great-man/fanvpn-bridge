@@ -9,9 +9,18 @@ const antigravityNote = document.getElementById("antigravity-note");
 const noticeBox = document.getElementById("notice");
 const errorBox = document.getElementById("error");
 const modeButtons = [...document.querySelectorAll("button[data-mode]")];
+const subagentModel = document.getElementById("subagent-model");
+const subagentEffort = document.getElementById("subagent-effort");
+const subagentRoles = document.getElementById("subagent-roles");
+const addRoleButton = document.getElementById("add-role");
+const saveSubagentsButton = document.getElementById("save-subagents");
+let availableModels = [];
 
 const MODE_LABELS = {
-  gemini_account: "Codex + Gemini 账号",
+  gemini_account: "仅 Gemini 账号",
+  hybrid_force: "Hybrid · 子 Agent 固定 Gemini 3.7 Flash High",
+  hybrid_configured: "Hybrid · 子 Agent 默认 Gemini（Codex 可覆盖）",
+  hybrid_native: "Hybrid · Codex 原生子 Agent 决策",
   direct: "服务器直连",
   browser_lean: "浏览器精简",
   browser_full: "浏览器完整",
@@ -43,6 +52,9 @@ try { await refreshAntigravity(); } catch (error) {
   renderAntigravity(null);
   showError(error.message || String(error));
 }
+try { await refreshSubagents(); } catch (_error) {
+  document.getElementById("subagent-settings").open = false;
+}
 
 for (const button of modeButtons) {
   button.addEventListener("click", async () => {
@@ -54,6 +66,7 @@ for (const button of modeButtons) {
       });
       if (result?.ok !== true) throw new Error(result?.message || "模式切换失败");
       renderMode(result.mode);
+      if (result.mode === "hybrid_configured") await refreshSubagents();
       showNotice("切换成功，VS Code 已按所选模式启动。");
     } catch (error) { showError(error.message || String(error)); }
     finally { setBusy(false); }
@@ -75,6 +88,33 @@ antigravityButton.addEventListener("click", async () => {
   finally { setBusy(false); }
 });
 
+addRoleButton.addEventListener("click", () => addRole({
+  name: "", description: "", developer_instructions: "",
+  model: subagentModel.value || "gemini-3.7-flash",
+  model_reasoning_effort: subagentEffort.value || "high",
+}));
+
+saveSubagentsButton.addEventListener("click", async () => {
+  setBusy(true);
+  hideMessages();
+  try {
+    const roles = [...subagentRoles.querySelectorAll(".role")].map(readRole);
+    const result = await chrome.runtime.sendMessage({
+      target: "background",
+      kind: "subagents:apply",
+      config: {
+        default_model: subagentModel.value,
+        default_reasoning_effort: subagentEffort.value,
+        roles,
+      },
+    });
+    if (result?.ok !== true) throw new Error(result?.message || "子 Agent 配置保存失败");
+    renderSubagents(result.state);
+    showNotice("子 Agent 配置已保存；新启动的 Agent 将使用新设置。");
+  } catch (error) { showError(error.message || String(error)); }
+  finally { setBusy(false); }
+});
+
 async function refreshMode() {
   const result = await chrome.runtime.sendMessage({ target: "background", kind: "codex-mode:get" });
   if (result?.ok !== true) throw new Error(result?.message || "无法读取 Codex 模式");
@@ -87,6 +127,79 @@ async function refreshAntigravity() {
   });
   if (result?.ok !== true) throw new Error(result?.message || "无法读取 Antigravity 状态");
   renderAntigravity(result.state);
+}
+
+async function refreshSubagents() {
+  const result = await chrome.runtime.sendMessage({ target: "background", kind: "subagents:get" });
+  if (result?.ok !== true) throw new Error(result?.message || "无法读取子 Agent 配置");
+  renderSubagents(result.state);
+}
+
+function renderSubagents(state) {
+  availableModels = Array.isArray(state?.models) ? state.models : [];
+  fillModelSelect(subagentModel, state?.default_model || "gemini-3.7-flash");
+  fillEffortSelect(subagentEffort, state?.default_reasoning_effort || "high", selectedModel());
+  subagentModel.onchange = () => fillEffortSelect(subagentEffort, subagentEffort.value, selectedModel());
+  subagentRoles.replaceChildren();
+  for (const role of state?.roles || []) addRole(role);
+}
+
+function selectedModel(id = subagentModel.value) {
+  return availableModels.find((model) => model.id === id);
+}
+
+function fillModelSelect(select, selected) {
+  select.replaceChildren();
+  const models = availableModels.length ? availableModels : [
+    { id: "gemini-3.7-flash", name: "Gemini 3.7 Flash", efforts: ["low", "medium", "high"] },
+  ];
+  for (const model of models) {
+    const option = document.createElement("option");
+    option.value = model.id;
+    option.textContent = model.name || model.id;
+    option.selected = model.id === selected;
+    select.append(option);
+  }
+}
+
+function fillEffortSelect(select, selected, model) {
+  const efforts = model?.efforts?.length ? model.efforts : ["low", "medium", "high"];
+  select.replaceChildren();
+  for (const effort of efforts) {
+    const option = document.createElement("option");
+    option.value = effort;
+    option.textContent = ({ low: "低", medium: "中", high: "高", xhigh: "超高", max: "Max", ultra: "Ultra" })[effort] || effort;
+    option.selected = effort === selected;
+    select.append(option);
+  }
+  if (!select.value) select.value = efforts.includes("high") ? "high" : efforts[0];
+}
+
+function addRole(role) {
+  const container = document.createElement("div");
+  container.className = "role";
+  container.innerHTML = `
+    <div class="role-head"><strong>自定义角色</strong><button type="button" data-remove>删除</button></div>
+    <label>角色名<input data-key="name" placeholder="例如 reviewer" /></label>
+    <label>用途描述<input data-key="description" placeholder="Codex 根据这段描述决定何时使用" /></label>
+    <label>角色指令<textarea data-key="developer_instructions" placeholder="这个角色应如何工作"></textarea></label>
+    <label>模型<select data-key="model"></select></label>
+    <label>推理强度<select data-key="model_reasoning_effort"></select></label>`;
+  for (const key of ["name", "description", "developer_instructions"]) {
+    container.querySelector(`[data-key="${key}"]`).value = role[key] || "";
+  }
+  const modelSelect = container.querySelector('[data-key="model"]');
+  const effortSelect = container.querySelector('[data-key="model_reasoning_effort"]');
+  fillModelSelect(modelSelect, role.model || subagentModel.value);
+  fillEffortSelect(effortSelect, role.model_reasoning_effort || "high", selectedModel(modelSelect.value));
+  modelSelect.onchange = () => fillEffortSelect(effortSelect, effortSelect.value, selectedModel(modelSelect.value));
+  container.querySelector("[data-remove]").onclick = () => container.remove();
+  subagentRoles.append(container);
+}
+
+function readRole(container) {
+  return Object.fromEntries(["name", "description", "developer_instructions", "model", "model_reasoning_effort"]
+    .map((key) => [key, container.querySelector(`[data-key="${key}"]`).value]));
 }
 
 function renderMode(mode) {
@@ -104,7 +217,7 @@ function renderAntigravity(state) {
 }
 
 function setBusy(busy) {
-  for (const button of [...modeButtons, antigravityButton]) button.disabled = busy;
+  for (const button of [...modeButtons, antigravityButton, addRoleButton, saveSubagentsButton]) button.disabled = busy;
 }
 function hideMessages() { noticeBox.hidden = true; errorBox.hidden = true; }
 function showNotice(message) { errorBox.hidden = true; noticeBox.hidden = false; noticeBox.textContent = message; }

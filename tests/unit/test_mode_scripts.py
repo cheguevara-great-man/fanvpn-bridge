@@ -33,6 +33,11 @@ class ModeScriptTests(unittest.TestCase):
             config.write_bytes(original_config)
             settings.write_bytes(original_settings)
             state.write_bytes(original_state)
+            agents = codex_home / "agents"
+            agents.mkdir()
+            active_role = agents / "browser-ai-bridge-reviewer.toml"
+            disabled_role = agents / "browser-ai-bridge-reviewer.toml.disabled"
+            active_role.write_text('name = "reviewer"\n', encoding="utf-8")
 
             completed = subprocess.run(
                 [
@@ -63,6 +68,8 @@ class ModeScriptTests(unittest.TestCase):
             self.assertEqual(state.read_bytes(), original_state)
             self.assertFalse(Path(f"{config}.before-network-mode.bak").exists())
             self.assertFalse(Path(f"{settings}.before-network-mode.bak").exists())
+            self.assertTrue(active_role.is_file())
+            self.assertFalse(disabled_role.exists())
 
 
 if __name__ == "__main__":
