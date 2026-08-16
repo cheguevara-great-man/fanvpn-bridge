@@ -50,8 +50,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File `
 ## 模型与强度
 
 Bridge 在每次点击“Codex + Gemini 账号”时，从当前 Google 账号读取真实可用模型并重新生成 Codex
-模型目录。因此 Google 后续增加新模型时，无需升级 Bridge 就会自动出现在菜单中。当前账号返回的
-`gemini-3.7-flash-tiered` 会显示为 Gemini 3.7 Flash Tiered，并被自动选为默认模型。
+模型目录。因此 Google 后续增加新模型时，无需升级 Bridge 就会自动出现在菜单中。Google 返回的
+`*-tiered` 是供客户端按推理强度分档的内部入口；菜单会把它显示为普通模型名，例如
+`gemini-3.7-flash-tiered` 显示为 Gemini 3.7 Flash，并被自动选为默认模型。同一家族同时返回的
+High、Medium、Low 别名会自动合并，避免模型名称和 Codex 推理强度重复。
 
 仅用于图片生成或 Google 自身 Agent 的型号不会加入 Codex 推理菜单。官方目录临时读取失败时，会继续使用
 上一次成功取得的目录；从未成功读取过时才使用随程序附带的兼容备用目录。
@@ -64,7 +66,8 @@ OpenAI 或 CC Switch 的模型目录。如果客户端仍请求非 Gemini 模型
 有效的 OpenAI 登录；OpenAI Token 只会发到本机 `127.0.0.1` 的 Bridge，不会转发给 Google。实际推理和
 额度消耗仍来自 Google 账号。
 
-Codex 的 `reasoning.effort` 会映射为 Gemini 的思考强度。Google 可能调整账号可用模型、额度和命名，
+Codex 的 Light、Medium、High 会分别映射为 Gemini 的 `low`、`medium`、`high`，不提供 Minimal。
+Google 可能调整账号可用模型、额度和命名，
 因此模型目录以当前账号实时返回为准。
 
 ## 与其他模式的关系

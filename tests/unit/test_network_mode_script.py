@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -112,9 +113,33 @@ class NetworkModeScriptTests(unittest.TestCase):
             self.assertIn("managed Gemini model catalog", gemini)
             catalog_path = codex_home / "browser-ai-bridge-gemini-models.json"
             self.assertTrue(catalog_path.exists())
-            catalog = catalog_path.read_text(encoding="utf-8")
-            self.assertIn('"slug":  "gemini-3.6-flash-high"', catalog)
-            self.assertIn('"slug":  "gemini-3.1-pro-high"', catalog)
+            catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+            models = {item["slug"]: item for item in catalog["models"]}
+            self.assertIn("gemini-3.6-flash-tiered", models)
+            self.assertNotIn("gemini-3.6-flash-high", models)
+            self.assertEqual(
+                models["gemini-3.6-flash-tiered"]["display_name"],
+                "Gemini 3.6 Flash",
+            )
+            self.assertEqual(
+                [
+                    level["effort"]
+                    for level in models["gemini-3.6-flash-tiered"][
+                        "supported_reasoning_levels"
+                    ]
+                ],
+                ["low", "medium", "high"],
+            )
+            self.assertIn("gemini-3.1-pro-high", models)
+            self.assertEqual(
+                [
+                    level["effort"]
+                    for level in models["gemini-3.1-pro-high"][
+                        "supported_reasoning_levels"
+                    ]
+                ],
+                ["high"],
+            )
             self.assertNotIn('model = "gpt-user-default"', gemini)
             self.assertIn("managed Gemini model", gemini)
 
@@ -144,15 +169,22 @@ class NetworkModeScriptTests(unittest.TestCase):
             gemini = self.run_mode(
                 codex_home, "GeminiAccount", official_models
             )
-            catalog = (
-                codex_home / "browser-ai-bridge-gemini-models.json"
-            ).read_text(encoding="utf-8")
+            catalog = json.loads(
+                (
+                    codex_home / "browser-ai-bridge-gemini-models.json"
+                ).read_text(encoding="utf-8")
+            )
+            models = {item["slug"]: item for item in catalog["models"]}
 
             self.assertIn('model = "gemini-3.8-flash-tiered"', gemini)
-            self.assertIn('"slug":  "gemini-3.8-flash-tiered"', catalog)
-            self.assertIn('"slug":  "gemini-3.7-flash-tiered"', catalog)
-            self.assertNotIn("gemini-3.8-flash-image", catalog)
-            self.assertNotIn("gemini-pro-agent", catalog)
+            self.assertIn("gemini-3.8-flash-tiered", models)
+            self.assertIn("gemini-3.7-flash-tiered", models)
+            self.assertEqual(
+                models["gemini-3.8-flash-tiered"]["display_name"],
+                "Gemini 3.8 Flash",
+            )
+            self.assertNotIn("gemini-3.8-flash-image", models)
+            self.assertNotIn("gemini-pro-agent", models)
 
     def test_full_and_lean_modes_switch_without_losing_user_settings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

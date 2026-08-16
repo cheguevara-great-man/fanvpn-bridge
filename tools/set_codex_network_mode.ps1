@@ -124,13 +124,13 @@ function New-GeminiModelCatalog {
         $template = ([System.IO.File]::ReadAllText($fallbackPath) | ConvertFrom-Json).template
     }
 
-    $modelIds = @($AvailableModels | Where-Object {
+    $availableModelIds = @($AvailableModels | Where-Object {
         $_ -match '^gemini-[a-z0-9.-]+$' -and
         $_ -notmatch '(?:^|-)image(?:-|$)' -and
         $_ -notmatch '(?:^|-)agent(?:-|$)'
     } | Sort-Object -Unique)
-    if ($modelIds.Count -eq 0) {
-        $modelIds = @(
+    if ($availableModelIds.Count -eq 0) {
+        $availableModelIds = @(
             'gemini-3.7-flash-tiered',
             'gemini-3.6-flash-tiered',
             'gemini-3.6-flash-high',
@@ -138,6 +138,23 @@ function New-GeminiModelCatalog {
             'gemini-2.5-pro'
         )
     }
+
+    # Code Assist returns both its internal `*-tiered` router and, for some
+    # generations, the Low/Medium/High aliases expanded from that router.
+    # Codex already has a native reasoning selector, so expose one logical
+    # model per tiered family and keep the router ID only as the hidden slug.
+    $tieredFamilies = @{}
+    foreach ($modelId in $availableModelIds) {
+        if ($modelId -match '^(?<family>.+)-tiered$') {
+            $tieredFamilies[$Matches['family']] = $true
+        }
+    }
+    $modelIds = @($availableModelIds | Where-Object {
+        if ($_ -match '^(?<family>.+)-(?:extra-low|low|medium|high)$') {
+            return -not $tieredFamilies.ContainsKey($Matches['family'])
+        }
+        return $true
+    })
 
     $rankedModels = @($modelIds | ForEach-Object {
         $version = [version]'0.0'
@@ -157,7 +174,8 @@ function New-GeminiModelCatalog {
     $models = New-Object System.Collections.Generic.List[object]
     foreach ($rankedModel in $rankedModels) {
         $modelId = $rankedModel.Id
-        $displayName = (($modelId -split '-') | ForEach-Object {
+        $displayModelId = $modelId -replace '-tiered$', ''
+        $displayName = (($displayModelId -split '-') | ForEach-Object {
             if ($_ -match '^\d+(?:\.\d+)*$') { $_ }
             else { (Get-Culture).TextInfo.ToTitleCase($_) }
         }) -join ' '
@@ -172,12 +190,23 @@ function New-GeminiModelCatalog {
         Set-ObjectProperty $model 'supported_in_api' $true
         Set-ObjectProperty $model 'prefer_websockets' $false
         Set-ObjectProperty $model 'use_responses_lite' $false
-        Set-ObjectProperty $model 'default_reasoning_level' 'medium'
-        Set-ObjectProperty $model 'supported_reasoning_levels' @(
-            [pscustomobject]@{ effort = 'low'; description = 'Fast responses with lighter reasoning' },
-            [pscustomobject]@{ effort = 'medium'; description = 'Balanced speed and reasoning' },
-            [pscustomobject]@{ effort = 'high'; description = 'Deeper reasoning for complex tasks' }
-        )
+        $fixedEffort = $null
+        if ($modelId -match '-high$') { $fixedEffort = 'high' }
+        elseif ($modelId -match '-medium$') { $fixedEffort = 'medium' }
+        elseif ($modelId -match '-(?:extra-low|low)$') { $fixedEffort = 'low' }
+        if ($fixedEffort) {
+            Set-ObjectProperty $model 'default_reasoning_level' $fixedEffort
+            Set-ObjectProperty $model 'supported_reasoning_levels' @(
+                [pscustomobject]@{ effort = $fixedEffort; description = 'Reasoning level fixed by this Google model alias' }
+            )
+        } else {
+            Set-ObjectProperty $model 'default_reasoning_level' 'medium'
+            Set-ObjectProperty $model 'supported_reasoning_levels' @(
+                [pscustomobject]@{ effort = 'low'; description = 'Fast responses with lighter reasoning' },
+                [pscustomobject]@{ effort = 'medium'; description = 'Balanced speed and reasoning' },
+                [pscustomobject]@{ effort = 'high'; description = 'Deeper reasoning for complex tasks' }
+            )
+        }
         foreach ($property in @(
             'availability_nux', 'upgrade', 'available_in_plans',
             'default_service_tier', 'service_tiers', 'additional_speed_tiers',
