@@ -585,14 +585,31 @@ def _gemini_to_responses_events(
         return _sse(event_type, event)
 
     yield emit("response.created", response=_response_object(response_id, model, created_at, "in_progress", [], usage))
+    reasoning_started = False
+    reasoning_done = False
+    reasoning_id = "rs_" + uuid.uuid4().hex
+    reasoning_output_index: int | None = None
+    reasoning_text_value = ""
+
     for wrapper in chunks:
         inner = wrapper.get("response") if isinstance(wrapper.get("response"), dict) else wrapper
         metadata = inner.get("usageMetadata") if isinstance(inner, dict) else None
         if isinstance(metadata, dict):
+            cached_count = int(metadata.get("cachedContentTokenCount") or 0)
+            input_count = int(metadata.get("promptTokenCount") or 0)
+            output_count = int(metadata.get("candidatesTokenCount") or 0)
+            thoughts_count = int(metadata.get("thoughtsTokenCount") or 0)
+            total_count = int(metadata.get("totalTokenCount") or (input_count + output_count))
             usage = {
-                "input_tokens": int(metadata.get("promptTokenCount") or 0),
-                "output_tokens": int(metadata.get("candidatesTokenCount") or 0),
-                "total_tokens": int(metadata.get("totalTokenCount") or 0),
+                "input_tokens": input_count,
+                "input_tokens_details": {
+                    "cached_tokens": cached_count,
+                },
+                "output_tokens": output_count,
+                "output_tokens_details": {
+                    "reasoning_tokens": thoughts_count,
+                },
+                "total_tokens": total_count,
             }
         candidates = inner.get("candidates") if isinstance(inner, dict) else None
         if not isinstance(candidates, list):
@@ -603,8 +620,41 @@ def _gemini_to_responses_events(
             if not isinstance(parts, list):
                 continue
             for part in parts:
-                if not isinstance(part, dict) or part.get("thought") is True:
+                if not isinstance(part, dict):
                     continue
+
+                if part.get("thought") is True:
+                    thought_chunk = part.get("text")
+                    if isinstance(thought_chunk, str) and thought_chunk:
+                        if not reasoning_started:
+                            reasoning_started = True
+                            reasoning_output_index = len(output)
+                            reasoning_item = {
+                                "id": reasoning_id,
+                                "type": "reasoning",
+                                "status": "in_progress",
+                                "summary": [],
+                                "content": [],
+                            }
+                            yield emit("response.output_item.added", output_index=reasoning_output_index, item=reasoning_item)
+                            yield emit("response.reasoning_summary_part.added", item_id=reasoning_id, output_index=reasoning_output_index, summary_index=0, part={"type": "summary_text", "text": ""})
+                        reasoning_text_value += thought_chunk
+                        yield emit("response.reasoning_summary_text.delta", item_id=reasoning_id, output_index=reasoning_output_index, summary_index=0, delta=thought_chunk)
+                    continue
+
+                if reasoning_started and not reasoning_done:
+                    reasoning_done = True
+                    yield emit("response.reasoning_summary_text.done", item_id=reasoning_id, output_index=reasoning_output_index, summary_index=0, text=reasoning_text_value)
+                    reasoning_item = {
+                        "id": reasoning_id,
+                        "type": "reasoning",
+                        "status": "completed",
+                        "summary": [{"type": "summary_text", "text": reasoning_text_value}],
+                        "content": [],
+                    }
+                    yield emit("response.output_item.done", output_index=reasoning_output_index, item=reasoning_item)
+                    output.append(reasoning_item)
+
                 text = part.get("text")
                 if isinstance(text, str) and text:
                     if not text_started:
@@ -631,6 +681,20 @@ def _gemini_to_responses_events(
                     yield emit("response.function_call_arguments.done", item_id=item["id"], output_index=index, arguments=arguments)
                     yield emit("response.output_item.done", output_index=index, item=item)
                     output.append(item)
+
+    if reasoning_started and not reasoning_done:
+        reasoning_done = True
+        yield emit("response.reasoning_summary_text.done", item_id=reasoning_id, output_index=reasoning_output_index, summary_index=0, text=reasoning_text_value)
+        reasoning_item = {
+            "id": reasoning_id,
+            "type": "reasoning",
+            "status": "completed",
+            "summary": [{"type": "summary_text", "text": reasoning_text_value}],
+            "content": [],
+        }
+        yield emit("response.output_item.done", output_index=reasoning_output_index, item=reasoning_item)
+        output.append(reasoning_item)
+
     if text_started:
         index = message_output_index if message_output_index is not None else len(output)
         yield emit("response.output_text.done", item_id=message_id, output_index=index, content_index=0, text=text_value, logprobs=[])
@@ -659,6 +723,35 @@ def _response_object(response_id: str, model: str, created_at: int, status: str,
     }
 
 
+def _downscale_image_part(mime_type: str, b64_data: str, max_dimension: int = 1536) -> tuple[str, str]:
+    try:
+        import base64
+        import io
+        from PIL import Image
+
+        raw_bytes = base64.b64decode(b64_data)
+        with Image.open(io.BytesIO(raw_bytes)) as img:
+            width, height = img.size
+            if max(width, height) <= max_dimension:
+                return mime_type, b64_data
+            scale = max_dimension / max(width, height)
+            new_size = (max(1, int(width * scale)), max(1, int(height * scale)))
+            resized = img.resize(new_size, Image.Resampling.LANCZOS)
+            out_buf = io.BytesIO()
+            if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+                resized.save(out_buf, format="PNG", optimize=True)
+                new_mime = "image/png"
+            else:
+                if resized.mode != "RGB":
+                    resized = resized.convert("RGB")
+                resized.save(out_buf, format="JPEG", quality=85)
+                new_mime = "image/jpeg"
+            new_b64 = base64.b64encode(out_buf.getvalue()).decode("ascii")
+            return new_mime, new_b64
+    except Exception:
+        return mime_type, b64_data
+
+
 def _message_parts(content: Any) -> list[dict[str, Any]]:
     if isinstance(content, str):
         return [{"text": content}] if content else []
@@ -675,7 +768,9 @@ def _message_parts(content: Any) -> list[dict[str, Any]]:
             url = str(value.get("image_url") or value.get("url") or "")
             if url.startswith("data:") and ";base64," in url:
                 metadata, data = url[5:].split(";base64,", 1)
-                parts.append({"inlineData": {"mimeType": metadata or "image/png", "data": data}})
+                mime = metadata or "image/png"
+                mime, data = _downscale_image_part(mime, data)
+                parts.append({"inlineData": {"mimeType": mime, "data": data}})
     return parts
 
 

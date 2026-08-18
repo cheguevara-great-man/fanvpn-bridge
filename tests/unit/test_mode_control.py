@@ -60,6 +60,14 @@ class CodexModeControllerTests(unittest.TestCase):
 
             self.write_config(
                 root,
+                'model_provider = "browser_ai_bridge"\n\n'
+                '[model_providers.browser_ai_bridge]\n'
+                'base_url = "http://127.0.0.1:18888/gemini-account/v1"\n',
+            )
+            self.assertEqual(controller.get_mode(), MODE_GEMINI_ACCOUNT)
+
+            self.write_config(
+                root,
                 'model_provider = "browser_ai_bridge"\n'
                 'chatgpt_base_url = "http://127.0.0.1:18888/chatgpt-backend/backend-api/"\n',
             )

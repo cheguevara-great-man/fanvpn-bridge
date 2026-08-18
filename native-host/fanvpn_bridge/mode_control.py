@@ -90,6 +90,11 @@ class CodexModeController:
             return MODE_GEMINI_ACCOUNT
         if provider != "browser_ai_bridge":
             return MODE_UNMANAGED
+        if re.search(
+            r'(?m)^\s*base_url\s*=\s*"http://127\.0\.0\.1:18888/gemini-account/v1"',
+            content,
+        ):
+            return MODE_GEMINI_ACCOUNT
         if re.search(r'(?m)^\s*base_url\s*=\s*"http://127\.0\.0\.1:18888/hybrid/v1"', content):
             policy_path = self._state_path.parent / "subagent-policy.json"
             try:

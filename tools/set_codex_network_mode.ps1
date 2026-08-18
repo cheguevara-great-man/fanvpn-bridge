@@ -216,6 +216,8 @@ function New-GeminiModelCatalog {
         Set-ObjectProperty $model 'supported_in_api' $true
         Set-ObjectProperty $model 'prefer_websockets' $false
         Set-ObjectProperty $model 'use_responses_lite' $false
+        Set-ObjectProperty $model 'context_window' 1000000
+        Set-ObjectProperty $model 'max_context_window' 1000000
         $metadataEfforts = @()
         if ($metadata) {
             $metadataEfforts = @($metadata.supported_reasoning_levels | Where-Object {
@@ -621,8 +623,6 @@ if ($effectiveMode -ne 'Direct') {
 
 $provider = if ($effectiveMode -eq 'Direct') {
     'browser_ai_direct'
-} elseif ($effectiveMode -eq 'GeminiAccount') {
-    'browser_ai_gemini_account'
 } else {
     'browser_ai_bridge'
 }
@@ -636,7 +636,7 @@ if ([regex]::IsMatch($top, $modelProviderPattern)) {
 }
 $content = "model_provider = `"$provider`"`r`n" + $top.TrimStart() + $tables
 
-$bridgeBaseUrl = if ($isHybrid) { 'http://127.0.0.1:18888/hybrid/v1' } else { 'http://127.0.0.1:18888/chatgpt-codex' }
+$bridgeBaseUrl = if ($isHybrid) { 'http://127.0.0.1:18888/hybrid/v1' } elseif ($effectiveMode -eq 'GeminiAccount') { 'http://127.0.0.1:18888/gemini-account/v1' } else { 'http://127.0.0.1:18888/chatgpt-codex' }
 $managedProviders = @"
 $providerBegin
 [model_providers.browser_ai_bridge]

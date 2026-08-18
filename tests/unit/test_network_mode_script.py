@@ -102,7 +102,7 @@ class NetworkModeScriptTests(unittest.TestCase):
             )
 
             gemini = self.run_mode(codex_home, "GeminiAccount")
-            self.assertIn('model_provider = "browser_ai_gemini_account"', gemini)
+            self.assertIn('model_provider = "browser_ai_bridge"', gemini)
             self.assertIn(
                 'base_url = "http://127.0.0.1:18888/gemini-account/v1"',
                 gemini,
