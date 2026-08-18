@@ -313,8 +313,8 @@ class GeminiAccountTranslationTests(unittest.TestCase):
         output_types = [item["type"] for item in completed["output"]]
         self.assertEqual(output_types, ["reasoning", "message"])
         self.assertEqual(
-            completed["output"][0]["summary"][0]["text"],
-            "**Planning investigation**\nChecking the files."
+            completed["output"][0]["summary"],
+            ["**Planning investigation**\nChecking the files."]
         )
         self.assertEqual(completed["output"][1]["content"][0]["text"], "Done.")
 

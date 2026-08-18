@@ -649,7 +649,7 @@ def _gemini_to_responses_events(
                         "id": reasoning_id,
                         "type": "reasoning",
                         "status": "completed",
-                        "summary": [{"type": "summary_text", "text": reasoning_text_value}],
+                        "summary": [reasoning_text_value],
                         "content": [],
                     }
                     yield emit("response.output_item.done", output_index=reasoning_output_index, item=reasoning_item)
@@ -689,7 +689,7 @@ def _gemini_to_responses_events(
             "id": reasoning_id,
             "type": "reasoning",
             "status": "completed",
-            "summary": [{"type": "summary_text", "text": reasoning_text_value}],
+            "summary": [reasoning_text_value],
             "content": [],
         }
         yield emit("response.output_item.done", output_index=reasoning_output_index, item=reasoning_item)
