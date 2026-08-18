@@ -572,10 +572,17 @@ def _gemini_to_responses_events(
     created_at = int(time.time())
     sequence = 0
     output: list[dict[str, Any]] = []
-    message_id = "msg_" + uuid.uuid4().hex
+
+    reasoning_started = False
+    reasoning_done = False
+    reasoning_id = "rs_" + uuid.uuid4().hex
+    reasoning_text = ""
+
     text_started = False
-    message_output_index: int | None = None
+    text_done = False
+    message_id = "msg_" + uuid.uuid4().hex
     text_value = ""
+
     usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
     def emit(event_type: str, **values: Any) -> bytes:
@@ -585,11 +592,6 @@ def _gemini_to_responses_events(
         return _sse(event_type, event)
 
     yield emit("response.created", response=_response_object(response_id, model, created_at, "in_progress", [], usage))
-    reasoning_started = False
-    reasoning_done = False
-    reasoning_id = "rs_" + uuid.uuid4().hex
-    reasoning_output_index: int | None = None
-    reasoning_text_value = ""
 
     for wrapper in chunks:
         inner = wrapper.get("response") if isinstance(wrapper.get("response"), dict) else wrapper
@@ -628,83 +630,99 @@ def _gemini_to_responses_events(
                     if isinstance(thought_chunk, str) and thought_chunk:
                         if not reasoning_started:
                             reasoning_started = True
-                            reasoning_output_index = len(output)
-                            reasoning_item = {
+                            idx = len(output)
+                            item = {
                                 "id": reasoning_id,
                                 "type": "reasoning",
                                 "status": "in_progress",
                                 "summary": [],
                                 "content": [],
                             }
-                            yield emit("response.output_item.added", output_index=reasoning_output_index, item=reasoning_item)
-                            yield emit("response.reasoning_summary_part.added", item_id=reasoning_id, output_index=reasoning_output_index, summary_index=0, part={"type": "summary_text", "text": ""})
-                        reasoning_text_value += thought_chunk
-                        yield emit("response.reasoning_summary_text.delta", item_id=reasoning_id, output_index=reasoning_output_index, summary_index=0, delta=thought_chunk)
+                            yield emit("response.output_item.added", output_index=idx, item=item)
+                            yield emit("response.reasoning_summary_part.added", item_id=reasoning_id, output_index=idx, summary_index=0, part={"type": "summary_text", "text": ""})
+                        reasoning_text += thought_chunk
+                        yield emit("response.reasoning_summary_text.delta", item_id=reasoning_id, output_index=len(output), summary_index=0, delta=thought_chunk)
                     continue
 
                 if reasoning_started and not reasoning_done:
                     reasoning_done = True
-                    yield emit("response.reasoning_summary_text.done", item_id=reasoning_id, output_index=reasoning_output_index, summary_index=0, text=reasoning_text_value)
-                    reasoning_item = {
+                    idx = len(output)
+                    yield emit("response.reasoning_summary_text.done", item_id=reasoning_id, output_index=idx, summary_index=0, text=reasoning_text)
+                    item = {
                         "id": reasoning_id,
                         "type": "reasoning",
                         "status": "completed",
-                        "summary": [reasoning_text_value],
+                        "summary": [reasoning_text],
                         "content": [],
                     }
-                    yield emit("response.output_item.done", output_index=reasoning_output_index, item=reasoning_item)
-                    output.append(reasoning_item)
+                    yield emit("response.output_item.done", output_index=idx, item=item)
+                    output.append(item)
 
                 text = part.get("text")
                 if isinstance(text, str) and text:
                     if not text_started:
                         text_started = True
-                        message_output_index = len(output)
+                        idx = len(output)
                         item = {"id": message_id, "type": "message", "status": "in_progress", "role": "assistant", "content": [], "phase": "commentary"}
-                        yield emit("response.output_item.added", output_index=message_output_index, item=item)
-                        yield emit("response.content_part.added", item_id=message_id, output_index=message_output_index, content_index=0, part={"type": "output_text", "text": "", "annotations": []})
+                        yield emit("response.output_item.added", output_index=idx, item=item)
+                        yield emit("response.content_part.added", item_id=message_id, output_index=idx, content_index=0, part={"type": "output_text", "text": "", "annotations": []})
                     text_value += text
-                    yield emit("response.output_text.delta", item_id=message_id, output_index=message_output_index, content_index=0, delta=text, logprobs=[])
+                    yield emit("response.output_text.delta", item_id=message_id, output_index=len(output), content_index=0, delta=text, logprobs=[])
+
                 function_call = part.get("functionCall")
                 if isinstance(function_call, dict):
+                    if text_started and not text_done:
+                        text_done = True
+                        idx = len(output)
+                        yield emit("response.output_text.done", item_id=message_id, output_index=idx, content_index=0, text=text_value, logprobs=[])
+                        part_obj = {"type": "output_text", "text": text_value, "annotations": []}
+                        yield emit("response.content_part.done", item_id=message_id, output_index=idx, content_index=0, part=part_obj)
+                        msg_item = {"id": message_id, "type": "message", "status": "completed", "role": "assistant", "content": [part_obj], "phase": "commentary"}
+                        yield emit("response.output_item.done", output_index=idx, item=msg_item)
+                        output.append(msg_item)
+
                     call_id = str(function_call.get("id") or "call_" + uuid.uuid4().hex)
                     name = _safe_function_name(str(function_call.get("name") or "tool"))
                     arguments = json.dumps(function_call.get("args") or {}, ensure_ascii=False, separators=(",", ":"))
                     signature = str(part.get("thoughtSignature") or "").strip()
                     if signature:
                         signatures[call_id] = signature
-                    index = len(output) + (1 if text_started else 0)
-                    item = {"id": "fc_" + uuid.uuid4().hex, "type": "function_call", "status": "in_progress", "call_id": call_id, "name": name, "arguments": ""}
-                    yield emit("response.output_item.added", output_index=index, item=item)
-                    yield emit("response.function_call_arguments.delta", item_id=item["id"], output_index=index, delta=arguments)
-                    item = {**item, "status": "completed", "arguments": arguments}
-                    yield emit("response.function_call_arguments.done", item_id=item["id"], output_index=index, arguments=arguments)
-                    yield emit("response.output_item.done", output_index=index, item=item)
-                    output.append(item)
+
+                    fc_idx = len(output)
+                    fc_item = {"id": "fc_" + uuid.uuid4().hex, "type": "function_call", "status": "in_progress", "call_id": call_id, "name": name, "arguments": ""}
+                    yield emit("response.output_item.added", output_index=fc_idx, item=fc_item)
+                    yield emit("response.function_call_arguments.delta", item_id=fc_item["id"], output_index=fc_idx, delta=arguments)
+                    fc_item = {**fc_item, "status": "completed", "arguments": arguments}
+                    yield emit("response.function_call_arguments.done", item_id=fc_item["id"], output_index=fc_idx, arguments=arguments)
+                    yield emit("response.output_item.done", output_index=fc_idx, item=fc_item)
+                    output.append(fc_item)
 
     if reasoning_started and not reasoning_done:
         reasoning_done = True
-        yield emit("response.reasoning_summary_text.done", item_id=reasoning_id, output_index=reasoning_output_index, summary_index=0, text=reasoning_text_value)
-        reasoning_item = {
+        idx = len(output)
+        yield emit("response.reasoning_summary_text.done", item_id=reasoning_id, output_index=idx, summary_index=0, text=reasoning_text)
+        item = {
             "id": reasoning_id,
             "type": "reasoning",
             "status": "completed",
-            "summary": [reasoning_text_value],
+            "summary": [reasoning_text],
             "content": [],
         }
-        yield emit("response.output_item.done", output_index=reasoning_output_index, item=reasoning_item)
-        output.append(reasoning_item)
+        yield emit("response.output_item.done", output_index=idx, item=item)
+        output.append(item)
 
-    if text_started:
-        index = message_output_index if message_output_index is not None else len(output)
-        yield emit("response.output_text.done", item_id=message_id, output_index=index, content_index=0, text=text_value, logprobs=[])
-        part = {"type": "output_text", "text": text_value, "annotations": []}
-        yield emit("response.content_part.done", item_id=message_id, output_index=index, content_index=0, part=part)
+    if text_started and not text_done:
+        text_done = True
+        idx = len(output)
+        yield emit("response.output_text.done", item_id=message_id, output_index=idx, content_index=0, text=text_value, logprobs=[])
+        part_obj = {"type": "output_text", "text": text_value, "annotations": []}
+        yield emit("response.content_part.done", item_id=message_id, output_index=idx, content_index=0, part=part_obj)
         has_tools = any(it.get("type") == "function_call" for it in output)
         msg_phase = "commentary" if has_tools else "final_answer"
-        message = {"id": message_id, "type": "message", "status": "completed", "role": "assistant", "content": [part], "phase": msg_phase}
-        yield emit("response.output_item.done", output_index=index, item=message)
-        output.insert(index, message)
+        msg_item = {"id": message_id, "type": "message", "status": "completed", "role": "assistant", "content": [part_obj], "phase": msg_phase}
+        yield emit("response.output_item.done", output_index=idx, item=msg_item)
+        output.append(msg_item)
+
     response = _response_object(response_id, model, created_at, "completed", output, usage)
     yield emit("response.completed", response=response)
     yield b"data: [DONE]\n\n"
