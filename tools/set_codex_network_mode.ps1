@@ -218,7 +218,6 @@ function New-GeminiModelCatalog {
         Set-ObjectProperty $model 'use_responses_lite' $false
         Set-ObjectProperty $model 'context_window' 1000000
         Set-ObjectProperty $model 'max_context_window' 1000000
-
         $metadataEfforts = @()
         if ($metadata) {
             $metadataEfforts = @($metadata.supported_reasoning_levels | Where-Object {

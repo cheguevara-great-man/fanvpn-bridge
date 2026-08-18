@@ -28,6 +28,15 @@
       .role { margin-top: 10px; border-top: 1px solid #e8eaed; padding-top: 8px; }
       .role-head { display: flex; justify-content: space-between; align-items: center; }
       .role-head button { padding: 3px 8px; color: #b3261e; }
+      .quota-card { margin-top: 4px; border: 1px solid #dadce0; border-radius: 8px; padding: 10px; }
+      .quota-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+      .quota-head button { padding: 2px 10px; }
+      .quota-bar { height: 6px; border-radius: 3px; background: #e8eaed; overflow: hidden; margin: 3px 0 2px; }
+      .quota-fill { height: 100%; border-radius: 3px; background: #1a73e8; transition: width .3s ease; }
+      .quota-fill.warn { background: #ea8600; }
+      .quota-fill.crit { background: #b3261e; }
+      .quota-item { margin-top: 8px; }
+      .quota-item:first-of-type { margin-top: 0; }
     </style>
   </head>
   <body>
@@ -62,6 +71,26 @@
       <div class="hint">角色由 Codex 按描述选择；显式指定的角色/模型仍优先于默认值。</div>
     </details>
     <div id="mode-note">正在读取上次托管配置……</div>
+
+    <h2>Google 账号额度</h2>
+    <div class="quota-card">
+      <div class="quota-head">
+        <strong id="quota-group">Gemini 模型</strong>
+        <button type="button" id="quota-refresh">刷新</button>
+      </div>
+      <div id="quota-items">
+        <div class="quota-item">
+          <div class="row"><span>5 小时滚动额度</span><strong id="quota-5h-value">-</strong></div>
+          <div class="quota-bar"><div class="quota-fill" id="quota-5h-fill" style="width: 0%"></div></div>
+          <div class="hint" id="quota-5h-note">加载中……</div>
+        </div>
+        <div class="quota-item">
+          <div class="row"><span>每周额度</span><strong id="quota-weekly-value">-</strong></div>
+          <div class="quota-bar"><div class="quota-fill" id="quota-weekly-fill" style="width: 0%"></div></div>
+          <div class="hint" id="quota-weekly-note">加载中……</div>
+        </div>
+      </div>
+    </div>
 
     <h2>Antigravity for VS Code</h2>
     <button type="button" class="primary" id="antigravity-setup">检查中……</button>

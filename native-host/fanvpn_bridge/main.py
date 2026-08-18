@@ -40,6 +40,10 @@ def run(config_path: Path) -> int:
     )
     channel = FramedMessageChannel(sys.stdin.buffer, sys.stdout.buffer)
     subagent_policy = SubagentPolicyStore(cache_base / "subagent-policy.json")
+    gemini_account = GeminiAccountProvider(
+        bridge_url=f"http://{config.listen_host}:{config.listen_port}",
+        timeout_seconds=config.protocol.request_timeout_seconds,
+    )
     dispatcher = NativeDispatcher(
         channel,
         max_chunk_bytes=config.protocol.max_chunk_bytes,
@@ -52,6 +56,7 @@ def run(config_path: Path) -> int:
         subagent_config_controller=SubagentConfigurationController(
             Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")), subagent_policy
         ),
+        gemini_account_provider=gemini_account,
     )
     dispatcher.start()
     routes = RouteTable(config.routes)
@@ -59,10 +64,6 @@ def run(config_path: Path) -> int:
         persistent_directory=cache_base / "product-cache-v1"
     )
     usage_reporter = UsageReporter.load(cache_base, dispatcher)
-    gemini_account = GeminiAccountProvider(
-        bridge_url=f"http://{config.listen_host}:{config.listen_port}",
-        timeout_seconds=config.protocol.request_timeout_seconds,
-    )
     if usage_reporter is None:
         log.info("usage_reporting_disabled")
     else:

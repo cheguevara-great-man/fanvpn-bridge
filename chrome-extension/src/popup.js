@@ -14,6 +14,14 @@ const subagentEffort = document.getElementById("subagent-effort");
 const subagentRoles = document.getElementById("subagent-roles");
 const addRoleButton = document.getElementById("add-role");
 const saveSubagentsButton = document.getElementById("save-subagents");
+const quotaRefreshButton = document.getElementById("quota-refresh");
+const quotaGroupLabel = document.getElementById("quota-group");
+const quota5hValue = document.getElementById("quota-5h-value");
+const quota5hFill = document.getElementById("quota-5h-fill");
+const quota5hNote = document.getElementById("quota-5h-note");
+const quotaWeeklyValue = document.getElementById("quota-weekly-value");
+const quotaWeeklyFill = document.getElementById("quota-weekly-fill");
+const quotaWeeklyNote = document.getElementById("quota-weekly-note");
 let availableModels = [];
 
 const MODE_LABELS = {
@@ -55,6 +63,16 @@ try { await refreshAntigravity(); } catch (error) {
 try { await refreshSubagents(); } catch (_error) {
   document.getElementById("subagent-settings").open = false;
 }
+try { await refreshGeminiQuota(); } catch (error) {
+  renderGeminiQuotaError(error.message || String(error));
+}
+
+quotaRefreshButton.addEventListener("click", async () => {
+  quotaRefreshButton.disabled = true;
+  try { await refreshGeminiQuota(); } catch (error) {
+    renderGeminiQuotaError(error.message || String(error));
+  } finally { quotaRefreshButton.disabled = false; }
+});
 
 for (const button of modeButtons) {
   button.addEventListener("click", async () => {
@@ -217,9 +235,69 @@ function renderAntigravity(state) {
 }
 
 function setBusy(busy) {
-  for (const button of [...modeButtons, antigravityButton, addRoleButton, saveSubagentsButton]) button.disabled = busy;
+  for (const button of [...modeButtons, antigravityButton, addRoleButton, saveSubagentsButton, quotaRefreshButton]) button.disabled = busy;
 }
 function hideMessages() { noticeBox.hidden = true; errorBox.hidden = true; }
 function showNotice(message) { errorBox.hidden = true; noticeBox.hidden = false; noticeBox.textContent = message; }
 function showError(message) { noticeBox.hidden = true; errorBox.hidden = false; errorBox.textContent = message; }
 function setState(element, ok, text) { element.textContent = text; element.className = ok ? "ok" : "bad"; }
+
+async function refreshGeminiQuota() {
+  const result = await chrome.runtime.sendMessage({ target: "background", kind: "gemini-quota:get" });
+  if (result?.ok !== true) throw new Error(result?.message || "Gemini 额度查询失败");
+  renderGeminiQuota(result.state);
+}
+
+function renderGeminiQuota(state) {
+  const quota = state?.quota;
+  const groups = Array.isArray(quota?.groups) ? quota.groups : [];
+  const group = groups.find((item) => String(item?.displayName || "").toLowerCase().includes("gemini")) || groups[0];
+  if (!group || !Array.isArray(group.buckets) || group.buckets.length === 0) {
+    renderGeminiQuotaError("Google 账号未返回额度信息");
+    return;
+  }
+  quotaGroupLabel.textContent = group.displayName || "Gemini 模型";
+  applyQuotaBucket(group.buckets.find((bucket) => bucket?.window === "5h"), quota5hValue, quota5hFill, quota5hNote);
+  applyQuotaBucket(group.buckets.find((bucket) => bucket?.window === "weekly"), quotaWeeklyValue, quotaWeeklyFill, quotaWeeklyNote);
+}
+
+function applyQuotaBucket(bucket, valueElement, fillElement, noteElement) {
+  if (!bucket) {
+    valueElement.textContent = "-";
+    valueElement.className = "";
+    fillElement.style.width = "0%";
+    noteElement.textContent = "无数据";
+    return;
+  }
+  const fraction = Math.max(0, Math.min(1, Number(bucket.remainingFraction) || 0));
+  const percent = Math.round(fraction * 100);
+  valueElement.textContent = `剩余 ${percent}%`;
+  valueElement.className = percent <= 20 ? "bad" : "ok";
+  fillElement.style.width = `${percent}%`;
+  fillElement.className = `quota-fill${percent <= 20 ? " crit" : percent <= 50 ? " warn" : ""}`;
+  const parts = [];
+  if (bucket.description) parts.push(bucket.description);
+  const reset = formatResetTime(bucket.resetTime);
+  if (reset) parts.push(`重置时间：${reset}`);
+  noteElement.textContent = parts.join(" · ") || "无数据";
+}
+
+function formatResetTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (number) => String(number).padStart(2, "0");
+  return `${date.getMonth() + 1}月${date.getDate()}日 ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function renderGeminiQuotaError(message) {
+  quotaGroupLabel.textContent = "Gemini 模型";
+  quota5hValue.textContent = "-";
+  quota5hValue.className = "bad";
+  quota5hFill.style.width = "0%";
+  quota5hNote.textContent = message;
+  quotaWeeklyValue.textContent = "-";
+  quotaWeeklyValue.className = "bad";
+  quotaWeeklyFill.style.width = "0%";
+  quotaWeeklyNote.textContent = message;
+}

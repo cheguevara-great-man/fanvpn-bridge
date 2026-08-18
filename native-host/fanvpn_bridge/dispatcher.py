@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Mapping, Sequence
 
 from .antigravity_setup import AntigravitySetupController, AntigravitySetupError
+from .gemini_account import GeminiAccountProvider
 from .contracts import (
     BrowserTiming,
     EgressRequest,
@@ -61,6 +62,7 @@ class NativeDispatcher:
         antigravity_setup_controller: AntigravitySetupController | None = None,
         device_config_controller: DeviceConfigController | None = None,
         subagent_config_controller: SubagentConfigurationController | None = None,
+        gemini_account_provider: GeminiAccountProvider | None = None,
     ) -> None:
         self._channel = channel
         self._max_chunk_bytes = max_chunk_bytes
@@ -71,6 +73,7 @@ class NativeDispatcher:
         self._antigravity_setup_controller = antigravity_setup_controller
         self._device_config_controller = device_config_controller
         self._subagent_config_controller = subagent_config_controller
+        self._gemini_account_provider = gemini_account_provider
         self._control_lock = threading.Lock()
         self._pending: dict[str, _PendingRequest] = {}
         self._pending_lock = threading.Lock()
@@ -287,6 +290,9 @@ class NativeDispatcher:
             return
         if message_type in {"control.subagents.get", "control.subagents.apply"}:
             self._start_subagent_control(message_type, message)
+            return
+        if message_type == "control.gemini_quota.get":
+            self._start_gemini_quota_control(message)
             return
 
         request_id = message.get("id")
@@ -528,6 +534,49 @@ class NativeDispatcher:
             name="fanvpn-device-config",
             daemon=True,
         ).start()
+
+    def _start_gemini_quota_control(self, message: Mapping[str, object]) -> None:
+        request_id = message.get("id")
+        if not isinstance(request_id, str) or not 16 <= len(request_id) <= 64:
+            raise BridgeError(ErrorCode.PROTOCOL_VIOLATION, "Invalid control request id")
+        threading.Thread(
+            target=self._run_gemini_quota_control,
+            args=(request_id,),
+            name="fanvpn-gemini-quota",
+            daemon=True,
+        ).start()
+
+    def _run_gemini_quota_control(self, request_id: str) -> None:
+        try:
+            if self._gemini_account_provider is None:
+                self._send_gemini_quota_result(
+                    request_id, ok=False, message="Gemini account mode is not available in this Native Host"
+                )
+                return
+            state = self._gemini_account_provider.quota_summary_response()
+            if state.get("ok"):
+                self._send_gemini_quota_result(request_id, ok=True, state=state)
+            else:
+                self._send_gemini_quota_result(
+                    request_id, ok=False, message=str(state.get("error") or "Gemini quota fetch failed")
+                )
+        except Exception:
+            self._send_gemini_quota_result(request_id, ok=False, message="Gemini quota query failed unexpectedly")
+
+    def _send_gemini_quota_result(
+        self, request_id: str, *, ok: bool,
+        state: Mapping[str, object] | None = None,
+        message: str | None = None,
+    ) -> None:
+        fields: dict[str, object] = {"id": request_id, "ok": ok}
+        if state is not None:
+            fields["state"] = dict(state)
+        if message:
+            fields["message"] = message[:512]
+        try:
+            self._channel.send(envelope("control.gemini_quota.result", **fields))
+        except Exception:
+            return
 
     def _start_subagent_control(self, message_type: str, message: Mapping[str, object]) -> None:
         request_id = message.get("id")

@@ -183,7 +183,8 @@ async function handleNativeMessage(message, port) {
     message.type === MessageType.CONTROL_MODE_RESULT ||
     message.type === MessageType.CONTROL_ANTIGRAVITY_RESULT ||
     message.type === MessageType.CONTROL_DEVICE_RESULT ||
-    message.type === MessageType.CONTROL_SUBAGENTS_RESULT
+    message.type === MessageType.CONTROL_SUBAGENTS_RESULT ||
+    message.type === MessageType.CONTROL_GEMINI_QUOTA_RESULT
   ) {
     const pending = pendingControls.get(message.id);
     if (!pending) return;
@@ -385,6 +386,24 @@ async function requestSubagentControl(kind, config = null) {
   });
 }
 
+async function requestGeminiQuotaControl() {
+  await waitForNativeHandshake();
+  const id = crypto.randomUUID().replaceAll("-", "");
+  const message = envelope(MessageType.CONTROL_GEMINI_QUOTA_GET, { id });
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pendingControls.delete(id);
+      reject(new Error("Gemini 额度查询超时"));
+    }, CONTROL_TIMEOUT_MS);
+    pendingControls.set(id, { resolve, reject, timeout });
+    if (!postNative(message)) {
+      pendingControls.delete(id);
+      clearTimeout(timeout);
+      reject(new Error("Native Host 当前不可用"));
+    }
+  });
+}
+
 async function waitForNativeHandshake() {
   connectNative();
   const deadline = Date.now() + CONTROL_HANDSHAKE_TIMEOUT_MS;
@@ -470,6 +489,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     ["antigravity-setup:get", "antigravity-setup:run"].includes(message.kind)
   ) {
     requestAntigravityControl(message.kind.endsWith(":run") ? "setup" : "get")
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, message: error.message }));
+    return true;
+  }
+  if (message?.target === "background" && message.kind === "gemini-quota:get") {
+    requestGeminiQuotaControl()
       .then(sendResponse)
       .catch((error) => sendResponse({ ok: false, message: error.message }));
     return true;

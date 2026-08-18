@@ -34,6 +34,8 @@ export const MessageType = Object.freeze({
   CONTROL_SUBAGENTS_GET: "control.subagents.get",
   CONTROL_SUBAGENTS_APPLY: "control.subagents.apply",
   CONTROL_SUBAGENTS_RESULT: "control.subagents.result",
+  CONTROL_GEMINI_QUOTA_GET: "control.gemini_quota.get",
+  CONTROL_GEMINI_QUOTA_RESULT: "control.gemini_quota.result",
 });
 
 export const ErrorCode = Object.freeze({

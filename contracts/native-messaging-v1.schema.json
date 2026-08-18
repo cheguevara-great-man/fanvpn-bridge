@@ -26,7 +26,9 @@
     { "$ref": "#/$defs/controlDeviceResult" },
     { "$ref": "#/$defs/controlSubagentsGet" },
     { "$ref": "#/$defs/controlSubagentsApply" },
-    { "$ref": "#/$defs/controlSubagentsResult" }
+    { "$ref": "#/$defs/controlSubagentsResult" },
+    { "$ref": "#/$defs/controlGeminiQuotaGet" },
+    { "$ref": "#/$defs/controlGeminiQuotaResult" }
   ],
   "$defs": {
     "protocolVersion": { "const": 1 },
@@ -481,6 +483,39 @@
           "properties": {
             "v": { "$ref": "#/$defs/protocolVersion" },
             "type": { "const": "control.subagents.result" },
+            "id": { "$ref": "#/$defs/requestId" },
+            "ok": { "type": "boolean" },
+            "state": { "type": "object" },
+            "message": { "type": "string", "maxLength": 512 }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "controlGeminiQuotaGet": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "id"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "control.gemini_quota.get" },
+            "id": { "$ref": "#/$defs/requestId" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "controlGeminiQuotaResult": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "id", "ok"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "control.gemini_quota.result" },
             "id": { "$ref": "#/$defs/requestId" },
             "ok": { "type": "boolean" },
             "state": { "type": "object" },

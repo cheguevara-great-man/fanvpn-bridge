@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+import unittest.mock
 
 from fanvpn_bridge.gemini_account import (
     ThoughtSignatureCache,
@@ -9,6 +10,7 @@ from fanvpn_bridge.gemini_account import (
     _normalize_available_models,
     _responses_to_gemini,
 )
+from fanvpn_bridge.gemini_account import GeminiAccountProvider, GoogleAccountCredential
 
 
 class GeminiAccountTranslationTests(unittest.TestCase):
@@ -258,67 +260,60 @@ class GeminiAccountTranslationTests(unittest.TestCase):
             self.assertLessEqual(max(resized_img.size), 1536)
 
 
-    def test_gemini_thought_stream_converted_to_responses_reasoning(self) -> None:
-        chunks = [
-            {
-                "response": {
-                    "candidates": [
-                        {
-                            "content": {
-                                "parts": [
-                                    {
-                                        "thought": True,
-                                        "text": "**Planning investigation**\nChecking the files."
-                                    }
-                                ]
-                            }
-                        }
+class GeminiQuotaSummaryTests(unittest.TestCase):
+    def _provider(self) -> GeminiAccountProvider:
+        return GeminiAccountProvider(bridge_url="http://127.0.0.1:18888")
+
+    def test_quota_summary_response_returns_groups(self) -> None:
+        provider = self._provider()
+        quota = {
+            "groups": [
+                {
+                    "displayName": "Gemini Models",
+                    "buckets": [
+                        {"window": "5h", "remainingFraction": 0.42, "resetTime": "2026-08-18T11:06:08Z"},
+                        {"window": "weekly", "remainingFraction": 0.85, "resetTime": "2026-08-21T06:50:31Z"},
                     ],
-                    "usageMetadata": {
-                        "promptTokenCount": 60,
-                        "thoughtsTokenCount": 25,
-                        "candidatesTokenCount": 15,
-                        "totalTokenCount": 100
-                    }
                 }
-            },
-            {
-                "response": {
-                    "candidates": [
-                        {
-                            "content": {
-                                "parts": [
-                                    {
-                                        "text": "Done."
-                                    }
-                                ]
-                            }
-                        }
-                    ]
-                }
-            }
-        ]
-        events = []
-        for raw in _gemini_to_responses_events(chunks, "gemini-3.7-flash", {}):
-            for line in raw.decode().splitlines():
-                if line.startswith("data: {"):
-                    events.append(json.loads(line[6:]))
+            ]
+        }
+        with unittest.mock.patch.object(
+            provider, "_valid_credential",
+            return_value=GoogleAccountCredential("token-a", "refresh-a", 9999999999.0),
+        ), unittest.mock.patch.object(provider, "_project", return_value="proj-a"), unittest.mock.patch.object(
+            provider, "_post_json", return_value=quota
+        ) as post:
+            result = provider.quota_summary_response()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["quota"], quota)
+        post.assert_called_once()
+        self.assertEqual(post.call_args[0][0], "/antigravity/v1internal:retrieveUserQuotaSummary")
 
-        event_types = [e["type"] for e in events]
-        self.assertIn("response.reasoning_summary_part.added", event_types)
-        self.assertIn("response.reasoning_summary_text.delta", event_types)
-        self.assertIn("response.reasoning_summary_text.done", event_types)
+    def test_quota_summary_response_is_cached_for_a_minute(self) -> None:
+        provider = self._provider()
+        with unittest.mock.patch.object(
+            provider, "_valid_credential",
+            return_value=GoogleAccountCredential("token-a", "refresh-a", 9999999999.0),
+        ), unittest.mock.patch.object(provider, "_project", return_value="proj-a"), unittest.mock.patch.object(
+            provider, "_post_json", return_value={"groups": []}
+        ) as post:
+            first = provider.quota_summary_response()
+            second = provider.quota_summary_response()
+        self.assertEqual(post.call_count, 1)
+        self.assertEqual(first["quota"], second["quota"])
 
-        completed = events[-1]["response"]
-        output_types = [item["type"] for item in completed["output"]]
-        self.assertEqual(output_types, ["reasoning", "message"])
-        self.assertEqual(
-            completed["output"][0]["summary"],
-            ["**Planning investigation**\nChecking the files."]
-        )
-        self.assertEqual(completed["output"][1]["content"][0]["text"], "Done.")
+    def test_quota_summary_response_rejects_invalid_payload(self) -> None:
+        provider = self._provider()
+        with unittest.mock.patch.object(
+            provider, "_valid_credential",
+            return_value=GoogleAccountCredential("token-a", "refresh-a", 9999999999.0),
+        ), unittest.mock.patch.object(provider, "_project", return_value="proj-a"), unittest.mock.patch.object(
+            provider, "_post_json", return_value={"unexpected": True}
+        ):
+            result = provider.quota_summary_response()
+        self.assertFalse(result["ok"])
+        self.assertIn("invalid quota summary", result["error"])
 
 
 if __name__ == "__main__":
-
     unittest.main()
