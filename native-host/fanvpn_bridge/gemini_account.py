@@ -660,7 +660,7 @@ def _gemini_to_responses_events(
                     if not text_started:
                         text_started = True
                         message_output_index = len(output)
-                        item = {"id": message_id, "type": "message", "status": "in_progress", "role": "assistant", "content": []}
+                        item = {"id": message_id, "type": "message", "status": "in_progress", "role": "assistant", "content": [], "phase": "commentary"}
                         yield emit("response.output_item.added", output_index=message_output_index, item=item)
                         yield emit("response.content_part.added", item_id=message_id, output_index=message_output_index, content_index=0, part={"type": "output_text", "text": "", "annotations": []})
                     text_value += text
@@ -700,7 +700,9 @@ def _gemini_to_responses_events(
         yield emit("response.output_text.done", item_id=message_id, output_index=index, content_index=0, text=text_value, logprobs=[])
         part = {"type": "output_text", "text": text_value, "annotations": []}
         yield emit("response.content_part.done", item_id=message_id, output_index=index, content_index=0, part=part)
-        message = {"id": message_id, "type": "message", "status": "completed", "role": "assistant", "content": [part]}
+        has_tools = any(it.get("type") == "function_call" for it in output)
+        msg_phase = "commentary" if has_tools else "final_answer"
+        message = {"id": message_id, "type": "message", "status": "completed", "role": "assistant", "content": [part], "phase": msg_phase}
         yield emit("response.output_item.done", output_index=index, item=message)
         output.insert(index, message)
     response = _response_object(response_id, model, created_at, "completed", output, usage)
