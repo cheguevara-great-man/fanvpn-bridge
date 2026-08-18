@@ -218,6 +218,11 @@ function New-GeminiModelCatalog {
         Set-ObjectProperty $model 'use_responses_lite' $false
         Set-ObjectProperty $model 'context_window' 1000000
         Set-ObjectProperty $model 'max_context_window' 1000000
+        $inst = [string]$model.model_messages.instructions_template
+        if ($inst -and $inst -notmatch 'Important Commentary Rule') {
+            $commentaryRule = "`r`n`r`n# Important Commentary Rule`r`nBefore calling any tool (like shell_command or apply_patch) or running commands, ALWAYS output a concise Chinese progress update in the commentary channel explaining what you are checking or doing next (e.g. '??????????...'). Never execute tools silently without explaining your action first.`r`n"
+            Set-ObjectProperty $model.model_messages 'instructions_template' ($inst + $commentaryRule)
+        }
         $metadataEfforts = @()
         if ($metadata) {
             $metadataEfforts = @($metadata.supported_reasoning_levels | Where-Object {
