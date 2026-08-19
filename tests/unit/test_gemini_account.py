@@ -258,7 +258,7 @@ class GeminiAccountTranslationTests(unittest.TestCase):
         image_part = next(p for p in parts if "inlineData" in p)
         resized_bytes = base64.b64decode(image_part["inlineData"]["data"])
         with Image.open(io.BytesIO(resized_bytes)) as resized_img:
-            self.assertLessEqual(max(resized_img.size), 1536)
+            self.assertLessEqual(max(resized_img.size), 2048)
 
 
 class GeminiQuotaSummaryTests(unittest.TestCase):
@@ -316,10 +316,10 @@ class GeminiQuotaSummaryTests(unittest.TestCase):
         self.assertIn("invalid quota summary", result["error"])
 
 
-    def test_responses_to_gemini_downscales_function_call_output_images(self) -> None:
+    def test_responses_to_gemini_converts_function_call_output_images_to_multimodal_parts(self) -> None:
         import io, base64
         from PIL import Image
-        img = Image.new("RGBA", (2000, 2000), (0, 128, 255, 255))
+        img = Image.new("RGBA", (3200, 2136), (0, 128, 255, 255))
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         raw_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
@@ -338,10 +338,18 @@ class GeminiQuotaSummaryTests(unittest.TestCase):
         req = _responses_to_gemini(payload, signatures)
         contents = req["contents"]
         self.assertEqual(len(contents), 1)
-        resp = contents[0]["parts"][0]["functionResponse"]["response"]["result"]
-        image_url = resp[0]["image_url"]
-        self.assertTrue(image_url.startswith("data:image/jpeg;base64,"))
-        self.assertLess(len(image_url), len(raw_b64))
+        fr = contents[0]["parts"][0]["functionResponse"]
+        self.assertIn("parts", fr)
+        self.assertEqual(len(fr["parts"]), 1)
+        inline_data = fr["parts"][0]["inlineData"]
+        self.assertEqual(inline_data["mimeType"], "image/png")
+        self.assertEqual(inline_data["displayName"], "tool_call_img_1_0.png")
+        self.assertLess(len(inline_data["data"]), len(raw_b64))
+
+        # Ensure Base64 never leaks into the JSON response
+        serialized_response = json.dumps(fr["response"])
+        self.assertIn('"$ref": "tool_call_img_1_0.png"', serialized_response)
+        self.assertNotIn(inline_data["data"], serialized_response)
 
     def test_downscale_corrupted_large_image_returns_empty_to_prevent_payload_bloat(self) -> None:
         large_garbage = "A" * 150000

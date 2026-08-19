@@ -556,18 +556,18 @@ def _responses_to_gemini(payload: dict[str, Any], signatures: MutableMapping[str
         elif item_type == "function_call_output":
             call_id = str(item.get("call_id") or "")
             output = item.get("output")
-            if isinstance(output, str):
-                try:
-                    result = json.loads(output)
-                except json.JSONDecodeError:
-                    result = output
-            else:
-                result = output
-            result = _sanitize_images_in_obj(result)
+            resp_obj, media_parts = _extract_function_output(output, call_id)
+            fr_dict: dict[str, Any] = {
+                "id": call_id,
+                "name": call_names.get(call_id, "tool"),
+                "response": resp_obj,
+            }
+            if media_parts:
+                fr_dict["parts"] = media_parts
             _append_content(
                 contents,
                 "user",
-                [{"functionResponse": {"id": call_id, "name": call_names.get(call_id, "tool"), "response": {"result": result}}}],
+                [{"functionResponse": fr_dict}],
             )
     request: dict[str, Any] = {"contents": contents}
     if system_parts:
@@ -709,7 +709,10 @@ def _response_object(response_id: str, model: str, created_at: int, status: str,
     }
 
 
-def _downscale_image_part(mime_type: str, b64_data: str, max_dimension: int = 1280) -> tuple[str, str]:
+_DATA_IMAGE_RE = re.compile(r"^data:(image/(?:png|jpeg|jpg|webp));base64,(.+)$", re.DOTALL | re.IGNORECASE)
+
+
+def _downscale_image_part(mime_type: str, b64_data: str, max_dimension: int = 2048) -> tuple[str, str]:
     try:
         import base64
         import io
@@ -725,45 +728,63 @@ def _downscale_image_part(mime_type: str, b64_data: str, max_dimension: int = 12
             else:
                 resized = img.copy()
 
-            if resized.mode != "RGB":
-                bg = Image.new("RGB", resized.size, (255, 255, 255))
-                if resized.mode == "RGBA":
-                    bg.paste(resized, mask=resized.split()[3])
-                else:
-                    bg.paste(resized)
-                resized = bg
-
             out_buf = io.BytesIO()
-            resized.save(out_buf, format="JPEG", quality=80, optimize=True)
+            norm_mime = mime_type.lower()
+            if "png" in norm_mime:
+                resized.save(out_buf, format="PNG", optimize=True)
+                new_mime = "image/png"
+            else:
+                if resized.mode != "RGB":
+                    resized = resized.convert("RGB")
+                resized.save(out_buf, format="JPEG", quality=88, optimize=True)
+                new_mime = "image/jpeg"
             new_b64 = base64.b64encode(out_buf.getvalue()).decode("ascii")
-            return "image/jpeg", new_b64
+            return new_mime, new_b64
     except Exception:
         if len(b64_data) > 100_000:
             return mime_type, ""
         return mime_type, b64_data
 
 
-def _sanitize_images_in_obj(obj: Any) -> Any:
-    if isinstance(obj, dict):
-        kind = str(obj.get("type") or "")
-        url = str(obj.get("image_url") or obj.get("url") or "")
-        if (kind == "input_image" or "image_url" in obj or "url" in obj) and url.startswith("data:") and ";base64," in url:
-            metadata, data = url[5:].split(";base64,", 1)
-            mime = metadata or "image/png"
-            new_mime, new_data = _downscale_image_part(mime, data)
-            new_obj = dict(obj)
-            target_key = "image_url" if "image_url" in new_obj else "url"
-            new_obj[target_key] = f"data:{new_mime};base64,{new_data}"
-            return new_obj
-        return {k: _sanitize_images_in_obj(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_sanitize_images_in_obj(item) for item in obj]
-    if isinstance(obj, str) and obj.startswith("data:image/") and ";base64," in obj:
-        metadata, data = obj[5:].split(";base64,", 1)
-        mime = metadata or "image/png"
-        new_mime, new_data = _downscale_image_part(mime, data)
-        return f"data:{new_mime};base64,{new_data}"
-    return obj
+def _extract_function_output(output: Any, call_id: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if isinstance(output, str):
+        try:
+            parsed = json.loads(output)
+        except json.JSONDecodeError:
+            return {"result": output}, []
+        output = parsed
+
+    if isinstance(output, list):
+        response_items: list[Any] = []
+        media_parts: list[dict[str, Any]] = []
+        for index, item in enumerate(output):
+            if isinstance(item, dict) and item.get("type") == "input_image":
+                url = str(item.get("image_url") or item.get("url") or "")
+                match = _DATA_IMAGE_RE.match(url)
+                if match:
+                    raw_mime, raw_b64 = match.group(1), match.group(2)
+                    mime, data = _downscale_image_part(raw_mime, raw_b64)
+                    if data:
+                        ext = "png" if "png" in mime else "jpg"
+                        display_name = f"tool_{call_id}_{index}.{ext}"
+                        media_parts.append({
+                            "inlineData": {
+                                "mimeType": mime,
+                                "displayName": display_name,
+                                "data": data,
+                            }
+                        })
+                        response_items.append({
+                            "type": "image",
+                            "$ref": display_name,
+                        })
+                        continue
+            response_items.append(item)
+        return {"result": response_items}, media_parts
+
+    if isinstance(output, dict):
+        return {"result": output}, []
+    return {"result": output}, []
 
 
 def _message_parts(content: Any) -> list[dict[str, Any]]:
