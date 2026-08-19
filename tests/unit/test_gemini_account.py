@@ -9,6 +9,7 @@ from fanvpn_bridge.gemini_account import (
     _gemini_to_responses_events,
     _normalize_available_models,
     _responses_to_gemini,
+    _downscale_image_part,
 )
 from fanvpn_bridge.gemini_account import GeminiAccountProvider, GoogleAccountCredential
 
@@ -313,6 +314,39 @@ class GeminiQuotaSummaryTests(unittest.TestCase):
             result = provider.quota_summary_response()
         self.assertFalse(result["ok"])
         self.assertIn("invalid quota summary", result["error"])
+
+
+    def test_responses_to_gemini_downscales_function_call_output_images(self) -> None:
+        import io, base64
+        from PIL import Image
+        img = Image.new("RGBA", (2000, 2000), (0, 128, 255, 255))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        raw_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+
+        payload = {
+            "model": "gemini-3.7-flash",
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_img_1",
+                    "output": [{"type": "input_image", "image_url": f"data:image/png;base64,{raw_b64}"}],
+                }
+            ],
+        }
+        signatures: dict[str, str] = {}
+        req = _responses_to_gemini(payload, signatures)
+        contents = req["contents"]
+        self.assertEqual(len(contents), 1)
+        resp = contents[0]["parts"][0]["functionResponse"]["response"]["result"]
+        image_url = resp[0]["image_url"]
+        self.assertTrue(image_url.startswith("data:image/jpeg;base64,"))
+        self.assertLess(len(image_url), len(raw_b64))
+
+    def test_downscale_corrupted_large_image_returns_empty_to_prevent_payload_bloat(self) -> None:
+        large_garbage = "A" * 150000
+        mime, data = _downscale_image_part("image/png", large_garbage)
+        self.assertEqual(data, "")
 
 
 if __name__ == "__main__":

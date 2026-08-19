@@ -563,6 +563,7 @@ def _responses_to_gemini(payload: dict[str, Any], signatures: MutableMapping[str
                     result = output
             else:
                 result = output
+            result = _sanitize_images_in_obj(result)
             _append_content(
                 contents,
                 "user",
@@ -708,7 +709,7 @@ def _response_object(response_id: str, model: str, created_at: int, status: str,
     }
 
 
-def _downscale_image_part(mime_type: str, b64_data: str, max_dimension: int = 1536) -> tuple[str, str]:
+def _downscale_image_part(mime_type: str, b64_data: str, max_dimension: int = 1280) -> tuple[str, str]:
     try:
         import base64
         import io
@@ -717,24 +718,52 @@ def _downscale_image_part(mime_type: str, b64_data: str, max_dimension: int = 15
         raw_bytes = base64.b64decode(b64_data)
         with Image.open(io.BytesIO(raw_bytes)) as img:
             width, height = img.size
-            if max(width, height) <= max_dimension:
-                return mime_type, b64_data
-            scale = max_dimension / max(width, height)
-            new_size = (max(1, int(width * scale)), max(1, int(height * scale)))
-            resized = img.resize(new_size, Image.Resampling.LANCZOS)
-            out_buf = io.BytesIO()
-            if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
-                resized.save(out_buf, format="PNG", optimize=True)
-                new_mime = "image/png"
+            if max(width, height) > max_dimension:
+                scale = max_dimension / max(width, height)
+                new_size = (max(1, int(width * scale)), max(1, int(height * scale)))
+                resized = img.resize(new_size, Image.Resampling.LANCZOS)
             else:
-                if resized.mode != "RGB":
-                    resized = resized.convert("RGB")
-                resized.save(out_buf, format="JPEG", quality=85)
-                new_mime = "image/jpeg"
+                resized = img.copy()
+
+            if resized.mode != "RGB":
+                bg = Image.new("RGB", resized.size, (255, 255, 255))
+                if resized.mode == "RGBA":
+                    bg.paste(resized, mask=resized.split()[3])
+                else:
+                    bg.paste(resized)
+                resized = bg
+
+            out_buf = io.BytesIO()
+            resized.save(out_buf, format="JPEG", quality=80, optimize=True)
             new_b64 = base64.b64encode(out_buf.getvalue()).decode("ascii")
-            return new_mime, new_b64
+            return "image/jpeg", new_b64
     except Exception:
+        if len(b64_data) > 100_000:
+            return mime_type, ""
         return mime_type, b64_data
+
+
+def _sanitize_images_in_obj(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        kind = str(obj.get("type") or "")
+        url = str(obj.get("image_url") or obj.get("url") or "")
+        if (kind == "input_image" or "image_url" in obj or "url" in obj) and url.startswith("data:") and ";base64," in url:
+            metadata, data = url[5:].split(";base64,", 1)
+            mime = metadata or "image/png"
+            new_mime, new_data = _downscale_image_part(mime, data)
+            new_obj = dict(obj)
+            target_key = "image_url" if "image_url" in new_obj else "url"
+            new_obj[target_key] = f"data:{new_mime};base64,{new_data}"
+            return new_obj
+        return {k: _sanitize_images_in_obj(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_images_in_obj(item) for item in obj]
+    if isinstance(obj, str) and obj.startswith("data:image/") and ";base64," in obj:
+        metadata, data = obj[5:].split(";base64,", 1)
+        mime = metadata or "image/png"
+        new_mime, new_data = _downscale_image_part(mime, data)
+        return f"data:{new_mime};base64,{new_data}"
+    return obj
 
 
 def _message_parts(content: Any) -> list[dict[str, Any]]:
