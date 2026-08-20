@@ -26,8 +26,6 @@ const bridgeInstallRoot = document.getElementById("bridge-install-root");
 const gatewayInstallRoot = document.getElementById("gateway-install-root");
 const bridgeUpdateButton = document.getElementById("bridge-update");
 const gatewayUpdateButton = document.getElementById("gateway-update");
-const bridgePickRootButton = document.getElementById("bridge-pick-root");
-const gatewayPickRootButton = document.getElementById("gateway-pick-root");
 const softwareUpdateNote = document.getElementById("software-update-note");
 let availableModels = [];
 
@@ -118,8 +116,6 @@ antigravityButton.addEventListener("click", async () => {
 
 bridgeUpdateButton.addEventListener("click", () => runSoftwareUpdate("fanvpn-bridge", bridgeInstallRoot.value));
 gatewayUpdateButton.addEventListener("click", () => runSoftwareUpdate("browser-gateway", gatewayInstallRoot.value));
-bridgePickRootButton.addEventListener("click", () => chooseInstallRoot("fanvpn-bridge", bridgeInstallRoot));
-gatewayPickRootButton.addEventListener("click", () => chooseInstallRoot("browser-gateway", gatewayInstallRoot));
 
 addRoleButton.addEventListener("click", () => addRole({
   name: "", description: "", developer_instructions: "",
@@ -201,19 +197,6 @@ async function runSoftwareUpdate(project, installRoot) {
     setTimeout(() => chrome.runtime.reload(), 500);
   } catch (error) { showError(error.message || String(error)); }
   finally { button.textContent = original; setBusy(false); }
-}
-
-async function chooseInstallRoot(project, input) {
-  setBusy(true);
-  hideMessages();
-  try {
-    const result = await chrome.runtime.sendMessage({
-      target: "background", kind: "software-update:pick-root", project,
-    });
-    if (result?.ok !== true) throw new Error(result?.message || "无法打开文件夹选择窗口");
-    if (typeof result?.state?.path === "string" && result.state.path) input.value = result.state.path;
-  } catch (error) { showError(error.message || String(error)); }
-  finally { setBusy(false); }
 }
 
 function renderSubagents(state) {

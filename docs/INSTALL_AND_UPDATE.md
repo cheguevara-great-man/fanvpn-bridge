@@ -48,7 +48,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\initialize_local_ins
 
 流程会：下载当前 GitHub `master` 提交的 ZIP → 校验 → 替换项目源码 → 对 AI Bridge 构建并注册未运行的 A/B 槽 → 自动重载已解压的 Chrome 扩展。
 
-默认保留原安装目录。只有需要迁移目录时才填写目录输入框；也可以点击**选择文件夹**，由 Native Host 打开 Windows 系统文件夹选择窗口，选中的绝对路径会自动填入。迁移后的第一次，Chrome 必须由你在 `chrome://extensions` 中对新目录执行一次“加载已解压的扩展程序”；以后该新目录也支持一键更新。
+默认保留原安装目录。只有需要迁移目录时才填写目录输入框，并填入目标项目文件夹的完整绝对路径。迁移后的第一次，Chrome 必须由你在 `chrome://extensions` 中对新目录执行一次“加载已解压的扩展程序”；以后该新目录也支持一键更新。
 
 ## Browser Gateway 的边界
 

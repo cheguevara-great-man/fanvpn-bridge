@@ -460,24 +460,6 @@ async function requestUpdateStatus() {
   });
 }
 
-async function requestInstallRootPicker(project) {
-  if (!UPDATE_PROJECTS[project]) throw new Error("不支持的软件安装目录");
-  await waitForNativeHandshake();
-  const id = crypto.randomUUID().replaceAll("-", "");
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      pendingControls.delete(id);
-      reject(new Error("选择文件夹超时"));
-    }, 6 * 60 * 1000);
-    pendingControls.set(id, { resolve, reject, timeout });
-    if (!postNative(envelope(MessageType.CONTROL_UPDATE_PICK_ROOT, { id, project }))) {
-      pendingControls.delete(id);
-      clearTimeout(timeout);
-      reject(new Error("Native Host 当前不可用"));
-    }
-  });
-}
-
 async function requestSoftwareUpdate(project, installRoot = "") {
   const repository = UPDATE_PROJECTS[project];
   if (!repository) throw new Error("不支持的软件更新项目");
@@ -658,12 +640,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       .catch((error) => sendResponse({ ok: false, message: error.message }));
     return true;
   }
-  if (message?.target === "background" && message.kind === "software-update:pick-root") {
-    requestInstallRootPicker(message.project)
-      .then(sendResponse)
-      .catch((error) => sendResponse({ ok: false, message: error.message }));
-    return true;
-  }
   if (
     message?.target === "background" &&
     ["subagents:get", "subagents:apply"].includes(message.kind)
@@ -707,12 +683,6 @@ chrome.runtime.onMessageExternal?.addListener((message, sender, sendResponse) =>
   }
   if (message?.kind === "software-update:run" && message.project === "browser-gateway") {
     requestSoftwareUpdate("browser-gateway", message.installRoot)
-      .then(sendResponse)
-      .catch((error) => sendResponse({ ok: false, message: error.message }));
-    return true;
-  }
-  if (message?.kind === "software-update:pick-root" && message.project === "browser-gateway") {
-    requestInstallRootPicker("browser-gateway")
       .then(sendResponse)
       .catch((error) => sendResponse({ ok: false, message: error.message }));
     return true;

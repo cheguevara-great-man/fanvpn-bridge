@@ -100,12 +100,10 @@
     <h2>安装与升级</h2>
     <details id="software-update-settings">
       <summary>一键更新本机组件</summary>
-      <div class="hint">默认目录是“文档”下的项目文件夹。保留为空表示原目录原地更新；填写新目录时，更新完成后需在 chrome://extensions 中对该目录手动“加载已解压的扩展程序”一次。</div>
+      <div class="hint">默认目录是“文档”下的项目文件夹。保留为空表示原目录原地更新；如需迁移，直接输入目标项目文件夹的完整路径。更新完成后需在 chrome://extensions 中对新目录手动“加载已解压的扩展程序”一次。</div>
       <label>AI Bridge 目录<input id="bridge-install-root" placeholder="默认：文档\\fanvpn-bridge" /></label>
-      <button type="button" id="bridge-pick-root">选择文件夹</button>
       <button type="button" class="primary" id="bridge-update">更新 AI Bridge</button>
       <label>Browser Gateway 目录<input id="gateway-install-root" placeholder="默认：文档\\browser-gateway" /></label>
-      <button type="button" id="gateway-pick-root">选择文件夹</button>
       <button type="button" class="primary" id="gateway-update">更新 Browser Gateway</button>
       <div class="hint" id="software-update-note">正在读取本机安装目录……</div>
     </details>

@@ -38,7 +38,7 @@ from .protocol import (
 )
 
 
-HOST_VERSION = "3.8.0"
+HOST_VERSION = "3.8.2"
 _LOG = logging.getLogger("fanvpn_bridge.dispatcher")
 _LOG.addHandler(logging.NullHandler())
 
@@ -319,9 +319,6 @@ class NativeDispatcher:
         if message_type == "control.update.status":
             self._start_update_status_control(message)
             return
-        if message_type == "control.update.pick_root":
-            self._start_update_pick_root_control(message)
-            return
         if message_type == "control.update.start":
             self._start_update_stream(message)
             return
@@ -442,35 +439,6 @@ class NativeDispatcher:
         except Exception as exc:
             self._control_lock.release()
             self._channel.send(envelope("control.update.result", id=request_id, ok=False, message=str(exc)))
-
-    def _start_update_pick_root_control(self, message: Mapping[str, object]) -> None:
-        request_id = message.get("id")
-        project = message.get("project")
-        if not _valid_control_id(request_id) or not isinstance(project, str):
-            raise BridgeError(ErrorCode.PROTOCOL_VIOLATION, "Invalid folder picker request")
-        if self._update_controller is None:
-            self._channel.send(envelope("control.update.result", id=request_id, ok=False, message="Software update is unavailable in this Native Host"))
-            return
-        if not self._control_lock.acquire(blocking=False):
-            self._channel.send(envelope("control.update.result", id=request_id, ok=False, message="Another configuration or update operation is already running"))
-            return
-        threading.Thread(
-            target=self._run_update_pick_root_control,
-            args=(str(request_id), project),
-            name="fanvpn-folder-picker",
-            daemon=True,
-        ).start()
-
-    def _run_update_pick_root_control(self, request_id: str, project: str) -> None:
-        try:
-            if self._update_controller is None:
-                raise UpdateControlError("Software update is unavailable in this Native Host")
-            selected = self._update_controller.choose_root(project)
-            self._channel.send(envelope("control.update.result", id=request_id, ok=True, state={"path": selected}))
-        except UpdateControlError as exc:
-            self._channel.send(envelope("control.update.result", id=request_id, ok=False, message=str(exc)))
-        finally:
-            self._control_lock.release()
 
     def _append_update_stream(self, message: Mapping[str, object]) -> None:
         request_id = message.get("id")

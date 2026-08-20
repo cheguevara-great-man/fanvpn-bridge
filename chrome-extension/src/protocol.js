@@ -37,7 +37,6 @@ export const MessageType = Object.freeze({
   CONTROL_GEMINI_QUOTA_GET: "control.gemini_quota.get",
   CONTROL_GEMINI_QUOTA_RESULT: "control.gemini_quota.result",
   CONTROL_UPDATE_STATUS: "control.update.status",
-  CONTROL_UPDATE_PICK_ROOT: "control.update.pick_root",
   CONTROL_UPDATE_START: "control.update.start",
   CONTROL_UPDATE_READY: "control.update.ready",
   CONTROL_UPDATE_BODY: "control.update.body",

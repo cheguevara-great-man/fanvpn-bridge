@@ -30,7 +30,6 @@
     { "$ref": "#/$defs/controlGeminiQuotaGet" },
     { "$ref": "#/$defs/controlGeminiQuotaResult" },
     { "$ref": "#/$defs/controlUpdateStatus" },
-    { "$ref": "#/$defs/controlUpdatePickRoot" },
     { "$ref": "#/$defs/controlUpdateStart" },
     { "$ref": "#/$defs/controlUpdateReady" },
     { "$ref": "#/$defs/controlUpdateBody" },
@@ -563,22 +562,6 @@
             "project": { "$ref": "#/$defs/updateProject" },
             "commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
             "install_root": { "type": "string", "maxLength": 4096 }
-          },
-          "additionalProperties": false
-        }
-      ]
-    },
-    "controlUpdatePickRoot": {
-      "allOf": [
-        { "$ref": "#/$defs/base" },
-        {
-          "type": "object",
-          "required": ["type", "id", "project"],
-          "properties": {
-            "v": { "$ref": "#/$defs/protocolVersion" },
-            "type": { "const": "control.update.pick_root" },
-            "id": { "$ref": "#/$defs/requestId" },
-            "project": { "$ref": "#/$defs/updateProject" }
           },
           "additionalProperties": false
         }
