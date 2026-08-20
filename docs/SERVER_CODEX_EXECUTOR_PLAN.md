@@ -1,6 +1,6 @@
 # Codex 服务器执行器总体方案
 
-> 状态：架构设计，尚未开始实现  
+> 状态：第一阶段 Server Lite 已开始实现；尚未部署到生产服务器  
 > 开发分支：两个仓库均使用 `codex/server-executor`  
 > 目标：账号 B 只在美国服务器保存登录凭据，五台 Windows 电脑通过各自设备身份使用服务器上的 Codex 模型能力；第二阶段再实现 Full 账号产品能力。  
 > 非目标：新分支不兼容 Browser Lean、Browser Full、Direct、Gemini、Hybrid 或 Antigravity；旧方案继续保留在原 `master` / `main` 分支。
@@ -47,7 +47,7 @@ Full 额外涉及内部产品接口、不同方法和路径、Apps/MCP、OAuth �
 
 ```text
 VS Code Codex / Codex CLI
-  -> http://127.0.0.1:18888/v1
+  -> http://127.0.0.1:18888/v1/codex
   -> Browser AI Bridge Server Client（独立后台进程，不依赖 Chrome）
   -> HTTPS + 设备 Bearer Token
   -> https://美国服务器:9443/v1/codex/*
@@ -56,8 +56,8 @@ VS Code Codex / Codex CLI
   -> https://chatgpt.com/backend-api/codex/*
 ```
 
-本机只保存设备 Token 和一个仅用于 loopback 的随机本地 Token，不保存账号 B 的 access token、
-refresh token 或 Cookie。
+本机只保存设备 Token，不保存账号 B 的 access token、refresh token 或 Cookie。Lite 的回环端口仅绑定
+`127.0.0.1`；它不向局域网开放，且固定转发路径，不是通用代理。
 
 ### 3.2 Server Full
 
@@ -133,34 +133,30 @@ browser-ai-bridge.exe --server-client --config <固定配置路径>
 新分支不运行旧 Chrome Native Host，因此直接使用已经被 Codex 配置广泛采用的 `18888`。不再保留
 `18889` Direct Forward Proxy 或第三个 Server 端口。
 
-### 5.2 本地认证
+### 5.2 本地认证与边界
 
-Server Client 首次初始化时生成随机 `local_client_token`，保存到受当前 Windows 用户 ACL 保护的运行目录。
-Windows 启动器只给本次 VS Code 进程注入对应环境变量，Codex Provider 使用它访问 `18888`。
-
-本地 Token 与设备 Token 必须分离：
-
-- 本地 Token：阻止同机其他低权限进程随意调用 `18888`；
-- 设备 Token：由 Server Client 使用，仅用于访问服务器，不暴露给 Codex 配置。
+设备 Token 保存在受当前 Windows 用户 ACL 保护的运行目录，只由 Server Client 用于服务器认证；它不写入
+Codex TOML，也不转发给 VS Code。Codex 自定义 Provider 无法稳定注入另一枚专用的 loopback Bearer，
+因此 Lite 回环入口依赖 Windows 用户边界：只监听 `127.0.0.1`、不接受任意上游 URL、只允许固定的 Responses
+路径。它不是可供其他机器使用的服务。
 
 ### 5.3 Codex Provider
 
 Server Lite 计划生成托管 Provider：
 
 ```toml
-model_provider = "browser_ai_server"
+model_provider = "server_codex_executor"
 
-[model_providers.browser_ai_server]
-name = "ChatGPT Codex through private server executor"
-base_url = "http://127.0.0.1:18888/v1"
-env_key = "BROWSER_AI_BRIDGE_LOCAL_TOKEN"
+[model_providers.server_codex_executor]
+name = "Server-side Codex Executor"
+base_url = "http://127.0.0.1:18888/v1/codex"
+requires_openai_auth = false
 wire_api = "responses"
 supports_websockets = false
 ```
 
-实现前必须做一个最小验证：确认当前 VS Code Codex 在没有账号 B 的本地 `auth.json` 时，能以 `env_key`
-Provider 正常越过登录门面并进入聊天。如果当前扩展仍强制要求本地登录，应先解决这个兼容层，不能把账号 B
-复制到五台客户端作为正式方案。
+实现后必须做一个最小验证：确认当前 VS Code Codex 能以该无本地 OpenAI 凭据的 Provider 正常进入聊天。
+如果当前扩展仍强制要求本地登录，应先解决这个兼容层，不能把账号 B 复制到五台客户端作为正式方案。
 
 Server Full 额外设置：
 
@@ -179,8 +175,7 @@ chatgpt_base_url = "http://127.0.0.1:18888/product/backend-api/"
 
 ```json
 {
-  "codexExecutorUrl": "https://服务器:9443/v1",
-  "codexExecutorEnabled": true
+  "codexExecutorUrl": "https://服务器:9443/v1/codex"
 }
 ```
 
@@ -188,7 +183,7 @@ Gateway 扩展同步给 Bridge 的配置增加：
 
 ```json
 {
-  "executor_url": "https://服务器:9443/v1",
+  "executor_url": "https://服务器:9443/v1/codex",
   "device_token": "设备 Token"
 }
 ```
@@ -252,11 +247,11 @@ Gateway 扩展同步给 Bridge 的配置增加：
 - 校验 `auth_mode=chatgpt` 以及 access/refresh token 和 account ID；
 - 不在命令行、日志或进程参数中打印 Token；
 - 通过临时文件上传并在服务器原子替换；
-- 文件权限设为 `root:browser-gateway 0640`；
-- 保留一个仅 root 可读的上一版本备份；
+- 文件权限设为 `browser-gateway:browser-gateway 0600`；
+- 由服务账户在需要时原子刷新，临时文件同样受其目录 ACL 限制；
 - 上传完成后调用只返回脱敏状态的健康检查。
 
-正式文件建议为：
+正式文件路径为：`/var/lib/browser-gateway/codex-auth.json`。
 
 ```text
 /etc/browser-gateway/codex-auth.json

@@ -23,6 +23,7 @@ from .mode_control import CodexModeController
 from .product_cache import ProductResponseCache
 from .routing import RouteTable
 from .runtime_logging import configure_runtime_logging
+from .server_client import ServerClientError, default_server_client_config_path, run_server_client
 from .subagent_policy import SubagentPolicyStore
 from .subagent_config import SubagentConfigurationController
 from .usage_reporting import UsageReporter
@@ -136,6 +137,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--proxy-config", type=Path)
     parser.add_argument("--proxy-host", default="127.0.0.1")
     parser.add_argument("--proxy-port", type=int, default=18889)
+    parser.add_argument("--server-client", action="store_true")
+    parser.add_argument("--server-client-config", type=Path, default=default_server_client_config_path())
+    parser.add_argument("--server-client-host", default="127.0.0.1")
+    parser.add_argument("--server-client-port", type=int, default=18888)
     args, _chrome_args = parser.parse_known_args(argv)
     try:
         if args.forward_proxy:
@@ -145,6 +150,12 @@ def main(argv: list[str] | None = None) -> int:
                 args.proxy_config,
                 args.proxy_host,
                 args.proxy_port,
+            )
+        if args.server_client:
+            return run_server_client(
+                args.server_client_config,
+                host=args.server_client_host,
+                port=args.server_client_port,
             )
         if args.codex_login:
             result = run_codex_login(
@@ -165,6 +176,10 @@ def main(argv: list[str] | None = None) -> int:
     except ForwardProxyError as error:
         log.error("forward_proxy_error type=%s", type(error).__name__)
         print(f"FORWARD_PROXY_ERROR: {error}", file=sys.stderr, flush=True)
+        return 2
+    except ServerClientError as error:
+        log.error("server_client_error type=%s", type(error).__name__)
+        print(f"SERVER_CLIENT_ERROR: {error}", file=sys.stderr, flush=True)
         return 2
     except KeyboardInterrupt:
         return 130
