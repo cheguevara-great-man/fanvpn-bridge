@@ -1,6 +1,6 @@
 # Codex 服务器执行器总体方案
 
-> 状态：Server Lite 已完成隔离服务端纵向验证；正在补充“浏览器转运”接入方式
+> 状态：Server Lite 已完成隔离服务端纵向验证，支持通过旧浏览器链路转运；Chrome 扩展提供两档链路开关。
 > 开发分支：两个仓库均使用 `codex/server-executor`  
 > 目标：账号 B 只在美国服务器保存登录凭据，五台 Windows 电脑通过各自设备身份使用服务器上的 Codex 模型能力；第二阶段再实现 Full 账号产品能力。  
 > 非目标：本阶段不迁移 Gemini、Hybrid 或 Antigravity。既有浏览器链路继续可用；Server Lite 在独立端口并行运行。
@@ -18,6 +18,18 @@
 - `Direct`：18890 直接 HTTPS 连接服务器；适合个人电脑或获准网络。
 
 两种方式都只访问同一个固定的服务端 API，且可与原有 Browser Lean / Full 并行，互不占用端口。
+
+### 1.1 Chrome 中的链路开关
+
+FanVPN AI Bridge 的弹窗新增“Codex 链路选择”，它只管理 Server Lite 的额外本机客户端，不修改
+Browser Gateway、服务器代理或既有 `18888` 链路：
+
+- **旧浏览器链路**：恢复切换前的 `model_provider`（通常为 `browser_ai_bridge`），停止独立的 `18890` 客户端；请求继续为 `VS Code → 18888 → Chrome 扩展 → ChatGPT`。
+- **服务器中心（经浏览器）**：启动独立 `browser-ai-bridge.exe --server-client`，让 Codex 使用 `127.0.0.1:18890/v1`；该客户端再固定转发到 `18888/server-executor`，由同一个 Chrome 扩展经 Browser Gateway 到服务器 `9444`。
+
+每次切换后需要完全退出并重新打开 VS Code。切换不会杀掉 Chrome Native Host；只会停止带
+`--server-client --server-client-port 18890` 参数的独立进程。若该电脑尚未在 Gateway 网页注册并获得设备 Token，
+服务器中心按钮会明确提示先完成设备注册。
 
 服务器方案不是把整个 Agent 搬到服务器。Codex 的文件读取、代码修改、Shell、Git、Skills、本地 MCP
 和子 Agent 仍在各台 Windows 电脑执行；服务器只负责账号 B 的模型请求和第二阶段的账号产品请求。

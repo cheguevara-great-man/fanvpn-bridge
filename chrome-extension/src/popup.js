@@ -9,6 +9,8 @@ const antigravityNote = document.getElementById("antigravity-note");
 const noticeBox = document.getElementById("notice");
 const errorBox = document.getElementById("error");
 const modeButtons = [...document.querySelectorAll("button[data-mode]")];
+const serverRouteButtons = [...document.querySelectorAll("button[data-server-route]")];
+const serverRouteNote = document.getElementById("server-route-note");
 const subagentModel = document.getElementById("subagent-model");
 const subagentEffort = document.getElementById("subagent-effort");
 const subagentRoles = document.getElementById("subagent-roles");
@@ -61,6 +63,10 @@ try { await refreshMode(); } catch (error) {
   modeNote.textContent = "上次托管配置：读取失败";
   showError(error.message || String(error));
 }
+try { await refreshServerRoute(); } catch (error) {
+  serverRouteNote.textContent = "服务器中心链路状态读取失败";
+  showError(error.message || String(error));
+}
 try { await refreshAntigravity(); } catch (error) {
   renderAntigravity(null);
   showError(error.message || String(error));
@@ -94,6 +100,22 @@ for (const button of modeButtons) {
       renderMode(result.mode);
       if (result.mode === "hybrid_configured") await refreshSubagents();
       showNotice("切换成功，VS Code 已按所选模式启动。");
+    } catch (error) { showError(error.message || String(error)); }
+    finally { setBusy(false); }
+  });
+}
+
+for (const button of serverRouteButtons) {
+  button.addEventListener("click", async () => {
+    setBusy(true);
+    hideMessages();
+    try {
+      const result = await chrome.runtime.sendMessage({
+        target: "background", kind: "server-executor:set", mode: button.dataset.serverRoute,
+      });
+      if (result?.ok !== true) throw new Error(result?.message || "链路切换失败");
+      renderServerRoute(result.state);
+      showNotice("链路已切换。请完全退出并重新打开 VS Code 后再使用 Codex。");
     } catch (error) { showError(error.message || String(error)); }
     finally { setBusy(false); }
   });
@@ -148,6 +170,25 @@ async function refreshMode() {
   const result = await chrome.runtime.sendMessage({ target: "background", kind: "codex-mode:get" });
   if (result?.ok !== true) throw new Error(result?.message || "无法读取 Codex 模式");
   renderMode(result.mode);
+}
+
+async function refreshServerRoute() {
+  const result = await chrome.runtime.sendMessage({ target: "background", kind: "server-executor:get" });
+  if (result?.ok !== true) throw new Error(result?.message || "无法读取链路状态");
+  renderServerRoute(result.state);
+}
+
+function renderServerRoute(state) {
+  const mode = state?.mode === "server_center" ? "server_center" : "browser_chain";
+  for (const button of serverRouteButtons) button.classList.toggle("active", button.dataset.serverRoute === mode);
+  if (mode === "server_center") {
+    const ready = state?.client_running === true;
+    serverRouteNote.textContent = ready
+      ? "服务器中心已启用：18890 → 本扩展 → 浏览器代理 → 服务器。"
+      : "服务器中心已选中，但 18890 客户端未运行；请再次点击或检查 Chrome 与本扩展。";
+    return;
+  }
+  serverRouteNote.textContent = "旧浏览器链路：VS Code → 18888 → 本扩展 → 浏览器代理 → ChatGPT。";
 }
 
 async function refreshAntigravity() {

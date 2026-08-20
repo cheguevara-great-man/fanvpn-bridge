@@ -189,6 +189,7 @@ async function handleNativeMessage(message, port) {
   }
   if (
     message.type === MessageType.CONTROL_MODE_RESULT ||
+    message.type === MessageType.CONTROL_SERVER_EXECUTOR_RESULT ||
     message.type === MessageType.CONTROL_ANTIGRAVITY_RESULT ||
     message.type === MessageType.CONTROL_DEVICE_RESULT ||
     message.type === MessageType.CONTROL_SUBAGENTS_RESULT ||
@@ -352,6 +353,27 @@ async function requestModeControl(kind, mode) {
     const timeout = setTimeout(() => {
       pendingControls.delete(id);
       reject(new Error("模式切换超时"));
+    }, CONTROL_TIMEOUT_MS);
+    pendingControls.set(id, { resolve, reject, timeout });
+    if (!postNative(message)) {
+      pendingControls.delete(id);
+      clearTimeout(timeout);
+      reject(new Error("Native Host 当前不可用"));
+    }
+  });
+}
+
+async function requestServerExecutorControl(kind, mode) {
+  await waitForNativeHandshake();
+  const id = crypto.randomUUID().replaceAll("-", "");
+  const type = kind === "set"
+    ? MessageType.CONTROL_SERVER_EXECUTOR_SET
+    : MessageType.CONTROL_SERVER_EXECUTOR_GET;
+  const message = envelope(type, kind === "set" ? { id, mode } : { id });
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pendingControls.delete(id);
+      reject(new Error("服务器中心链路切换超时"));
     }, CONTROL_TIMEOUT_MS);
     pendingControls.set(id, { resolve, reject, timeout });
     if (!postNative(message)) {
@@ -611,6 +633,22 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     requestModeControl("set", message.mode)
       .then(sendResponse)
       .catch((error) => sendResponse({ ok: false, mode: "unmanaged", message: error.message }));
+    return true;
+  }
+  if (message?.target === "background" && message.kind === "server-executor:get") {
+    requestServerExecutorControl("get")
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, state: { mode: "browser_chain" }, message: error.message }));
+    return true;
+  }
+  if (message?.target === "background" && message.kind === "server-executor:set") {
+    if (!["browser_chain", "server_center"].includes(message.mode)) {
+      sendResponse({ ok: false, state: { mode: "browser_chain" }, message: "不支持的服务器中心链路" });
+      return false;
+    }
+    requestServerExecutorControl("set", message.mode)
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, state: { mode: "browser_chain" }, message: error.message }));
     return true;
   }
   if (

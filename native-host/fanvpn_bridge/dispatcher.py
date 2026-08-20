@@ -26,6 +26,11 @@ from .contracts import (
 from .errors import BridgeError, ErrorCode
 from .device_config import DeviceConfigController, DeviceConfigError
 from .mode_control import CodexModeController, ModeControlError, SUPPORTED_MODES
+from .server_executor_control import (
+    ServerExecutorControlError,
+    ServerExecutorTransportController,
+    SUPPORTED_SERVER_EXECUTOR_MODES,
+)
 from .subagent_config import SubagentConfigurationController, SubagentConfigError
 from .update_control import LocalUpdateController, UpdateControlError
 from .protocol import (
@@ -38,7 +43,7 @@ from .protocol import (
 )
 
 
-HOST_VERSION = "3.8.2"
+HOST_VERSION = "3.8.3"
 _LOG = logging.getLogger("fanvpn_bridge.dispatcher")
 _LOG.addHandler(logging.NullHandler())
 
@@ -78,6 +83,7 @@ class NativeDispatcher:
         request_timeout_seconds: float,
         max_active_requests: int = 16,
         mode_controller: CodexModeController | None = None,
+        server_executor_controller: ServerExecutorTransportController | None = None,
         antigravity_setup_controller: AntigravitySetupController | None = None,
         device_config_controller: DeviceConfigController | None = None,
         subagent_config_controller: SubagentConfigurationController | None = None,
@@ -90,6 +96,7 @@ class NativeDispatcher:
         self._max_active_requests = max_active_requests
         self._request_timeout = request_timeout_seconds
         self._mode_controller = mode_controller
+        self._server_executor_controller = server_executor_controller
         self._antigravity_setup_controller = antigravity_setup_controller
         self._device_config_controller = device_config_controller
         self._subagent_config_controller = subagent_config_controller
@@ -303,6 +310,9 @@ class NativeDispatcher:
 
         if message_type in {"control.mode.get", "control.mode.set"}:
             self._start_mode_control(message_type, message)
+            return
+        if message_type in {"control.server_executor.get", "control.server_executor.set"}:
+            self._start_server_executor_control(message_type, message)
             return
         if message_type in {"control.antigravity.get", "control.antigravity.setup"}:
             self._start_antigravity_control(message_type, message)
@@ -588,6 +598,61 @@ class NativeDispatcher:
             fields["message"] = message[:512]
         try:
             self._channel.send(envelope("control.mode.result", **fields))
+        except Exception:
+            return
+
+    def _start_server_executor_control(
+        self, message_type: str, message: Mapping[str, object]
+    ) -> None:
+        request_id = message.get("id")
+        if not _valid_control_id(request_id):
+            raise BridgeError(ErrorCode.PROTOCOL_VIOLATION, "Invalid control request id")
+        mode = message.get("mode")
+        if message_type == "control.server_executor.set" and mode not in SUPPORTED_SERVER_EXECUTOR_MODES:
+            self._send_server_executor_result(
+                str(request_id), ok=False, state={"mode": "browser_chain"}, message="Unsupported server transport mode"
+            )
+            return
+        threading.Thread(
+            target=self._run_server_executor_control,
+            args=(str(request_id), mode if isinstance(mode, str) else None),
+            name="fanvpn-server-executor-control",
+            daemon=True,
+        ).start()
+
+    def _run_server_executor_control(self, request_id: str, requested_mode: str | None) -> None:
+        if not self._control_lock.acquire(blocking=False):
+            self._send_server_executor_result(
+                request_id, ok=False, state={"mode": "browser_chain"}, message="Another configuration operation is already running"
+            )
+            return
+        try:
+            if self._server_executor_controller is None:
+                raise ServerExecutorControlError("Server executor control is unavailable in this Native Host")
+            state = (
+                self._server_executor_controller.get_state()
+                if requested_mode is None
+                else self._server_executor_controller.set_mode(requested_mode)
+            )
+            self._send_server_executor_result(request_id, ok=True, state=state)
+        except ServerExecutorControlError as error:
+            state = self._server_executor_controller.get_state() if self._server_executor_controller else {"mode": "browser_chain"}
+            self._send_server_executor_result(request_id, ok=False, state=state, message=str(error))
+        except Exception:
+            _LOG.exception("server_executor_mode_switch_failed")
+            state = self._server_executor_controller.get_state() if self._server_executor_controller else {"mode": "browser_chain"}
+            self._send_server_executor_result(request_id, ok=False, state=state, message="Server transport switch failed unexpectedly")
+        finally:
+            self._control_lock.release()
+
+    def _send_server_executor_result(
+        self, request_id: str, *, ok: bool, state: Mapping[str, object], message: str | None = None
+    ) -> None:
+        fields: dict[str, object] = {"id": request_id, "ok": ok, "state": dict(state)}
+        if message:
+            fields["message"] = message[:512]
+        try:
+            self._channel.send(envelope("control.server_executor.result", **fields))
         except Exception:
             return
 

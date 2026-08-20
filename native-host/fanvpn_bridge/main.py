@@ -24,6 +24,7 @@ from .product_cache import ProductResponseCache
 from .routing import RouteTable
 from .runtime_logging import configure_runtime_logging
 from .server_client import ServerClientError, default_server_client_config_path, run_server_client
+from .server_executor_control import ServerExecutorTransportController
 from .subagent_policy import SubagentPolicyStore
 from .subagent_config import SubagentConfigurationController
 from .usage_reporting import UsageReporter
@@ -53,6 +54,7 @@ def run(config_path: Path) -> int:
         max_active_requests=config.protocol.max_active_requests,
         request_timeout_seconds=config.protocol.request_timeout_seconds,
         mode_controller=CodexModeController(),
+        server_executor_controller=ServerExecutorTransportController(cache_base=cache_base),
         antigravity_setup_controller=AntigravitySetupController(),
         device_config_controller=DeviceConfigController(cache_base),
         subagent_config_controller=SubagentConfigurationController(

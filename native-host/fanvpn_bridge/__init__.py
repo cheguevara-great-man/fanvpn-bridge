@@ -20,6 +20,7 @@ from .dispatcher import NativeDispatcher
 from .errors import BridgeError, ErrorCode
 from .http_server import BridgeHTTPServer, create_http_server
 from .mode_control import CodexModeController
+from .server_executor_control import ServerExecutorTransportController
 from .product_cache import ProductResponseCache
 from .routing import RouteTable
 
@@ -28,6 +29,7 @@ __all__ = [
     "BridgeConfig",
     "BridgeHTTPServer",
     "CodexModeController",
+    "ServerExecutorTransportController",
     "EgressRequest",
     "ErrorCode",
     "Header",
