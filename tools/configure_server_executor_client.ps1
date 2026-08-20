@@ -7,7 +7,8 @@ param(
     [ValidateRange(1024, 65535)]
     [int]$LocalPort = 18890,
     [string]$NativeHostPath,
-    [switch]$Start
+    [switch]$Start,
+    [switch]$SkipCodexConfiguration
 )
 
 $ErrorActionPreference = 'Stop'
@@ -53,29 +54,31 @@ Move-Item -LiteralPath $temporaryPath -Destination $configurationPath -Force
 & icacls.exe $configurationPath /inheritance:r /grant:r "${env:USERNAME}:(R,W)" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Failed to restrict the server executor configuration ACL.' }
 
-$codexDirectory = Join-Path $env:USERPROFILE '.codex'
-$codexConfiguration = Join-Path $codexDirectory 'config.toml'
-New-Item -ItemType Directory -Path $codexDirectory -Force | Out-Null
-$content = if (Test-Path -LiteralPath $codexConfiguration) {
-    Get-Content -LiteralPath $codexConfiguration -Raw -Encoding UTF8
-} else { '' }
-$begin = '# BEGIN Server Codex Executor managed provider'
-$end = '# END Server Codex Executor managed provider'
-$managedPattern = '(?ms)^# BEGIN Server Codex Executor managed provider\s*\r?\n.*?^# END Server Codex Executor managed provider\s*(?:\r?\n)?'
-$content = [regex]::Replace($content, $managedPattern, '')
-$content = [regex]::Replace($content, '(?m)^model_provider\s*=\s*"server_codex_executor"\s*(?:\r?\n|$)', '')
-$managed = @"
+if (-not $SkipCodexConfiguration) {
+    $codexDirectory = Join-Path $env:USERPROFILE '.codex'
+    $codexConfiguration = Join-Path $codexDirectory 'config.toml'
+    New-Item -ItemType Directory -Path $codexDirectory -Force | Out-Null
+    $content = if (Test-Path -LiteralPath $codexConfiguration) {
+        Get-Content -LiteralPath $codexConfiguration -Raw -Encoding UTF8
+    } else { '' }
+    $begin = '# BEGIN Server Codex Executor managed provider'
+    $end = '# END Server Codex Executor managed provider'
+    $managedPattern = '(?ms)^# BEGIN Server Codex Executor managed provider\s*\r?\n.*?^# END Server Codex Executor managed provider\s*(?:\r?\n)?'
+    $content = [regex]::Replace($content, $managedPattern, '')
+    $content = [regex]::Replace($content, '(?m)^model_provider\s*=\s*"server_codex_executor"\s*(?:\r?\n|$)', '')
+    $managed = @"
 $begin
 [model_providers.server_codex_executor]
 name = "Server-side Codex Executor"
-base_url = "http://127.0.0.1:$LocalPort/v1/codex"
+base_url = "http://127.0.0.1:$LocalPort/v1"
 requires_openai_auth = false
 wire_api = "responses"
 supports_websockets = false
 $end
 "@
-$content = "model_provider = `"server_codex_executor`"`r`n" + $content.TrimStart() + "`r`n" + $managed.Trim() + "`r`n"
-[System.IO.File]::WriteAllText($codexConfiguration, $content, [System.Text.UTF8Encoding]::new($false))
+    $content = "model_provider = `"server_codex_executor`"`r`n" + $content.TrimStart() + "`r`n" + $managed.Trim() + "`r`n"
+    [System.IO.File]::WriteAllText($codexConfiguration, $content, [System.Text.UTF8Encoding]::new($false))
+}
 
 if ($Start) {
     if ([string]::IsNullOrWhiteSpace($NativeHostPath)) {
@@ -100,7 +103,11 @@ if ($Start) {
     }
 }
 
-Write-Host 'Server executor client configured. Close and reopen VS Code before using Codex.' -ForegroundColor Green
+if ($SkipCodexConfiguration) {
+    Write-Host 'Server executor client configured without changing Codex settings.' -ForegroundColor Green
+} else {
+    Write-Host 'Server executor client configured. Close and reopen VS Code before using Codex.' -ForegroundColor Green
+}
 if (-not $Start) {
     Write-Host 'Run this command again with -Start after installing the updated Native Host.'
 }

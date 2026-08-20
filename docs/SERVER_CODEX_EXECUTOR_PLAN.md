@@ -47,7 +47,7 @@ Full 额外涉及内部产品接口、不同方法和路径、Apps/MCP、OAuth �
 
 ```text
 VS Code Codex / Codex CLI
-  -> http://127.0.0.1:18890/v1/codex
+  -> http://127.0.0.1:18890/v1/*
   -> Browser AI Bridge Server Client（独立后台进程，不依赖 Chrome）
   -> HTTPS + 设备 Bearer Token
   -> https://美国服务器:9444/v1/codex/*
@@ -151,7 +151,7 @@ model_provider = "server_codex_executor"
 
 [model_providers.server_codex_executor]
 name = "Server-side Codex Executor"
-base_url = "http://127.0.0.1:18890/v1/codex"
+base_url = "http://127.0.0.1:18890/v1"
 requires_openai_auth = false
 wire_api = "responses"
 supports_websockets = false
