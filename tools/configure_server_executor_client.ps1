@@ -4,6 +4,8 @@ param(
     [string]$DeviceToken,
     [ValidateRange(1024, 65535)]
     [int]$ExecutorPort = 9444,
+    [ValidateRange(1024, 65535)]
+    [int]$LocalPort = 18890,
     [string]$NativeHostPath,
     [switch]$Start
 )
@@ -66,7 +68,7 @@ $managed = @"
 $begin
 [model_providers.server_codex_executor]
 name = "Server-side Codex Executor"
-base_url = "http://127.0.0.1:18888/v1/codex"
+base_url = "http://127.0.0.1:$LocalPort/v1/codex"
 requires_openai_auth = false
 wire_api = "responses"
 supports_websockets = false
@@ -85,12 +87,12 @@ if ($Start) {
         throw "Native Host executable was not found: $NativeHostPath"
     }
     Get-Process -Name 'browser-ai-bridge' -ErrorAction SilentlyContinue | Stop-Process -Force
-    Start-Process -FilePath $NativeHostPath -ArgumentList @('--server-client', '--server-client-config', $configurationPath) -WindowStyle Hidden
+    Start-Process -FilePath $NativeHostPath -ArgumentList @('--server-client', '--server-client-config', $configurationPath, '--server-client-port', $LocalPort) -WindowStyle Hidden
     $deadline = [DateTime]::UtcNow.AddSeconds(15)
     do {
         Start-Sleep -Milliseconds 250
         try {
-            $ready = Invoke-RestMethod 'http://127.0.0.1:18888/ready' -Proxy $null -TimeoutSec 2
+            $ready = Invoke-RestMethod "http://127.0.0.1:$LocalPort/ready" -Proxy $null -TimeoutSec 2
         } catch { $ready = $null }
     } while (($null -eq $ready -or $ready.mode -ne 'server-client') -and [DateTime]::UtcNow -lt $deadline)
     if ($null -eq $ready -or $ready.mode -ne 'server-client') {

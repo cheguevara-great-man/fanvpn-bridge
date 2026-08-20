@@ -140,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--server-client", action="store_true")
     parser.add_argument("--server-client-config", type=Path, default=default_server_client_config_path())
     parser.add_argument("--server-client-host", default="127.0.0.1")
-    parser.add_argument("--server-client-port", type=int, default=18888)
+    parser.add_argument("--server-client-port", type=int, default=18890)
     args, _chrome_args = parser.parse_known_args(argv)
     try:
         if args.forward_proxy:

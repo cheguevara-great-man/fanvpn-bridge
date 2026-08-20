@@ -290,7 +290,7 @@ def _optional_secret(value: object, field: str) -> str | None:
     return _secret(value, field)
 
 
-def run_server_client(config_path: Path, *, host: str = "127.0.0.1", port: int = 18888) -> int:
+def run_server_client(config_path: Path, *, host: str = "127.0.0.1", port: int = 18890) -> int:
     config = load_server_client_config(config_path)
     server = ServerClientHTTPServer((host, port), config)
     _LOG.info("server_client_ready listen=%s:%s", host, port)

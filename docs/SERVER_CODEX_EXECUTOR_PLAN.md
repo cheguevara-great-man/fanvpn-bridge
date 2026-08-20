@@ -47,7 +47,7 @@ Full 额外涉及内部产品接口、不同方法和路径、Apps/MCP、OAuth �
 
 ```text
 VS Code Codex / Codex CLI
-  -> http://127.0.0.1:18888/v1/codex
+  -> http://127.0.0.1:18890/v1/codex
   -> Browser AI Bridge Server Client（独立后台进程，不依赖 Chrome）
   -> HTTPS + 设备 Bearer Token
   -> https://美国服务器:9444/v1/codex/*
@@ -124,15 +124,16 @@ browser-ai-bridge.exe --server-client --config <固定配置路径>
 
 它与 Native Messaging Host 共用 HTTP 解析、日志、usage 解析等可复用代码，但生命周期完全独立：
 
-- 监听 `127.0.0.1:18888`；
+- 默认监听 `127.0.0.1:18890`，避免占用旧浏览器 Bridge 的 `18888`；
 - Server Full 时额外监听 `127.0.0.1:8000`；
 - Chrome 退出不会导致它退出；
 - 使用 PID/状态文件防止重复启动；
 - Windows 登录任务负责启动，安装器负责健康检查和升级；
 - 只允许固定 Server 路径，不提供 CONNECT 或任意目标 URL。
 
-新分支不运行旧 Chrome Native Host，因此直接使用已经被 Codex 配置广泛采用的 `18888`。不再保留
-`18889` Direct Forward Proxy 或第三个 Server 端口。
+测试期新 Server Client 不运行旧 Chrome Native Host，但仍固定使用 `18890`，让旧浏览器 Bridge 能继续在
+`18888` 并行运行。稳定后再决定是否迁移端口或停止旧链路。新 Server Client 不提供 `18889` Direct
+Forward Proxy。
 
 ### 5.2 本地认证与边界
 
@@ -150,7 +151,7 @@ model_provider = "server_codex_executor"
 
 [model_providers.server_codex_executor]
 name = "Server-side Codex Executor"
-base_url = "http://127.0.0.1:18888/v1/codex"
+base_url = "http://127.0.0.1:18890/v1/codex"
 requires_openai_auth = false
 wire_api = "responses"
 supports_websockets = false

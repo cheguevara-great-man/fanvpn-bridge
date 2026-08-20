@@ -134,6 +134,7 @@ foreach ($scriptName in @(
     'set_vscode_codex_mode.ps1',
     'start_vscode_network_mode.ps1'
     'configure_usage_reporting.ps1'
+    'configure_server_executor_client.ps1'
     'install_antigravity_cli.ps1'
     'patch_antigravity_cli.ps1'
     'setup_antigravity_vscode.ps1'
