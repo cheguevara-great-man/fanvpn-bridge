@@ -36,6 +36,12 @@ export const MessageType = Object.freeze({
   CONTROL_SUBAGENTS_RESULT: "control.subagents.result",
   CONTROL_GEMINI_QUOTA_GET: "control.gemini_quota.get",
   CONTROL_GEMINI_QUOTA_RESULT: "control.gemini_quota.result",
+  CONTROL_UPDATE_STATUS: "control.update.status",
+  CONTROL_UPDATE_START: "control.update.start",
+  CONTROL_UPDATE_READY: "control.update.ready",
+  CONTROL_UPDATE_BODY: "control.update.body",
+  CONTROL_UPDATE_FINISH: "control.update.finish",
+  CONTROL_UPDATE_RESULT: "control.update.result",
 });
 
 export const ErrorCode = Object.freeze({

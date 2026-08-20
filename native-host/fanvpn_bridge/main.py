@@ -26,6 +26,7 @@ from .runtime_logging import configure_runtime_logging
 from .subagent_policy import SubagentPolicyStore
 from .subagent_config import SubagentConfigurationController
 from .usage_reporting import UsageReporter
+from .update_control import LocalUpdateController
 
 
 def run(config_path: Path) -> int:
@@ -57,6 +58,7 @@ def run(config_path: Path) -> int:
             Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")), subagent_policy
         ),
         gemini_account_provider=gemini_account,
+        update_controller=LocalUpdateController(cache_base=cache_base),
     )
     dispatcher.start()
     routes = RouteTable(config.routes)

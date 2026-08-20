@@ -4,6 +4,7 @@ import {
   MAX_IN_FLIGHT,
   MessageType,
   PROTOCOL_VERSION,
+  bytesToBase64,
   envelope,
   isProtocolEnvelope,
 } from "./protocol.js";
@@ -17,6 +18,12 @@ const ANTIGRAVITY_HOST = "daily-cloudcode-pa.googleapis.com";
 const ANTIGRAVITY_USER_AGENT_RULE_ID = 1001;
 const CONTROL_HANDSHAKE_TIMEOUT_MS = 5000;
 const CONTROL_TIMEOUT_MS = 60000;
+const UPDATE_TIMEOUT_MS = 25 * 60 * 1000;
+const UPDATE_CHUNK_BYTES = 192 * 1024;
+const UPDATE_PROJECTS = Object.freeze({
+  "fanvpn-bridge": "cheguevara-great-man/fanvpn-bridge",
+  "browser-gateway": "cheguevara-great-man/browser-gateway",
+});
 
 let nativePort = null;
 let reconnectTimer = null;
@@ -27,6 +34,7 @@ let lastError = null;
 let handshakeComplete = false;
 let negotiatedLimits = null;
 const pendingControls = new Map();
+const pendingUpdates = new Map();
 
 function setError(code, message) {
   lastError = { code, message, at: new Date().toISOString() };
@@ -193,11 +201,41 @@ async function handleNativeMessage(message, port) {
     pending.resolve(message);
     return;
   }
+  if (message.type === MessageType.CONTROL_UPDATE_READY) {
+    const pending = pendingUpdates.get(message.id);
+    if (pending) pending.ready.resolve();
+    return;
+  }
+  if (message.type === MessageType.CONTROL_UPDATE_RESULT) {
+    const pending = pendingUpdates.get(message.id);
+    if (pending) {
+      pendingUpdates.delete(message.id);
+      clearTimeout(pending.timeout);
+      if (message.ok === true) pending.resolve(message);
+      else pending.reject(new Error(message.message || "软件更新失败"));
+      return;
+    }
+    const status = pendingControls.get(message.id);
+    if (!status) return;
+    pendingControls.delete(message.id);
+    clearTimeout(status.timeout);
+    status.resolve(message);
+    return;
+  }
   if (message.type === MessageType.ERROR && pendingControls.has(message.id)) {
     const pending = pendingControls.get(message.id);
     pendingControls.delete(message.id);
     clearTimeout(pending.timeout);
     pending.reject(new Error(message.message || "Native Host 拒绝了模式操作"));
+    return;
+  }
+  if (message.type === MessageType.ERROR && pendingUpdates.has(message.id)) {
+    const pending = pendingUpdates.get(message.id);
+    pendingUpdates.delete(message.id);
+    clearTimeout(pending.timeout);
+    const error = new Error(message.message || "Native Host 拒绝了软件更新");
+    pending.ready.reject(error);
+    pending.reject(error);
     return;
   }
   if (!handshakeComplete) {
@@ -404,6 +442,91 @@ async function requestGeminiQuotaControl() {
   });
 }
 
+async function requestUpdateStatus() {
+  await waitForNativeHandshake();
+  const id = crypto.randomUUID().replaceAll("-", "");
+  const message = envelope(MessageType.CONTROL_UPDATE_STATUS, { id });
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pendingControls.delete(id);
+      reject(new Error("读取安装状态超时"));
+    }, CONTROL_TIMEOUT_MS);
+    pendingControls.set(id, { resolve, reject, timeout });
+    if (!postNative(message)) {
+      pendingControls.delete(id);
+      clearTimeout(timeout);
+      reject(new Error("Native Host 当前不可用"));
+    }
+  });
+}
+
+async function requestSoftwareUpdate(project, installRoot = "") {
+  const repository = UPDATE_PROJECTS[project];
+  if (!repository) throw new Error("不支持的软件更新项目");
+  await waitForNativeHandshake();
+  const archive = await downloadUpdateArchive(repository);
+  const id = crypto.randomUUID().replaceAll("-", "");
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pendingUpdates.delete(id);
+      reject(new Error("软件更新超时；请稍后重新打开扩展检查状态"));
+    }, UPDATE_TIMEOUT_MS);
+    const ready = deferred();
+    pendingUpdates.set(id, { resolve, reject, ready, timeout });
+    if (!postNative(envelope(MessageType.CONTROL_UPDATE_START, {
+      id, project, commit: archive.commit, install_root: String(installRoot || "").trim(),
+    }))) {
+      pendingUpdates.delete(id);
+      clearTimeout(timeout);
+      reject(new Error("Native Host 当前不可用"));
+      return;
+    }
+    ready.promise
+      .then(() => sendUpdateArchive(id, archive.bytes))
+      .catch((error) => {
+        const pending = pendingUpdates.get(id);
+        if (pending) {
+          pendingUpdates.delete(id);
+          clearTimeout(timeout);
+          reject(error);
+        }
+      });
+  });
+}
+
+async function downloadUpdateArchive(repository) {
+  const metadata = await fetch(`https://api.github.com/repos/${repository}/commits/master`, {
+    cache: "no-store", headers: { accept: "application/vnd.github+json" },
+  });
+  if (!metadata.ok) throw new Error(`无法检查更新：GitHub 返回 HTTP ${metadata.status}`);
+  const commit = String((await metadata.json())?.sha || "").toLowerCase();
+  if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error("GitHub 更新版本无效");
+  const response = await fetch(`https://github.com/${repository}/archive/${commit}.zip`, { cache: "no-store" });
+  if (!response.ok) throw new Error(`无法下载更新包：GitHub 返回 HTTP ${response.status}`);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.byteLength === 0 || bytes.byteLength > 64 * 1024 * 1024) throw new Error("更新包大小异常");
+  return { commit, bytes };
+}
+
+async function sendUpdateArchive(id, bytes) {
+  for (let offset = 0, seq = 0; offset < bytes.byteLength; offset += UPDATE_CHUNK_BYTES, seq += 1) {
+    const data = bytes.subarray(offset, Math.min(offset + UPDATE_CHUNK_BYTES, bytes.byteLength));
+    if (!postNative(envelope(MessageType.CONTROL_UPDATE_BODY, { id, seq, data: bytesToBase64(data) }))) {
+      throw new Error("Native Host 在传输更新包时断开");
+    }
+  }
+  if (!postNative(envelope(MessageType.CONTROL_UPDATE_FINISH, { id }))) {
+    throw new Error("Native Host 在开始更新时断开");
+  }
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((onResolve, onReject) => { resolve = onResolve; reject = onReject; });
+  return { promise, resolve, reject };
+}
+
 async function waitForNativeHandshake() {
   connectNative();
   const deadline = Date.now() + CONTROL_HANDSHAKE_TIMEOUT_MS;
@@ -420,6 +543,12 @@ function rejectPendingControls(message) {
     pending.reject(new Error(message));
   }
   pendingControls.clear();
+  for (const pending of pendingUpdates.values()) {
+    clearTimeout(pending.timeout);
+    pending.ready.reject(new Error(message));
+    pending.reject(new Error(message));
+  }
+  pendingUpdates.clear();
 }
 
 async function setAntigravityUserAgentRule(userAgent) {
@@ -499,6 +628,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       .catch((error) => sendResponse({ ok: false, message: error.message }));
     return true;
   }
+  if (message?.target === "background" && message.kind === "software-update:status") {
+    requestUpdateStatus()
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, message: error.message }));
+    return true;
+  }
+  if (message?.target === "background" && message.kind === "software-update:run") {
+    requestSoftwareUpdate(message.project, message.installRoot)
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, message: error.message }));
+    return true;
+  }
   if (
     message?.target === "background" &&
     ["subagents:get", "subagents:apply"].includes(message.kind)
@@ -537,6 +678,12 @@ chrome.runtime.onMessageExternal?.addListener((message, sender, sendResponse) =>
           setTimeout(() => nativePort?.disconnect(), 250);
         }
       })
+      .catch((error) => sendResponse({ ok: false, message: error.message }));
+    return true;
+  }
+  if (message?.kind === "software-update:run" && message.project === "browser-gateway") {
+    requestSoftwareUpdate("browser-gateway", message.installRoot)
+      .then(sendResponse)
       .catch((error) => sendResponse({ ok: false, message: error.message }));
     return true;
   }

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import base64
 import threading
 import time
 import logging
+import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Mapping, Sequence
 
 from .antigravity_setup import AntigravitySetupController, AntigravitySetupError
@@ -24,6 +27,7 @@ from .errors import BridgeError, ErrorCode
 from .device_config import DeviceConfigController, DeviceConfigError
 from .mode_control import CodexModeController, ModeControlError, SUPPORTED_MODES
 from .subagent_config import SubagentConfigurationController, SubagentConfigError
+from .update_control import LocalUpdateController, UpdateControlError
 from .protocol import (
     FlowWindow,
     PROTOCOL_VERSION,
@@ -34,9 +38,13 @@ from .protocol import (
 )
 
 
-HOST_VERSION = "3.7.0"
+HOST_VERSION = "3.8.0"
 _LOG = logging.getLogger("fanvpn_bridge.dispatcher")
 _LOG.addHandler(logging.NullHandler())
+
+
+def _valid_control_id(value: object) -> bool:
+    return isinstance(value, str) and 16 <= len(value) <= 128
 
 
 @dataclass(slots=True)
@@ -45,6 +53,17 @@ class _PendingRequest:
     request_window: FlowWindow
     response_seq: int = 0
     response_started: bool = False
+
+
+@dataclass(slots=True)
+class _PendingUpdate:
+    project: str
+    commit: str
+    install_root: str | None
+    archive_path: str
+    archive_handle: object
+    next_sequence: int = 0
+    bytes_written: int = 0
 
 
 class NativeDispatcher:
@@ -63,6 +82,7 @@ class NativeDispatcher:
         device_config_controller: DeviceConfigController | None = None,
         subagent_config_controller: SubagentConfigurationController | None = None,
         gemini_account_provider: GeminiAccountProvider | None = None,
+        update_controller: LocalUpdateController | None = None,
     ) -> None:
         self._channel = channel
         self._max_chunk_bytes = max_chunk_bytes
@@ -74,7 +94,9 @@ class NativeDispatcher:
         self._device_config_controller = device_config_controller
         self._subagent_config_controller = subagent_config_controller
         self._gemini_account_provider = gemini_account_provider
+        self._update_controller = update_controller
         self._control_lock = threading.Lock()
+        self._pending_updates: dict[str, _PendingUpdate] = {}
         self._pending: dict[str, _PendingRequest] = {}
         self._pending_lock = threading.Lock()
         self._ready = threading.Event()
@@ -294,6 +316,18 @@ class NativeDispatcher:
         if message_type == "control.gemini_quota.get":
             self._start_gemini_quota_control(message)
             return
+        if message_type == "control.update.status":
+            self._start_update_status_control(message)
+            return
+        if message_type == "control.update.start":
+            self._start_update_stream(message)
+            return
+        if message_type == "control.update.body":
+            self._append_update_stream(message)
+            return
+        if message_type == "control.update.finish":
+            self._finish_update_stream(message)
+            return
 
         request_id = message.get("id")
         if not isinstance(request_id, str):
@@ -370,6 +404,99 @@ class NativeDispatcher:
             self._fail_request(request_id, error)
             return
         raise BridgeError(ErrorCode.PROTOCOL_VIOLATION, f"Unexpected message type: {message_type}")
+
+    def _start_update_status_control(self, message: Mapping[str, object]) -> None:
+        request_id = message.get("id")
+        if not _valid_control_id(request_id):
+            raise BridgeError(ErrorCode.PROTOCOL_VIOLATION, "Invalid control request id")
+        if self._update_controller is None:
+            self._channel.send(envelope("control.update.result", id=request_id, ok=False, message="Software update is unavailable in this Native Host"))
+            return
+        self._channel.send(envelope("control.update.result", id=request_id, ok=True, state=self._update_controller.status()))
+
+    def _start_update_stream(self, message: Mapping[str, object]) -> None:
+        request_id = message.get("id")
+        project = message.get("project")
+        commit = message.get("commit")
+        install_root = message.get("install_root")
+        if not _valid_control_id(request_id) or not isinstance(project, str) or not isinstance(commit, str):
+            raise BridgeError(ErrorCode.PROTOCOL_VIOLATION, "Invalid update request")
+        if install_root is not None and not isinstance(install_root, str):
+            raise BridgeError(ErrorCode.PROTOCOL_VIOLATION, "Invalid installation directory")
+        if self._update_controller is None:
+            self._channel.send(envelope("control.update.result", id=request_id, ok=False, message="Software update is unavailable in this Native Host"))
+            return
+        if not self._control_lock.acquire(blocking=False):
+            self._channel.send(envelope("control.update.result", id=request_id, ok=False, message="Another configuration or update operation is already running"))
+            return
+        try:
+            handle = tempfile.NamedTemporaryFile(prefix="browser-ai-update-", suffix=".zip", delete=False)
+            self._pending_updates[str(request_id)] = _PendingUpdate(
+                project=project, commit=commit, install_root=install_root.strip() if isinstance(install_root, str) else None,
+                archive_path=handle.name, archive_handle=handle,
+            )
+            self._channel.send(envelope("control.update.ready", id=request_id))
+        except Exception as exc:
+            self._control_lock.release()
+            self._channel.send(envelope("control.update.result", id=request_id, ok=False, message=str(exc)))
+
+    def _append_update_stream(self, message: Mapping[str, object]) -> None:
+        request_id = message.get("id")
+        sequence = message.get("seq")
+        encoded = message.get("data")
+        pending = self._pending_updates.get(str(request_id)) if isinstance(request_id, str) else None
+        if pending is None or not isinstance(sequence, int) or not isinstance(encoded, str):
+            raise BridgeError(ErrorCode.PROTOCOL_VIOLATION, "Invalid update data stream")
+        if sequence != pending.next_sequence:
+            raise BridgeError(ErrorCode.PROTOCOL_VIOLATION, "Update data sequence mismatch")
+        try:
+            data = base64.b64decode(encoded, validate=True)
+        except (ValueError, base64.binascii.Error) as exc:
+            raise BridgeError(ErrorCode.PROTOCOL_VIOLATION, "Update data is not valid base64") from exc
+        if len(data) > 256 * 1024 or pending.bytes_written + len(data) > 64 * 1024 * 1024:
+            raise BridgeError(ErrorCode.MESSAGE_TOO_LARGE, "Update package exceeds the allowed size")
+        pending.archive_handle.write(data)
+        pending.bytes_written += len(data)
+        pending.next_sequence += 1
+
+    def _finish_update_stream(self, message: Mapping[str, object]) -> None:
+        request_id = message.get("id")
+        if not isinstance(request_id, str):
+            raise BridgeError(ErrorCode.PROTOCOL_VIOLATION, "Invalid update request id")
+        pending = self._pending_updates.pop(request_id, None)
+        if pending is None:
+            raise BridgeError(ErrorCode.PROTOCOL_VIOLATION, "Update stream does not exist")
+        try:
+            pending.archive_handle.close()
+        except OSError:
+            pass
+        threading.Thread(
+            target=self._run_update_stream,
+            args=(request_id, pending),
+            name="fanvpn-software-update",
+            daemon=True,
+        ).start()
+
+    def _run_update_stream(self, request_id: str, pending: _PendingUpdate) -> None:
+        try:
+            if self._update_controller is None:
+                raise UpdateControlError("Software update is unavailable in this Native Host")
+            state = self._update_controller.apply_archive(
+                project=pending.project, archive=Path(pending.archive_path), commit=pending.commit,
+                install_root=pending.install_root,
+            )
+            self._channel.send(envelope("control.update.result", id=request_id, ok=True, state=state))
+        except (UpdateControlError, OSError) as exc:
+            self._channel.send(envelope("control.update.result", id=request_id, ok=False, message=str(exc)))
+        except Exception:
+            _LOG.exception("software_update_failed project=%s", pending.project)
+            self._channel.send(envelope("control.update.result", id=request_id, ok=False, message="Software update failed; the previous registered Native Host remains active"))
+        finally:
+            try:
+                Path(pending.archive_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+            self._control_lock.release()
 
     def _start_mode_control(self, message_type: str, message: Mapping[str, object]) -> None:
         request_id = message.get("id")

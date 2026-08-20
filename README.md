@@ -1,5 +1,7 @@
 # FanVPN Bridge
 
+> 首次安装与之后的一键更新，请看[安装与升级](docs/INSTALL_AND_UPDATE.md)。首次需要一次 Chrome“加载已解压的扩展程序”；以后可直接在扩展弹窗的“安装与升级”中完成源码、Native Host 和扩展重载。
+
 [![Windows CI](https://github.com/cheguevara-great-man/fanvpn-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/cheguevara-great-man/fanvpn-bridge/actions/workflows/ci.yml)
 
 让 Windows 开发工具借助 Chrome 中的 FanVPN 访问 OpenAI、Anthropic 和 Gemini，

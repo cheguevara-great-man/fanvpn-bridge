@@ -28,7 +28,13 @@
     { "$ref": "#/$defs/controlSubagentsApply" },
     { "$ref": "#/$defs/controlSubagentsResult" },
     { "$ref": "#/$defs/controlGeminiQuotaGet" },
-    { "$ref": "#/$defs/controlGeminiQuotaResult" }
+    { "$ref": "#/$defs/controlGeminiQuotaResult" },
+    { "$ref": "#/$defs/controlUpdateStatus" },
+    { "$ref": "#/$defs/controlUpdateStart" },
+    { "$ref": "#/$defs/controlUpdateReady" },
+    { "$ref": "#/$defs/controlUpdateBody" },
+    { "$ref": "#/$defs/controlUpdateFinish" },
+    { "$ref": "#/$defs/controlUpdateResult" }
   ],
   "$defs": {
     "protocolVersion": { "const": 1 },
@@ -516,6 +522,107 @@
           "properties": {
             "v": { "$ref": "#/$defs/protocolVersion" },
             "type": { "const": "control.gemini_quota.result" },
+            "id": { "$ref": "#/$defs/requestId" },
+            "ok": { "type": "boolean" },
+            "state": { "type": "object" },
+            "message": { "type": "string", "maxLength": 512 }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "updateProject": {
+      "enum": ["fanvpn-bridge", "browser-gateway"]
+    },
+    "controlUpdateStatus": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "id"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "control.update.status" },
+            "id": { "$ref": "#/$defs/requestId" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "controlUpdateStart": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "id", "project", "commit", "install_root"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "control.update.start" },
+            "id": { "$ref": "#/$defs/requestId" },
+            "project": { "$ref": "#/$defs/updateProject" },
+            "commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+            "install_root": { "type": "string", "maxLength": 4096 }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "controlUpdateReady": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "id"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "control.update.ready" },
+            "id": { "$ref": "#/$defs/requestId" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "controlUpdateBody": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "id", "seq", "data"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "control.update.body" },
+            "id": { "$ref": "#/$defs/requestId" },
+            "seq": { "type": "integer", "minimum": 0 },
+            "data": { "type": "string", "contentEncoding": "base64", "maxLength": 349528 }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "controlUpdateFinish": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "id"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "control.update.finish" },
+            "id": { "$ref": "#/$defs/requestId" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "controlUpdateResult": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "id", "ok"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "control.update.result" },
             "id": { "$ref": "#/$defs/requestId" },
             "ok": { "type": "boolean" },
             "state": { "type": "object" },

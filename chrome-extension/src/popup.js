@@ -22,6 +22,11 @@ const quota5hNote = document.getElementById("quota-5h-note");
 const quotaWeeklyValue = document.getElementById("quota-weekly-value");
 const quotaWeeklyFill = document.getElementById("quota-weekly-fill");
 const quotaWeeklyNote = document.getElementById("quota-weekly-note");
+const bridgeInstallRoot = document.getElementById("bridge-install-root");
+const gatewayInstallRoot = document.getElementById("gateway-install-root");
+const bridgeUpdateButton = document.getElementById("bridge-update");
+const gatewayUpdateButton = document.getElementById("gateway-update");
+const softwareUpdateNote = document.getElementById("software-update-note");
 let availableModels = [];
 
 const MODE_LABELS = {
@@ -66,6 +71,9 @@ try { await refreshSubagents(); } catch (_error) {
 try { await refreshGeminiQuota(); } catch (error) {
   renderGeminiQuotaError(error.message || String(error));
 }
+try { await refreshSoftwareUpdate(); } catch (error) {
+  softwareUpdateNote.textContent = "本机更新器不可用：" + (error.message || String(error));
+}
 
 quotaRefreshButton.addEventListener("click", async () => {
   quotaRefreshButton.disabled = true;
@@ -105,6 +113,9 @@ antigravityButton.addEventListener("click", async () => {
   } catch (error) { showError(error.message || String(error)); }
   finally { setBusy(false); }
 });
+
+bridgeUpdateButton.addEventListener("click", () => runSoftwareUpdate("fanvpn-bridge", bridgeInstallRoot.value));
+gatewayUpdateButton.addEventListener("click", () => runSoftwareUpdate("browser-gateway", gatewayInstallRoot.value));
 
 addRoleButton.addEventListener("click", () => addRole({
   name: "", description: "", developer_instructions: "",
@@ -151,6 +162,41 @@ async function refreshSubagents() {
   const result = await chrome.runtime.sendMessage({ target: "background", kind: "subagents:get" });
   if (result?.ok !== true) throw new Error(result?.message || "无法读取子 Agent 配置");
   renderSubagents(result.state);
+}
+
+async function refreshSoftwareUpdate() {
+  const result = await chrome.runtime.sendMessage({ target: "background", kind: "software-update:status" });
+  if (result?.ok !== true) throw new Error(result?.message || "无法读取本机安装目录");
+  const state = result.state || {};
+  bridgeInstallRoot.placeholder = `当前：${state.bridge_root || "文档\\fanvpn-bridge"}`;
+  gatewayInstallRoot.placeholder = `当前：${state.gateway_root || "文档\\browser-gateway"}`;
+  softwareUpdateNote.textContent = "通过当前 Chrome 网络从 GitHub 下载；更新 Host 后会自动切换到安全的另一槽位。";
+}
+
+async function runSoftwareUpdate(project, installRoot) {
+  setBusy(true);
+  hideMessages();
+  const button = project === "fanvpn-bridge" ? bridgeUpdateButton : gatewayUpdateButton;
+  const original = button.textContent;
+  button.textContent = "正在下载、验证并更新……";
+  try {
+    const result = await chrome.runtime.sendMessage({
+      target: "background", kind: "software-update:run", project, installRoot,
+    });
+    if (result?.ok !== true) throw new Error(result?.message || "软件更新失败");
+    if (result.state?.extension_rebind_required) {
+      showNotice("新目录已准备好。请在 chrome://extensions 对该目录执行一次“加载已解压的扩展程序”，以后更新可继续一键完成。");
+      return;
+    }
+    if (project === "browser-gateway") {
+      await chrome.runtime.sendMessage("gjhcbooefgfcjbcdkjbbaljkoceghnkg", { kind: "software-update:reload" });
+      showNotice("Browser Gateway 已更新并重新加载。");
+      return;
+    }
+    showNotice("更新完成，扩展将立即重新加载。");
+    setTimeout(() => chrome.runtime.reload(), 500);
+  } catch (error) { showError(error.message || String(error)); }
+  finally { button.textContent = original; setBusy(false); }
 }
 
 function renderSubagents(state) {
@@ -235,7 +281,7 @@ function renderAntigravity(state) {
 }
 
 function setBusy(busy) {
-  for (const button of [...modeButtons, antigravityButton, addRoleButton, saveSubagentsButton, quotaRefreshButton]) button.disabled = busy;
+  for (const button of [...modeButtons, antigravityButton, addRoleButton, saveSubagentsButton, quotaRefreshButton, bridgeUpdateButton, gatewayUpdateButton]) button.disabled = busy;
 }
 function hideMessages() { noticeBox.hidden = true; errorBox.hidden = true; }
 function showNotice(message) { errorBox.hidden = true; noticeBox.hidden = false; noticeBox.textContent = message; }
