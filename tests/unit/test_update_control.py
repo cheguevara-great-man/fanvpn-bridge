@@ -28,7 +28,7 @@ def test_gateway_update_replaces_only_project_files_and_remembers_directory(tmp_
     runtime = tmp_path / "fanvpn-bridge"
     runtime.mkdir()
     gateway = tmp_path / "custom" / "browser-gateway"
-    gateway.mkdir()
+    gateway.mkdir(parents=True)
     (gateway / "unrelated.txt").write_text("keep", encoding="utf-8")
     controller = LocalUpdateController(
         cache_base=tmp_path / "cache", runtime_root=runtime, documents=tmp_path / "Documents"
@@ -42,6 +42,7 @@ def test_gateway_update_replaces_only_project_files_and_remembers_directory(tmp_
     assert result["extension_rebind_required"] is True
     assert (gateway / "extension" / "manifest.json").is_file()
     assert (gateway / "unrelated.txt").read_text(encoding="utf-8") == "keep"
+    assert controller.status()["gateway_root"] == str(gateway.resolve())
 
 
 def test_update_rejects_a_non_project_parent_directory(tmp_path: Path) -> None:
@@ -54,7 +55,6 @@ def test_update_rejects_a_non_project_parent_directory(tmp_path: Path) -> None:
             commit=COMMIT,
             install_root=str(tmp_path / "Program Files (x86)"),
         )
-    assert controller.status()["gateway_root"] == str(gateway.resolve())
 
 
 def test_update_rejects_unsafe_archive_paths(tmp_path: Path) -> None:
