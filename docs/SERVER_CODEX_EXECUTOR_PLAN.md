@@ -1,6 +1,6 @@
 # Codex 服务器执行器总体方案
 
-> 状态：第一阶段 Server Lite 已开始实现；尚未部署到生产服务器  
+> 状态：第一阶段 Server Lite 已开始实现；尚未部署到生产服务器
 > 开发分支：两个仓库均使用 `codex/server-executor`  
 > 目标：账号 B 只在美国服务器保存登录凭据，五台 Windows 电脑通过各自设备身份使用服务器上的 Codex 模型能力；第二阶段再实现 Full 账号产品能力。  
 > 非目标：新分支不兼容 Browser Lean、Browser Full、Direct、Gemini、Hybrid 或 Antigravity；旧方案继续保留在原 `master` / `main` 分支。
@@ -50,7 +50,7 @@ VS Code Codex / Codex CLI
   -> http://127.0.0.1:18888/v1/codex
   -> Browser AI Bridge Server Client（独立后台进程，不依赖 Chrome）
   -> HTTPS + 设备 Bearer Token
-  -> https://美国服务器:9443/v1/codex/*
+  -> https://美国服务器:9444/v1/codex/*
   -> Codex Executor
   -> 服务器账号 B 的 Authorization + ChatGPT-Account-ID
   -> https://chatgpt.com/backend-api/codex/*
@@ -109,7 +109,8 @@ Native Messaging 或 Chrome Offscreen Document。
 - Server Full 的产品路径策略、产品缓存和 Apps/MCP 请求。
 
 服务器现有 GOST、sing-box、Chrome 正向代理和用量网页继续独立运行。Codex Executor 是新增服务，不能把
-账号 B 的认证逻辑塞进 GOST 或通用正向代理。
+账号 B 的认证逻辑塞进 GOST 或通用正向代理。第一阶段使用独立 TCP `9444` 与独立 systemd 服务，不重启或
+改写现有代理、用量网页、Nginx 配置或其端口 `9443`。
 
 ## 5. 本机进程设计
 
@@ -175,7 +176,7 @@ chatgpt_base_url = "http://127.0.0.1:18888/product/backend-api/"
 
 ```json
 {
-  "codexExecutorUrl": "https://服务器:9443/v1/codex"
+  "codexExecutorUrl": "https://服务器:9444/v1/codex"
 }
 ```
 
@@ -183,7 +184,7 @@ Gateway 扩展同步给 Bridge 的配置增加：
 
 ```json
 {
-  "executor_url": "https://服务器:9443/v1/codex",
+  "executor_url": "https://服务器:9444/v1/codex",
   "device_token": "设备 Token"
 }
 ```

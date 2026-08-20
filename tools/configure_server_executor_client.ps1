@@ -2,6 +2,8 @@
 param(
     [string]$ExecutorUrl,
     [string]$DeviceToken,
+    [ValidateRange(1024, 65535)]
+    [int]$ExecutorPort = 9444,
     [string]$NativeHostPath,
     [switch]$Start
 )
@@ -17,7 +19,8 @@ if (([string]::IsNullOrWhiteSpace($ExecutorUrl) -or [string]::IsNullOrWhiteSpace
     if ([string]::IsNullOrWhiteSpace($DeviceToken)) { $DeviceToken = [string]$usage.report_token }
     if ([string]::IsNullOrWhiteSpace($ExecutorUrl) -and -not [string]::IsNullOrWhiteSpace([string]$usage.collector_url)) {
         $collector = [uri][string]$usage.collector_url
-        $ExecutorUrl = $collector.GetLeftPart([System.UriPartial]::Authority) + '/v1/codex'
+        $builder = [System.UriBuilder]::new($collector.Scheme, $collector.Host, $ExecutorPort)
+        $ExecutorUrl = $builder.Uri.AbsoluteUri.TrimEnd('/') + '/v1/codex'
     }
 }
 
