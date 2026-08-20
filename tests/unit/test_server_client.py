@@ -44,6 +44,36 @@ class ServerClientTests(unittest.TestCase):
             with self.assertRaises(ServerClientError):
                 load_server_client_config(path)
 
+    def test_browser_transport_requires_fixed_loopback_route(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "server-executor.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "executor_url": "https://203.0.113.8:9444/v1/codex",
+                        "device_token": "d" * 32,
+                        "transport": "browser",
+                        "browser_bridge_url": "http://127.0.0.1:18888/server-executor",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            config = load_server_client_config(path)
+            self.assertEqual(config.transport, "browser")
+            self.assertEqual(config.browser_bridge_url, "http://127.0.0.1:18888/server-executor")
+            path.write_text(
+                json.dumps(
+                    {
+                        "executor_url": "https://203.0.113.8:9444/v1/codex",
+                        "device_token": "d" * 32,
+                        "transport": "browser",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(ServerClientError):
+                load_server_client_config(path)
+
     def test_route_policy_and_header_stripping(self) -> None:
         self.assertTrue(_allowed_request("POST", "/responses"))
         self.assertTrue(_allowed_request("POST", "/responses/abc/cancel"))

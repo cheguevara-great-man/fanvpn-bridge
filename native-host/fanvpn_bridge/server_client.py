@@ -8,7 +8,7 @@ import ssl
 import time
 import uuid
 from dataclasses import dataclass
-from http.client import HTTPSConnection, HTTPException
+from http.client import HTTPConnection, HTTPSConnection, HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Iterable, cast
@@ -36,6 +36,8 @@ class ServerClientConfig:
     executor_url: str
     device_token: str
     local_token: str | None
+    transport: str
+    browser_bridge_url: str | None
 
     @property
     def executor(self):
@@ -61,15 +63,27 @@ def load_server_client_config(path: Path) -> ServerClientConfig:
         or parsed.path.rstrip("/") != "/v1/codex"
     ):
         raise ServerClientError("executor_url must be an HTTPS /v1/codex endpoint")
+    transport = _transport(raw.get("transport", "direct"))
+    browser_bridge_url = _browser_bridge_url(raw.get("browser_bridge_url"))
+    if transport == "browser" and browser_bridge_url is None:
+        raise ServerClientError("browser transport requires browser_bridge_url")
     return ServerClientConfig(
         executor_url=executor_url,
         device_token=_secret(raw.get("device_token"), "device_token"),
         local_token=_optional_secret(raw.get("local_token"), "local_token"),
+        transport=transport,
+        browser_bridge_url=browser_bridge_url,
     )
 
 
 def write_server_client_config(
-    path: Path, *, executor_url: str, device_token: str, local_token: str | None = None
+    path: Path,
+    *,
+    executor_url: str,
+    device_token: str,
+    local_token: str | None = None,
+    transport: str = "direct",
+    browser_bridge_url: str | None = None,
 ) -> ServerClientConfig:
     document = {
         "executor_url": executor_url,
@@ -77,6 +91,9 @@ def write_server_client_config(
     }
     if local_token:
         document["local_token"] = local_token
+    document["transport"] = transport
+    if browser_bridge_url:
+        document["browser_bridge_url"] = browser_bridge_url
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".json.next")
     temporary.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -187,11 +204,22 @@ class ServerClientRequestHandler(BaseHTTPRequestHandler):
     def _relay(self, method: str, relative_path: str, body: bytes, request_id: str) -> None:
         server = self._server()
         endpoint = server.client_config.executor
-        connection = HTTPSConnection(endpoint.hostname, endpoint.port or 443, timeout=30, context=server.ssl_context)
         headers = _server_headers(self.headers.items(), server.client_config.device_token, request_id)
+        request_path = endpoint.path.rstrip("/") + relative_path
+        if server.client_config.transport == "browser":
+            bridge = urlsplit(server.client_config.browser_bridge_url or "")
+            connection = HTTPConnection(bridge.hostname, bridge.port or 80, timeout=30)
+            request_path = bridge.path.rstrip("/") + relative_path
+        else:
+            connection = HTTPSConnection(
+                endpoint.hostname,
+                endpoint.port or 443,
+                timeout=30,
+                context=server.ssl_context,
+            )
         started = time.monotonic()
         try:
-            connection.request(method, endpoint.path.rstrip("/") + relative_path, body=body or None, headers=headers)
+            connection.request(method, request_path, body=body or None, headers=headers)
             response = connection.getresponse()
             self.send_response(response.status, response.reason)
             for name, value in response.getheaders():
@@ -288,6 +316,31 @@ def _optional_secret(value: object, field: str) -> str | None:
     if value is None:
         return None
     return _secret(value, field)
+
+
+def _transport(value: object) -> str:
+    if value in {"direct", "browser"}:
+        return str(value)
+    raise ServerClientError("transport must be direct or browser")
+
+
+def _browser_bridge_url(value: object) -> str | None:
+    if value is None:
+        return None
+    item = _string(value, "browser_bridge_url", 1024).rstrip("/")
+    parsed = urlsplit(item)
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname not in {"127.0.0.1", "localhost"}
+        or parsed.port != 18888
+        or parsed.path.rstrip("/") != "/server-executor"
+        or parsed.query
+        or parsed.fragment
+        or parsed.username
+        or parsed.password
+    ):
+        raise ServerClientError("browser_bridge_url must be http://127.0.0.1:18888/server-executor")
+    return item
 
 
 def run_server_client(config_path: Path, *, host: str = "127.0.0.1", port: int = 18890) -> int:

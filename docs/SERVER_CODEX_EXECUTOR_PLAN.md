@@ -1,9 +1,9 @@
 # Codex 服务器执行器总体方案
 
-> 状态：第一阶段 Server Lite 已开始实现；尚未部署到生产服务器
+> 状态：Server Lite 已完成隔离服务端纵向验证；正在补充“浏览器转运”接入方式
 > 开发分支：两个仓库均使用 `codex/server-executor`  
 > 目标：账号 B 只在美国服务器保存登录凭据，五台 Windows 电脑通过各自设备身份使用服务器上的 Codex 模型能力；第二阶段再实现 Full 账号产品能力。  
-> 非目标：新分支不兼容 Browser Lean、Browser Full、Direct、Gemini、Hybrid 或 Antigravity；旧方案继续保留在原 `master` / `main` 分支。
+> 非目标：本阶段不迁移 Gemini、Hybrid 或 Antigravity。既有浏览器链路继续可用；Server Lite 在独立端口并行运行。
 
 ## 1. 结论
 
@@ -12,11 +12,12 @@
 1. **Server Lite**：先完成模型目录、Responses 流式对话、压缩、Token 统计和设备额度控制。
 2. **Server Full**：在 Lite 的稳定传输上增加 Apps、插件、连接器、账号 MCP 和其他 ChatGPT 产品接口。
 
-新分支只有一条服务器链路。`Server Lite` 和 `Server Full` 是同一套客户端与服务器的两个能力等级，
-不是与旧 Browser 模式并存的网络模式。首发 Lite；实现 Full 后由配置开关启用额外产品接口，模型通道不变。
+`Server Lite` 和 `Server Full` 是同一套服务端能力的两个等级。客户端传输可选择两种安全边界明确的方式：
 
-旧浏览器方案不在这个分支里承担兼容、回滚或回归要求。需要旧方案时切回仓库原分支，而不是在运行时保留
-两套进程、按钮和端口。
+- `Browser`：18890 将固定请求交给现有 18888 浏览器 Bridge，由 Chrome 扩展发送到服务器；适合没有 Clash 的公司电脑。
+- `Direct`：18890 直接 HTTPS 连接服务器；适合个人电脑或获准网络。
+
+两种方式都只访问同一个固定的服务端 API，且可与原有 Browser Lean / Full 并行，互不占用端口。
 
 服务器方案不是把整个 Agent 搬到服务器。Codex 的文件读取、代码修改、Shell、Git、Skills、本地 MCP
 和子 Agent 仍在各台 Windows 电脑执行；服务器只负责账号 B 的模型请求和第二阶段的账号产品请求。
@@ -43,13 +44,14 @@ Full 额外涉及内部产品接口、不同方法和路径、Apps/MCP、OAuth �
 
 ## 3. 总体拓扑
 
-### 3.1 Server Lite
+### 3.1 Server Lite（两种本机传输）
 
 ```text
 VS Code Codex / Codex CLI
   -> http://127.0.0.1:18890/v1/*
-  -> Browser AI Bridge Server Client（独立后台进程，不依赖 Chrome）
-  -> HTTPS + 设备 Bearer Token
+  -> Browser AI Bridge Server Client（独立后台进程）
+  -> [Browser：127.0.0.1:18888/server-executor -> Chrome 扩展]
+     或 [Direct：HTTPS + 设备 Bearer Token]
   -> https://美国服务器:9444/v1/codex/*
   -> Codex Executor
   -> 服务器账号 B 的 Authorization + ChatGPT-Account-ID
@@ -126,14 +128,13 @@ browser-ai-bridge.exe --server-client --config <固定配置路径>
 
 - 默认监听 `127.0.0.1:18890`，避免占用旧浏览器 Bridge 的 `18888`；
 - Server Full 时额外监听 `127.0.0.1:8000`；
-- Chrome 退出不会导致它退出；
+- Direct 传输不依赖 Chrome；Browser 传输依赖现有 Chrome Bridge 保持已连接；
 - 使用 PID/状态文件防止重复启动；
 - Windows 登录任务负责启动，安装器负责健康检查和升级；
 - 只允许固定 Server 路径，不提供 CONNECT 或任意目标 URL。
 
-测试期新 Server Client 不运行旧 Chrome Native Host，但仍固定使用 `18890`，让旧浏览器 Bridge 能继续在
-`18888` 并行运行。稳定后再决定是否迁移端口或停止旧链路。新 Server Client 不提供 `18889` Direct
-Forward Proxy。
+测试期 Server Client 固定使用 `18890`，旧浏览器 Bridge 继续在 `18888` 并行运行。Browser 传输只使用
+固定 `/server-executor` 路由，不会成为通用代理；Direct 传输也不提供 `18889` Forward Proxy。
 
 ### 5.2 本地认证与边界
 
@@ -171,7 +172,8 @@ chatgpt_base_url = "http://127.0.0.1:18888/product/backend-api/"
 
 ## 6. 设备注册与配置
 
-沿用 Browser Gateway 已有的一次性注册码和设备 Token，不再建立第二套机器身份。
+沿用 Browser Gateway 已有的一次性注册码和设备 Token，不再建立第二套机器身份。设备 Token 与用量上报 Token
+不同；客户端配置器不会误把后者当作服务端执行器凭据。
 
 设备兑换响应增加：
 
@@ -458,7 +460,8 @@ tools/
 5. PowerShell 手工启动模式；
 6. 不做 UI、不做 Full。
 
-通过条件：没有安装或启动 Chrome Bridge 扩展时，VS Code 能连续完成三轮对话，SSE 流式正常。
+通过条件：Direct 模式下无需 Chrome 也能连续完成三轮对话；Browser 模式下无 Clash 的电脑可通过现有 Chrome
+扩展完成同样测试，SSE 流式正常。
 
 ### 阶段 1B：Lite 产品化
 
@@ -558,7 +561,7 @@ Server Lite 完成必须同时满足：
 
 - 账号 B 只在服务器保存；
 - 五台设备不保存账号 B refresh token；
-- 不依赖 Chrome、Native Messaging 或浏览器代理；
+- Direct 模式不依赖 Chrome；Browser 模式可经 Chrome 扩展访问服务器；
 - 流式、取消、压缩、图片和长任务工作；
 - 用量按设备准确统计并能停用；
 - 部署与回滚可重复。

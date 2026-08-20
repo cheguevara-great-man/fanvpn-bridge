@@ -21,6 +21,22 @@
       "remove_path_prefix": "",
       "probe_path": "/models"
     },
+    "server-executor": {
+      "upstream_base_url": "https://107.174.199.230:9444/v1/codex",
+      "remove_path_prefix": "",
+      "probe_path": "/models",
+      "request_header_allowlist": [
+        "accept",
+        "authorization",
+        "content-type",
+        "openai-beta",
+        "user-agent",
+        "x-bridge-protocol",
+        "x-bridge-request-id",
+        "x-stainless-lang",
+        "x-stainless-package-version"
+      ]
+    },
     "chatgpt-backend": {
       "upstream_base_url": "https://chatgpt.com",
       "remove_path_prefix": "",
