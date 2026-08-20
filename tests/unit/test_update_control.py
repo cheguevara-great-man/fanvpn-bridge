@@ -27,7 +27,7 @@ def _archive(path: Path, project: str, *, unsafe: bool = False) -> Path:
 def test_gateway_update_replaces_only_project_files_and_remembers_directory(tmp_path: Path) -> None:
     runtime = tmp_path / "fanvpn-bridge"
     runtime.mkdir()
-    gateway = tmp_path / "custom-gateway"
+    gateway = tmp_path / "custom" / "browser-gateway"
     gateway.mkdir()
     (gateway / "unrelated.txt").write_text("keep", encoding="utf-8")
     controller = LocalUpdateController(
@@ -42,6 +42,18 @@ def test_gateway_update_replaces_only_project_files_and_remembers_directory(tmp_
     assert result["extension_rebind_required"] is True
     assert (gateway / "extension" / "manifest.json").is_file()
     assert (gateway / "unrelated.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_update_rejects_a_non_project_parent_directory(tmp_path: Path) -> None:
+    controller = LocalUpdateController(cache_base=tmp_path / "cache", runtime_root=tmp_path / "fanvpn-bridge")
+
+    with pytest.raises(UpdateControlError, match="must end with fanvpn-bridge"):
+        controller.apply_archive(
+            project="fanvpn-bridge",
+            archive=_archive(tmp_path / "bridge.zip", "fanvpn-bridge"),
+            commit=COMMIT,
+            install_root=str(tmp_path / "Program Files (x86)"),
+        )
     assert controller.status()["gateway_root"] == str(gateway.resolve())
 
 

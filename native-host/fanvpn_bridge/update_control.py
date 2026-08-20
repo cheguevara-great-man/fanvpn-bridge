@@ -118,6 +118,8 @@ class LocalUpdateController:
             root = Path(requested).expanduser().resolve()
         if root.parent == root or str(root) in {root.anchor, ""}:
             raise UpdateControlError("Installation directory must be a project folder, not a drive root")
+        if root.name.casefold() != project.casefold():
+            raise UpdateControlError(f"Installation directory must end with {project}")
         return root
 
     def _extract_archive(self, project: str, archive: Path, commit: str) -> Path:
