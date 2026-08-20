@@ -66,6 +66,40 @@ class LocalUpdateController:
             "default_gateway_root": str(self._documents / PROJECT_GATEWAY),
         }
 
+    def choose_root(self, project: str) -> str | None:
+        """Show Windows' native folder picker for a project directory."""
+
+        if project not in SUPPORTED_PROJECTS:
+            raise UpdateControlError("Unsupported update project")
+        if not self._powershell_path.is_file():
+            raise UpdateControlError("Windows PowerShell could not be found")
+        initial = self._project_root(project, self._read_state())
+        script = (
+            "Add-Type -AssemblyName System.Windows.Forms; "
+            "$d = New-Object System.Windows.Forms.FolderBrowserDialog; "
+            "$d.Description = '选择 Browser AI Bridge 的安装目录'; "
+            "$d.SelectedPath = [Environment]::GetEnvironmentVariable('BROWSER_AI_PICKER_INITIAL'); "
+            "if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { "
+            "[Console]::Out.Write($d.SelectedPath) }"
+        )
+        environment = os.environ.copy()
+        environment["BROWSER_AI_PICKER_INITIAL"] = str(initial)
+        try:
+            completed = subprocess.run(
+                [str(self._powershell_path), "-NoProfile", "-STA", "-Command", script],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=5 * 60, check=False, env=environment,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise UpdateControlError("Folder picker stopped unexpectedly") from exc
+        if completed.returncode != 0:
+            raise UpdateControlError("Folder picker could not be opened")
+        selected = completed.stdout.decode("utf-8", errors="replace").strip()
+        if not selected:
+            return None
+        return str(self._select_root(project, self._read_state(), selected))
+
     def apply_archive(
         self,
         *,
