@@ -25,6 +25,7 @@ from .contracts import EgressRequest, Header, RequestDispatcher, ResolvedRoute
 _LOG = logging.getLogger("fanvpn_bridge.usage")
 _LOG.addHandler(logging.NullHandler())
 _CONFIG_NAME = "usage-reporting.json"
+_QUOTA_SYNC_INTERVAL_SECONDS = 30.0
 _DATABASE_NAME = "usage-outbox.sqlite3"
 _MAX_EVENT_BYTES = 16 * 1024
 _MAX_CAPTURE_BYTES = 2 * 1024 * 1024
@@ -263,7 +264,10 @@ class UsageReporter:
             now = time.monotonic()
             if now >= self._next_quota_sync:
                 self._sync_quota_and_policy()
-                self._next_quota_sync = now + 300.0
+                # Device quota policy is a safety decision. Keep its normal
+                # propagation delay short when an administrator changes the
+                # central allocation, without tightening failed-event retry.
+                self._next_quota_sync = now + _QUOTA_SYNC_INTERVAL_SECONDS
             row = self._next_event()
             if row is None:
                 self._wake.wait(min(30.0, max(self._next_quota_sync - time.monotonic(), 1.0)))
