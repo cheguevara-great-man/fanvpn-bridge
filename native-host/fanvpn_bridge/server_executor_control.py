@@ -13,6 +13,7 @@ import time
 from typing import Callable
 
 from .server_client import (
+    ServerClientConfig,
     ServerClientError,
     default_server_client_config_path,
     load_server_client_config,
@@ -75,6 +76,39 @@ class ServerExecutorTransportController:
             "local_port": _LOCAL_PORT,
         }
 
+    def recover_selected_mode(self) -> bool:
+        """Restore the detached 18890 client after login, reboot, or a crash.
+
+        Recovery never changes the selected provider.  A missing or invalid
+        client configuration therefore leaves the established 18888 Native
+        Host usable instead of making Chrome startup fail.
+        """
+        if self._current_provider() != _SERVER_PROVIDER or self._readiness_probe():
+            return False
+        config: ServerClientConfig | None = None
+        try:
+            config = load_server_client_config(self._client_config_path)
+            write_server_client_config(
+                self._client_config_path,
+                executor_url=config.executor_url,
+                device_token=config.device_token,
+                local_token=config.local_token,
+                transport="browser",
+                browser_bridge_url=_BROWSER_BRIDGE_URL,
+            )
+            self._process_stopper()
+            self._process_starter(self._client_command())
+            return True
+        except (OSError, ServerClientError, subprocess.SubprocessError):
+            self._process_stopper()
+            if config is not None:
+                self._restore_client_config(config)
+            try:
+                self._set_provider(self._previous_provider())
+            except ServerExecutorControlError:
+                pass
+            return False
+
     def set_mode(self, mode: str) -> dict[str, object]:
         if mode not in SUPPORTED_SERVER_EXECUTOR_MODES:
             raise ServerExecutorControlError("Unsupported server transport mode")
@@ -94,31 +128,55 @@ class ServerExecutorTransportController:
                 "服务器中心尚未配置：先在 Browser Gateway 网页注册这台设备"
             ) from exc
         self._remember_previous_provider()
-        write_server_client_config(
-            self._client_config_path,
-            executor_url=config.executor_url,
-            device_token=config.device_token,
-            local_token=config.local_token,
-            transport="browser",
-            browser_bridge_url=_BROWSER_BRIDGE_URL,
-        )
+        try:
+            write_server_client_config(
+                self._client_config_path,
+                executor_url=config.executor_url,
+                device_token=config.device_token,
+                local_token=config.local_token,
+                transport="browser",
+                browser_bridge_url=_BROWSER_BRIDGE_URL,
+            )
+            self._process_stopper()
+            self._process_starter(self._client_command())
+            deadline = time.monotonic() + 7
+            while time.monotonic() < deadline:
+                if self._readiness_probe():
+                    self._set_provider(_SERVER_PROVIDER)
+                    return
+                time.sleep(0.1)
+        except (OSError, ServerClientError, subprocess.SubprocessError) as exc:
+            self._restore_client_config(config)
+            self._process_stopper()
+            raise ServerExecutorControlError("服务器中心客户端无法启动") from exc
         self._process_stopper()
-        self._process_starter(self._client_command())
-        deadline = time.monotonic() + 7
-        while time.monotonic() < deadline:
-            if self._readiness_probe():
-                self._set_provider(_SERVER_PROVIDER)
-                return
-            time.sleep(0.1)
+        self._restore_client_config(config)
         raise ServerExecutorControlError(
             "服务器中心客户端未启动；请确认 Chrome、Browser Gateway 与 AI Bridge 都已连接"
         )
 
+    def _restore_client_config(self, config: ServerClientConfig) -> None:
+        try:
+            write_server_client_config(
+                self._client_config_path,
+                executor_url=config.executor_url,
+                device_token=config.device_token,
+                local_token=config.local_token,
+                transport=config.transport,
+                browser_bridge_url=config.browser_bridge_url,
+            )
+        except (OSError, ServerClientError):
+            # Preserve the original, actionable startup error.  The next
+            # registration can safely regenerate this local configuration.
+            pass
+
     def _switch_to_browser_chain(self) -> None:
         self._process_stopper()
+        self._set_provider(self._previous_provider())
+
+    def _previous_provider(self) -> str:
         previous = self._load_state().get("previous_model_provider")
-        provider = previous if isinstance(previous, str) and previous else "browser_ai_bridge"
-        self._set_provider(provider)
+        return previous if isinstance(previous, str) and previous else "browser_ai_bridge"
 
     def _remember_previous_provider(self) -> None:
         current = self._current_provider()

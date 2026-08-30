@@ -147,6 +147,30 @@ test("serializes native messages, caches the offscreen context, retries, and res
     });
     assert.equal((await modeResponse).mode, "browser_full");
 
+    const serverRouteResponse = new Promise((resolve) => {
+      const handled = chrome.runtime.onMessage.emit(
+        { target: "background", kind: "server-executor:get" },
+        {},
+        resolve,
+      );
+      assert.deepEqual(handled, [true]);
+    });
+    await waitFor(
+      () => nativeOutbound.some((message) => message.type === "control.server_executor.get"),
+      "server executor control request was not sent",
+    );
+    const serverRouteRequest = nativeOutbound.find(
+      (message) => message.type === "control.server_executor.get",
+    );
+    nativeMessages.emit({
+      v: 1,
+      type: "control.server_executor.result",
+      id: serverRouteRequest.id,
+      ok: true,
+      state: { mode: "browser_chain", configured: true, client_running: false },
+    });
+    assert.equal((await serverRouteResponse).state.mode, "browser_chain");
+
     const antigravityResponse = new Promise((resolve) => {
       const handled = chrome.runtime.onMessage.emit(
         { target: "background", kind: "antigravity-setup:get" },

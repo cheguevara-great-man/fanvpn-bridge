@@ -1,3 +1,5 @@
+import { applyBusyState } from "./popup_controls.js";
+
 const native = document.getElementById("native");
 const handshake = document.getElementById("handshake");
 const executor = document.getElementById("executor");
@@ -30,6 +32,9 @@ const bridgeUpdateButton = document.getElementById("bridge-update");
 const gatewayUpdateButton = document.getElementById("gateway-update");
 const softwareUpdateNote = document.getElementById("software-update-note");
 let availableModels = [];
+let serverRouteState = null;
+let serverRouteAvailable = true;
+let uiBusy = false;
 
 const MODE_LABELS = {
   gemini_account: "仅 Gemini 账号",
@@ -64,8 +69,7 @@ try { await refreshMode(); } catch (error) {
   showError(error.message || String(error));
 }
 try { await refreshServerRoute(); } catch (error) {
-  serverRouteNote.textContent = "服务器中心链路状态读取失败";
-  showError(error.message || String(error));
+  renderServerRouteUnavailable(error.message || String(error));
 }
 try { await refreshAntigravity(); } catch (error) {
   renderAntigravity(null);
@@ -93,6 +97,18 @@ for (const button of modeButtons) {
     setBusy(true);
     hideMessages();
     try {
+      // Every Codex mode in this section belongs to the established 18888
+      // browser/direct family.  Stop an independently selected 18890 client
+      // first so the UI and config.toml cannot describe conflicting modes.
+      if (serverRouteState?.mode === "server_center") {
+        const routeResult = await chrome.runtime.sendMessage({
+          target: "background", kind: "server-executor:set", mode: "browser_chain",
+        });
+        if (routeResult?.ok !== true) {
+          throw new Error(routeResult?.message || "无法退出服务器中心链路");
+        }
+        renderServerRoute(routeResult.state);
+      }
       const result = await chrome.runtime.sendMessage({
         target: "background", kind: "codex-mode:set", mode: button.dataset.mode,
       });
@@ -113,6 +129,7 @@ for (const button of serverRouteButtons) {
       const result = await chrome.runtime.sendMessage({
         target: "background", kind: "server-executor:set", mode: button.dataset.serverRoute,
       });
+      if (result?.state) renderServerRoute(result.state);
       if (result?.ok !== true) throw new Error(result?.message || "链路切换失败");
       renderServerRoute(result.state);
       showNotice("链路已切换。请完全退出并重新打开 VS Code 后再使用 Codex。");
@@ -179,8 +196,12 @@ async function refreshServerRoute() {
 }
 
 function renderServerRoute(state) {
+  serverRouteAvailable = true;
+  serverRouteState = state || { mode: "browser_chain" };
   const mode = state?.mode === "server_center" ? "server_center" : "browser_chain";
-  for (const button of serverRouteButtons) button.classList.toggle("active", button.dataset.serverRoute === mode);
+  for (const button of serverRouteButtons) {
+    button.classList.toggle("active", button.dataset.serverRoute === mode);
+  }
   if (mode === "server_center") {
     const ready = state?.client_running === true;
     serverRouteNote.textContent = ready
@@ -188,7 +209,20 @@ function renderServerRoute(state) {
       : "服务器中心已选中，但 18890 客户端未运行；请再次点击或检查 Chrome 与本扩展。";
     return;
   }
-  serverRouteNote.textContent = "旧浏览器链路：VS Code → 18888 → 本扩展 → 浏览器代理 → ChatGPT。";
+  serverRouteNote.textContent = state?.configured === false
+    ? "旧浏览器链路正在使用；服务器中心尚未完成设备注册。"
+    : "旧浏览器链路：VS Code → 18888 → 本扩展 → 浏览器代理 → ChatGPT。";
+}
+
+function renderServerRouteUnavailable(message) {
+  serverRouteAvailable = false;
+  serverRouteState = null;
+  for (const button of serverRouteButtons) {
+    button.classList.remove("active");
+    button.disabled = true;
+  }
+  serverRouteNote.textContent =
+    `链路控制暂不可用（${message}）。上方 Codex 模式仍可正常选择；更新 AI Bridge Host 后可恢复此功能。`;
 }
 
 async function refreshAntigravity() {
@@ -322,7 +356,17 @@ function renderAntigravity(state) {
 }
 
 function setBusy(busy) {
-  for (const button of [...modeButtons, antigravityButton, addRoleButton, saveSubagentsButton, quotaRefreshButton, bridgeUpdateButton, gatewayUpdateButton, bridgePickRootButton, gatewayPickRootButton]) button.disabled = busy;
+  uiBusy = busy;
+  const controls = [
+    ...modeButtons,
+    antigravityButton,
+    addRoleButton,
+    saveSubagentsButton,
+    quotaRefreshButton,
+    bridgeUpdateButton,
+    gatewayUpdateButton,
+  ];
+  applyBusyState(controls, serverRouteButtons, { busy: uiBusy, serverRouteAvailable });
 }
 function hideMessages() { noticeBox.hidden = true; errorBox.hidden = true; }
 function showNotice(message) { errorBox.hidden = true; noticeBox.hidden = false; noticeBox.textContent = message; }

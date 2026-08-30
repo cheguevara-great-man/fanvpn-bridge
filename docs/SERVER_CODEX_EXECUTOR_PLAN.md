@@ -148,6 +148,10 @@ browser-ai-bridge.exe --server-client --config <固定配置路径>
 测试期 Server Client 固定使用 `18890`，旧浏览器 Bridge 继续在 `18888` 并行运行。Browser 传输只使用
 固定 `/server-executor` 路由，不会成为通用代理；Direct 传输也不提供 `18889` Forward Proxy。
 
+链路选择被保存在 Codex 配置中。若已经选择服务器中心，Windows、Chrome 或 Native Host 重启后会自动
+恢复独立的 `18890` 客户端；启动失败会停止残留进程并恢复原客户端配置，不影响 `18888` 旧浏览器链路。
+扩展与 Native Host 暂时版本不一致时，插件只禁用“服务器中心”两个链路按钮，其他 Codex 模式仍可使用。
+
 ### 5.2 本地认证与边界
 
 设备 Token 保存在受当前 Windows 用户 ACL 保护的运行目录，只由 Server Client 用于服务器认证；它不写入

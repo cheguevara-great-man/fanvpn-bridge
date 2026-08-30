@@ -18,6 +18,7 @@ const ANTIGRAVITY_HOST = "daily-cloudcode-pa.googleapis.com";
 const ANTIGRAVITY_USER_AGENT_RULE_ID = 1001;
 const CONTROL_HANDSHAKE_TIMEOUT_MS = 5000;
 const CONTROL_TIMEOUT_MS = 60000;
+const SERVER_EXECUTOR_CONTROL_TIMEOUT_MS = 8000;
 const UPDATE_TIMEOUT_MS = 25 * 60 * 1000;
 const UPDATE_CHUNK_BYTES = 192 * 1024;
 const UPDATE_PROJECTS = Object.freeze({
@@ -373,8 +374,8 @@ async function requestServerExecutorControl(kind, mode) {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       pendingControls.delete(id);
-      reject(new Error("服务器中心链路切换超时"));
-    }, CONTROL_TIMEOUT_MS);
+      reject(new Error("链路控制无响应；请更新或重启 AI Bridge Host"));
+    }, SERVER_EXECUTOR_CONTROL_TIMEOUT_MS);
     pendingControls.set(id, { resolve, reject, timeout });
     if (!postNative(message)) {
       pendingControls.delete(id);

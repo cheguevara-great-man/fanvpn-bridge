@@ -47,6 +47,9 @@ def run(config_path: Path) -> int:
         bridge_url=f"http://{config.listen_host}:{config.listen_port}",
         timeout_seconds=config.protocol.request_timeout_seconds,
     )
+    server_executor_controller = ServerExecutorTransportController(cache_base=cache_base)
+    if server_executor_controller.recover_selected_mode():
+        log.info("server_executor_client_recovery_started port=18890")
     dispatcher = NativeDispatcher(
         channel,
         max_chunk_bytes=config.protocol.max_chunk_bytes,
@@ -54,7 +57,7 @@ def run(config_path: Path) -> int:
         max_active_requests=config.protocol.max_active_requests,
         request_timeout_seconds=config.protocol.request_timeout_seconds,
         mode_controller=CodexModeController(),
-        server_executor_controller=ServerExecutorTransportController(cache_base=cache_base),
+        server_executor_controller=server_executor_controller,
         antigravity_setup_controller=AntigravitySetupController(),
         device_config_controller=DeviceConfigController(cache_base),
         subagent_config_controller=SubagentConfigurationController(
