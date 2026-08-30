@@ -710,6 +710,7 @@ chrome.runtime.onMessageExternal?.addListener((message, sender, sendResponse) =>
       report_token: value.reportToken,
       collector_url: value.collectorUrl,
       dashboard_url: value.dashboardUrl,
+      executor_url: value.codexExecutorUrl,
     })
       .then((result) => {
         sendResponse(result);

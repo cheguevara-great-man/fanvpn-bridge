@@ -9,7 +9,8 @@
 3. [Antigravity CLI 浏览器链路](ANTIGRAVITY_CLI.md)：在 VS Code 终端中通过 Chrome 安装并运行官方 CLI。
 4. [Codex + Gemini 账号](GEMINI_ACCOUNT.md)：保留 Codex Agent，用 Google 登录账号提供 Gemini 模型。
 5. [Codex Hybrid](HYBRID_CODEX.md)：同一模型菜单使用 GPT/Gemini，并配置三种子 Agent 策略。
-6. [故障排查](TROUBLESHOOTING.md)：Bridge、Chrome、FanVPN 或客户端异常时使用。
+6. [Codex 服务器中心 API](SERVER_CODEX_EXECUTOR.md)：部署 Server Lite、注册设备、切换链路与排障。
+7. [故障排查](TROUBLESHOOTING.md)：Bridge、Chrome、FanVPN 或客户端异常时使用。
 
 ## 开发者
 

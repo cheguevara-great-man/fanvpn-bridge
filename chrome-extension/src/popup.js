@@ -204,8 +204,11 @@ function renderServerRoute(state) {
   }
   if (mode === "server_center") {
     const ready = state?.client_running === true;
+    const direct = state?.transport === "direct";
     serverRouteNote.textContent = ready
-      ? "服务器中心已启用：18890 → 本扩展 → 浏览器代理 → 服务器。"
+      ? (direct
+        ? "服务器中心已启用：18890 → HTTPS → 服务器。"
+        : "服务器中心已启用：18890 → 本扩展 → 浏览器代理 → 服务器。")
       : "服务器中心已选中，但 18890 客户端未运行；请再次点击或检查 Chrome 与本扩展。";
     return;
   }

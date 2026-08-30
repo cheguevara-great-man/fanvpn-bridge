@@ -6,7 +6,13 @@ import json
 import os
 import uuid
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
+
+from .server_client import (
+    ServerClientError,
+    load_server_client_config,
+    write_server_client_config,
+)
 
 
 class DeviceConfigError(RuntimeError):
@@ -48,6 +54,7 @@ class DeviceConfigController:
         report_token = _string(value, "report_token", 512)
         if len(report_token) < 20 or any(character.isspace() for character in report_token):
             raise DeviceConfigError("Invalid report token")
+        executor_url = _executor_url(value.get("executor_url"), collector_url)
         document = {
             "collector_url": collector_url,
             "report_token": report_token,
@@ -65,7 +72,37 @@ class DeviceConfigController:
             os.chmod(self._path, 0o600)
         except OSError:
             pass
+        self._write_server_executor(executor_url, report_token)
         return {**self.status(), "restart_required": True}
+
+    def _write_server_executor(self, executor_url: str, device_token: str) -> None:
+        path = self._runtime_directory / "server-executor.json"
+        transport = "browser"
+        browser_bridge_url = "http://127.0.0.1:18888/server-executor"
+        local_token = None
+        try:
+            previous = load_server_client_config(path)
+            transport = previous.transport
+            local_token = previous.local_token
+            if transport == "direct":
+                browser_bridge_url = previous.browser_bridge_url
+        except ServerClientError:
+            pass
+        try:
+            write_server_client_config(
+                path,
+                executor_url=executor_url,
+                device_token=device_token,
+                local_token=local_token,
+                transport=transport,
+                browser_bridge_url=browser_bridge_url,
+            )
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
+        except (OSError, ServerClientError) as error:
+            raise DeviceConfigError("Server executor configuration could not be saved") from error
 
 
 def _string(value: dict[str, object], name: str, maximum: int) -> str:
@@ -83,4 +120,29 @@ def _https_url(value: dict[str, object], name: str, *, required_path: str) -> st
         or parsed.query or parsed.fragment or parsed.path != required_path
     ):
         raise DeviceConfigError(f"Invalid {name}")
+    return item
+
+
+def _executor_url(value: object, collector_url: str) -> str:
+    if value is not None:
+        return _validated_executor_url(value)
+    collector = urlsplit(collector_url)
+    hostname = collector.hostname or ""
+    if ":" in hostname:
+        hostname = f"[{hostname}]"
+    return _validated_executor_url(
+        urlunsplit((collector.scheme, f"{hostname}:9444", "/v1/codex", "", ""))
+    )
+
+
+def _validated_executor_url(value: object) -> str:
+    if not isinstance(value, str) or not 1 <= len(value) <= 1024 or "\0" in value:
+        raise DeviceConfigError("Invalid executor_url")
+    item = value.rstrip("/")
+    parsed = urlsplit(item)
+    if (
+        parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password
+        or parsed.query or parsed.fragment or parsed.path != "/v1/codex"
+    ):
+        raise DeviceConfigError("Invalid executor_url")
     return item

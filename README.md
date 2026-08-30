@@ -117,6 +117,8 @@ PowerShell 中完成一次 Google 授权；此后只需从 VS Code 的 Antigravi
 | Antigravity CLI Cloud Code | `http://127.0.0.1:18888/antigravity` |
 | Codex + Google 账号 Gemini | `http://127.0.0.1:18888/gemini-account/v1` |
 | Codex Hybrid（GPT + Gemini） | `http://127.0.0.1:18888/hybrid/v1` |
+| 服务器中心本机 Provider（仅 `codex/server-executor`） | `http://127.0.0.1:18890/v1` |
+| 服务器中心浏览器转运（内部固定路由） | `http://127.0.0.1:18888/server-executor` |
 
 路由来自 `config/routes.example.json`。API Key 不应写入路由配置。
 
@@ -136,6 +138,7 @@ Browser Full（浏览器完整，实验）会把产品后端也交给 Chrome，�
 | [Antigravity CLI 浏览器链路](docs/ANTIGRAVITY_CLI.md) | 通过 Chrome 安装并运行官方 Antigravity CLI |
 | [Codex + Gemini 账号](docs/GEMINI_ACCOUNT.md) | Codex 担任 Agent，Google 登录账号只提供 Gemini 模型推理 |
 | [Codex Hybrid](docs/HYBRID_CODEX.md) | 同一模型菜单使用 GPT/Gemini，并配置子 Agent模型策略 |
+| [Codex 服务器中心 API](docs/SERVER_CODEX_EXECUTOR.md) | 集中服务器账号、部署 Server Lite、注册设备、切换链路与排障 |
 | [开发指南](docs/DEVELOPMENT.md) | 目录、测试、构建和开发约束 |
 | [故障排查](docs/TROUBLESHOOTING.md) | 面向当前版本的诊断步骤 |
 | [问题与解决记录](docs/PROBLEM_SOLVING.md) | 开发过程中的问题、原因和经验 |

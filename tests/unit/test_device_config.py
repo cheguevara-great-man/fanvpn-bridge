@@ -27,6 +27,28 @@ class DeviceConfigControllerTests(unittest.TestCase):
             saved = json.loads((Path(directory) / "usage-reporting.json").read_text(encoding="utf-8"))
             self.assertEqual(saved["machine_id"], machine_id)
             self.assertEqual(saved["report_token"], "secret-device-token-1234567890")
+            executor = json.loads((Path(directory) / "server-executor.json").read_text(encoding="utf-8"))
+            self.assertEqual(executor["executor_url"], "https://203.0.113.10:9444/v1/codex")
+            self.assertEqual(executor["device_token"], "secret-device-token-1234567890")
+            self.assertEqual(executor["transport"], "browser")
+            self.assertEqual(
+                executor["browser_bridge_url"],
+                "http://127.0.0.1:18888/server-executor",
+            )
+
+    def test_accepts_an_explicit_executor_url(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            controller = DeviceConfigController(Path(directory))
+            controller.apply({
+                "machine_id": str(uuid.uuid4()),
+                "machine_name": "公司电脑-04",
+                "report_token": "secret-device-token-1234567890",
+                "collector_url": "https://example.test:9443/v1/usage/events",
+                "dashboard_url": "https://example.test:9443/dashboard",
+                "executor_url": "https://codex.example.test:10444/v1/codex",
+            })
+            executor = json.loads((Path(directory) / "server-executor.json").read_text(encoding="utf-8"))
+            self.assertEqual(executor["executor_url"], "https://codex.example.test:10444/v1/codex")
 
     def test_rejects_non_https_or_wrong_collector_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
