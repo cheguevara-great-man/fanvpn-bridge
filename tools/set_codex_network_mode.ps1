@@ -185,6 +185,13 @@ function New-GeminiModelCatalog {
                 $_.slug -is [string] -and $_.slug -notmatch '^gemini-'
             })) {
                 $copy = $officialModel | ConvertTo-Json -Depth 100 | ConvertFrom-Json
+                # Newer Codex clients require this capability bit. Preserve a
+                # newer official value when present; old caches get a safe
+                # default: GPT models expose summaries, other copied entries do
+                # not claim support without an upstream declaration.
+                if (-not $copy.PSObject.Properties['supports_reasoning_summaries']) {
+                    Set-ObjectProperty $copy 'supports_reasoning_summaries' ($copy.slug -match '^gpt-')
+                }
                 Set-ObjectProperty $copy 'priority' ($models.Count + 1)
                 $models.Add($copy)
             }
@@ -214,6 +221,9 @@ function New-GeminiModelCatalog {
         Set-ObjectProperty $model 'priority' ($models.Count + 1)
         Set-ObjectProperty $model 'visibility' 'list'
         Set-ObjectProperty $model 'supported_in_api' $true
+        # Gemini reasoning effort remains available. The Bridge intentionally
+        # does not expose Gemini reasoning-summary events to Codex.
+        Set-ObjectProperty $model 'supports_reasoning_summaries' $false
         Set-ObjectProperty $model 'prefer_websockets' $false
         Set-ObjectProperty $model 'use_responses_lite' $false
         Set-ObjectProperty $model 'context_window' 1000000

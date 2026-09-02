@@ -3,6 +3,7 @@
     "slug": "gemini-template",
     "display_name": "Gemini",
     "description": "Google account model through Browser AI Bridge",
+    "supports_reasoning_summaries": false,
     "default_reasoning_level": "medium",
     "supported_reasoning_levels": [
       {
