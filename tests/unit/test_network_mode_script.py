@@ -132,6 +132,7 @@ class NetworkModeScriptTests(unittest.TestCase):
             )
             self.assertIn("gemini-3.1-pro-high", models)
             self.assertFalse(models["gemini-3.6-flash-tiered"]["supports_reasoning_summaries"])
+            self.assertEqual(models["gemini-3.6-flash-tiered"]["default_reasoning_summary"], "none")
             self.assertEqual(
                 [
                     level["effort"]
@@ -368,7 +369,9 @@ class NetworkModeScriptTests(unittest.TestCase):
             self.assertIn("gemini-3.7-flash", slugs)
             by_slug = {item["slug"]: item for item in catalog["models"]}
             self.assertTrue(by_slug["gpt-5.6-sol"]["supports_reasoning_summaries"])
+            self.assertEqual(by_slug["gpt-5.6-sol"]["default_reasoning_summary"], "auto")
             self.assertFalse(by_slug["gemini-3.7-flash"]["supports_reasoning_summaries"])
+            self.assertEqual(by_slug["gemini-3.7-flash"]["default_reasoning_summary"], "none")
 
             native = self.run_mode(codex_home, "HybridNative", models)
             self.assertIn('default_subagent_model = "gpt-user-choice"', native)

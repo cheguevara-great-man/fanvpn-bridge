@@ -185,12 +185,15 @@ function New-GeminiModelCatalog {
                 $_.slug -is [string] -and $_.slug -notmatch '^gemini-'
             })) {
                 $copy = $officialModel | ConvertTo-Json -Depth 100 | ConvertFrom-Json
-                # Newer Codex clients require this capability bit. Preserve a
-                # newer official value when present; old caches get a safe
-                # default: GPT models expose summaries, other copied entries do
-                # not claim support without an upstream declaration.
-                if (-not $copy.PSObject.Properties['supports_reasoning_summaries']) {
-                    Set-ObjectProperty $copy 'supports_reasoning_summaries' ($copy.slug -match '^gpt-')
+                # Newer Codex clients require this capability bit. GPT models
+                # explicitly expose summaries by default in Bridge catalogs;
+                # other copied entries do not claim support without upstream
+                # metadata.
+                if ($copy.slug -match '^gpt-') {
+                    Set-ObjectProperty $copy 'supports_reasoning_summaries' $true
+                    Set-ObjectProperty $copy 'default_reasoning_summary' 'auto'
+                } elseif (-not $copy.PSObject.Properties['supports_reasoning_summaries']) {
+                    Set-ObjectProperty $copy 'supports_reasoning_summaries' $false
                 }
                 Set-ObjectProperty $copy 'priority' ($models.Count + 1)
                 $models.Add($copy)
@@ -224,6 +227,7 @@ function New-GeminiModelCatalog {
         # Gemini reasoning effort remains available. The Bridge intentionally
         # does not expose Gemini reasoning-summary events to Codex.
         Set-ObjectProperty $model 'supports_reasoning_summaries' $false
+        Set-ObjectProperty $model 'default_reasoning_summary' 'none'
         Set-ObjectProperty $model 'prefer_websockets' $false
         Set-ObjectProperty $model 'use_responses_lite' $false
         Set-ObjectProperty $model 'context_window' 1000000
