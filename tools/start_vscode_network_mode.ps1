@@ -200,27 +200,38 @@ try {
         if ($Mode -eq 'GeminiAccount' -or $Mode -in @('HybridForce', 'HybridConfigured', 'HybridNative')) {
             try {
                 $geminiModels = Invoke-RestMethod 'http://127.0.0.1:18888/gemini-account/v1/models' -Proxy $null -TimeoutSec 15
-            } catch {
-                throw 'Gemini account provider is not ready. Update/restart the Native Host and sign in once with agy-browser.exe.'
-            }
-            if (-not $geminiModels.data) {
-                throw 'Gemini account provider returned no available models.'
-            }
-            $geminiCatalogModels = @($geminiModels.data | Where-Object {
-                $_.id -is [string] -and $_.id -match '^gemini-[a-z0-9.-]+$'
-            } | ForEach-Object {
-                [pscustomobject]@{
-                    id = [string]$_.id
-                    display_name = [string]$_.display_name
-                    default_reasoning_level = [string]$_.default_reasoning_level
-                    supported_reasoning_levels = @($_.supported_reasoning_levels)
+                if (-not $geminiModels.data) {
+                    throw 'Gemini account provider returned no available models.'
                 }
-            })
-            $geminiModelsJson = ConvertTo-Json -InputObject $geminiCatalogModels -Depth 5 -Compress
+                $geminiCatalogModels = @($geminiModels.data | Where-Object {
+                    $_.id -is [string] -and $_.id -match '^gemini-[a-z0-9.-]+$'
+                } | ForEach-Object {
+                    [pscustomobject]@{
+                        id = [string]$_.id
+                        display_name = [string]$_.display_name
+                        default_reasoning_level = [string]$_.default_reasoning_level
+                        supported_reasoning_levels = @($_.supported_reasoning_levels)
+                    }
+                })
+                $geminiModelsJson = ConvertTo-Json -InputObject $geminiCatalogModels -Depth 5 -Compress
+            } catch {
+                Write-Warning 'Gemini model refresh failed; the last valid Gemini catalog will be kept.'
+            }
+        }
+        $openAIModelsJson = $null
+        if ($Mode -in @('HybridForce', 'HybridConfigured', 'HybridNative')) {
+            try {
+                $openAIResponse = Invoke-WebRequest `
+                    'http://127.0.0.1:18888/chatgpt-backend/backend-api/codex/models' `
+                    -Proxy $null -TimeoutSec 20
+                $openAIModelsJson = $openAIResponse.Content
+            } catch {
+                Write-Warning 'OpenAI model refresh failed; the last valid GPT catalog will be kept.'
+            }
         }
         & (Join-Path $PSScriptRoot 'set_vscode_codex_mode.ps1') -Mode $Mode `
             -CodexHome $CodexHome -SettingsPath $SettingsPath -StatePath $StatePath `
-            -GeminiModelsJson $geminiModelsJson
+            -GeminiModelsJson $geminiModelsJson -OpenAIModelsJson $openAIModelsJson
         if ($Mode -eq 'GeminiAccount') {
             Remove-Item Env:CODEX_REFRESH_TOKEN_URL_OVERRIDE -ErrorAction SilentlyContinue
             Remove-Item Env:CODEX_REVOKE_TOKEN_URL_OVERRIDE -ErrorAction SilentlyContinue

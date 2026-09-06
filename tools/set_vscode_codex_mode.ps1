@@ -10,7 +10,9 @@ param(
 
     [string]$StatePath = (Join-Path $env:LOCALAPPDATA 'FanVPNBridge\vscode-codex-endpoint.json'),
 
-    [string]$GeminiModelsJson
+    [string]$GeminiModelsJson,
+
+    [string]$OpenAIModelsJson
 )
 
 $ErrorActionPreference = 'Stop'
@@ -72,6 +74,7 @@ $snapshots = @(
     Save-FileState -Path "$configPath.before-network-mode.bak"
     Save-FileState -Path (Join-Path ([System.IO.Path]::GetFullPath($CodexHome)) 'browser-ai-bridge-gemini-models.json')
     Save-FileState -Path (Join-Path ([System.IO.Path]::GetFullPath($CodexHome)) 'browser-ai-bridge-gemini-available-models.json')
+    Save-FileState -Path (Join-Path ([System.IO.Path]::GetFullPath($CodexHome)) 'browser-ai-bridge-openai-models.json')
     Save-FileState -Path (Join-Path $env:LOCALAPPDATA 'FanVPNBridge\subagent-policy.json')
     Save-FileState -Path $SettingsPath
     Save-FileState -Path "$SettingsPath.before-network-mode.bak"
@@ -81,7 +84,7 @@ $snapshots = @(
 
 try {
     & $networkScript -Mode $effectiveMode -CodexHome $CodexHome `
-        -GeminiModelsJson $GeminiModelsJson
+        -GeminiModelsJson $GeminiModelsJson -OpenAIModelsJson $OpenAIModelsJson
     & $endpointScript -Mode $endpointMode -SettingsPath $SettingsPath -StatePath $StatePath
     & $claudeScript -Mode $claudeMode -SettingsPath $SettingsPath
 } catch {

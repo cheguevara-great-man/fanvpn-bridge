@@ -20,6 +20,17 @@ function Write-StartupLog([string]$Message) {
     Add-Content -LiteralPath $logPath -Value $line -Encoding utf8
 }
 
+function Update-ModelCatalog {
+    $refreshScript = Join-Path $PSScriptRoot 'refresh_model_catalog.ps1'
+    if (-not (Test-Path -LiteralPath $refreshScript -PathType Leaf)) { return }
+    try {
+        & $refreshScript -BridgeBaseUrl 'http://127.0.0.1:18888' 2>&1 |
+            ForEach-Object { Write-StartupLog "CATALOG $_" }
+    } catch {
+        Write-StartupLog "CATALOG deferred: $($_.Exception.Message)"
+    }
+}
+
 if (-not $ChromePath) {
     $candidates = @(
         (Join-Path $env:ProgramFiles 'Google\Chrome\Application\chrome.exe'),
@@ -48,6 +59,7 @@ while ([DateTime]::UtcNow -lt $deadline) {
         )
         if ($readyFlag -and $ready.native_channel_connected -and $ready.executor -eq 'offscreen') {
             Write-StartupLog "READY pid=$($ready.pid) routes=$($ready.routes -join ',')"
+            Update-ModelCatalog
             exit 0
         }
         Write-StartupLog "WAIT status=$($ready.status) native=$($ready.native_channel_connected) executor=$($ready.executor)"
@@ -56,6 +68,7 @@ while ([DateTime]::UtcNow -lt $deadline) {
             $legacy = Invoke-RestMethod -Uri $LegacyHealthUrl -TimeoutSec 3 -Proxy $null
             if ($legacy.status -eq 'ok' -and $legacy.native_channel_connected -and $legacy.executor -eq 'offscreen') {
                 Write-StartupLog 'READY legacy_health=true'
+                Update-ModelCatalog
                 exit 0
             }
         } catch {

@@ -61,7 +61,7 @@ VS Code Codex / Codex CLI
 Windows 电脑需要：
 
 1. `fanvpn-bridge` 仓库切到 `codex/server-executor`；
-2. FanVPN AI Bridge 3.8.5 或更高版本；
+2. FanVPN AI Bridge 3.8.6 或更高版本；
 3. Browser Gateway 和 FanVPN AI Bridge 两个 Chrome 扩展均已加载；
 4. Native Host、Chrome 浏览器链路和 Browser Gateway 代理均正常。
 
@@ -138,7 +138,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 3. 在目标电脑打开 Browser Gateway 插件，输入注册地址和注册码；
 4. 点击“注册这台设备”；若以前已注册，则点击“重新同步到 AI Bridge”。
 
-FanVPN AI Bridge 3.8.5 起会同时生成：
+FanVPN AI Bridge 3.8.6 起会同时生成：
 
 ```text
 %LOCALAPPDATA%\FanVPNBridge\usage-reporting.json
@@ -273,4 +273,3 @@ Codex 模式。运行 `tools\update_native_host.ps1`，刷新扩展并重启 Chr
 - 日志不记录请求正文、用户输入、Cookie、登录 Token 或设备 Token；
 - 停用或撤销设备后，该设备不能继续调用服务器中心 API；
 - 多台设备应遵守 ChatGPT 账号、套餐、组织和公司网络的适用规则。
-

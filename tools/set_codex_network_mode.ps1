@@ -6,7 +6,11 @@ param(
 
     [string]$CodexHome = (Join-Path $HOME '.codex'),
 
-    [string]$GeminiModelsJson
+    [string]$GeminiModelsJson,
+
+    [string]$OpenAIModelsJson,
+
+    [switch]$RefreshCatalogOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -100,6 +104,7 @@ function New-GeminiModelCatalog {
 
     $template = $null
     $cachePath = Join-Path $HomePath 'models_cache.json'
+    $openAICachePath = Join-Path $HomePath 'browser-ai-bridge-openai-models.json'
     if (Test-Path -LiteralPath $cachePath) {
         try {
             $cache = [System.IO.File]::ReadAllText($cachePath) | ConvertFrom-Json
@@ -178,9 +183,14 @@ function New-GeminiModelCatalog {
     $defaultModel = $rankedModels[0].Id
 
     $models = New-Object System.Collections.Generic.List[object]
-    if ($IncludeOpenAI -and (Test-Path -LiteralPath $cachePath)) {
+    $officialCatalogPath = if (Test-Path -LiteralPath $openAICachePath) {
+        $openAICachePath
+    } else {
+        $cachePath
+    }
+    if ($IncludeOpenAI -and (Test-Path -LiteralPath $officialCatalogPath)) {
         try {
-            $officialCache = [System.IO.File]::ReadAllText($cachePath) | ConvertFrom-Json
+            $officialCache = [System.IO.File]::ReadAllText($officialCatalogPath) | ConvertFrom-Json
             foreach ($officialModel in @($officialCache.models | Where-Object {
                 $_.slug -is [string] -and $_.slug -notmatch '^gemini-'
             })) {
@@ -305,6 +315,27 @@ function New-GeminiModelCatalog {
 $isHybrid = $effectiveMode -in @('HybridForce', 'HybridConfigured', 'HybridNative')
 $availableGeminiModels = @()
 $availableModelsCachePath = Join-Path $directory 'browser-ai-bridge-gemini-available-models.json'
+$openAIModelsCachePath = Join-Path $directory 'browser-ai-bridge-openai-models.json'
+if ($isHybrid -and $OpenAIModelsJson) {
+    try {
+        $parsedOpenAI = $OpenAIModelsJson | ConvertFrom-Json
+        $validOpenAIModels = @($parsedOpenAI.models | Where-Object {
+            $_.slug -is [string] -and $_.slug -notmatch '^gemini-' -and
+            $_.model_messages.instructions_template -is [string]
+        })
+    } catch {
+        throw 'OpenAI model catalog is invalid.'
+    }
+    if ($validOpenAIModels.Count -eq 0) {
+        throw 'OpenAI model catalog contains no usable models.'
+    }
+    $openAICacheJson = @{ models = $validOpenAIModels } | ConvertTo-Json -Depth 100
+    [System.IO.File]::WriteAllText(
+        $openAIModelsCachePath,
+        $openAICacheJson,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+}
 if (($effectiveMode -eq 'GeminiAccount' -or $isHybrid) -and $GeminiModelsJson) {
     try {
         $parsedGeminiModels = $GeminiModelsJson | ConvertFrom-Json
@@ -496,6 +527,14 @@ if ($effectiveMode -eq 'GeminiAccount' -or $isHybrid) {
     )
     $content = ($geminiCatalogBlock -join "`r`n") + "`r`n`r`n" +
         $top.TrimStart() + $tables.TrimStart()
+}
+
+if ($RefreshCatalogOnly) {
+    if (-not ($effectiveMode -eq 'GeminiAccount' -or $isHybrid)) {
+        throw 'Catalog-only refresh is supported only for Gemini or Hybrid modes.'
+    }
+    Write-Host "Model catalog refreshed: $catalogPath"
+    return
 }
 
 # Gemini account mode must also change the visible/current model.  Keeping a

@@ -144,6 +144,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\diagnose.ps1
 ## 日常启动
 
 Windows 用户登录时，`FanVPN Bridge Bootstrap` 会在后台启动 Chrome，并等待扩展拉起 Native Host。
+如果当前使用 Gemini 或 Hybrid 模式，启动任务还会自动从 OpenAI 与 Google
+账号接口刷新模型目录。任一接口暂时不可用时会保留该来源上一次成功的目录，
+不会因为断网、登录过期或单侧服务异常清空模型菜单。切换到 Gemini/Hybrid
+模式时也会立即刷新一次，因此新模型不需要手工编辑 JSON。
 它不会替用户开启 FanVPN、选择节点或授予扩展权限；这些仍由当前 Chrome 配置文件中的扩展管理。
 
 如果 Chrome 已经打开，Bridge 通常由扩展自动连接。也可以手动触发登录任务：

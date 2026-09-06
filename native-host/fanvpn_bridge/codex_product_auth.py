@@ -18,6 +18,7 @@ from .contracts import Header, ResolvedRoute
 
 _AUTHENTICATED_PRODUCT_PATHS = frozenset(
     {
+        "/backend-api/codex/models",
         "/backend-api/ps/mcp",
         "/backend-api/wham/apps",
     }
