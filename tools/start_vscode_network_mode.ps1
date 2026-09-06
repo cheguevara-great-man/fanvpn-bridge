@@ -170,6 +170,26 @@ $snapshots = @(
 )
 $directProxyWasRunning = Test-DirectProxyHealthy
 
+function Get-CodexClientVersion {
+    foreach ($commandName in @('codex.exe', 'codex')) {
+        try {
+            $command = Get-Command $commandName -ErrorAction Stop
+            $versionText = & $command.Source --version 2>$null
+            if ([string]$versionText -match '(?<version>\d+\.\d+\.\d+)') {
+                return $Matches['version']
+            }
+        } catch {}
+    }
+    $cachePath = Join-Path ([System.IO.Path]::GetFullPath($CodexHome)) 'models_cache.json'
+    if (Test-Path -LiteralPath $cachePath -PathType Leaf) {
+        try {
+            $cachedVersion = ([System.IO.File]::ReadAllText($cachePath) | ConvertFrom-Json).client_version
+            if ([string]$cachedVersion -match '^\d+\.\d+\.\d+$') { return [string]$cachedVersion }
+        } catch {}
+    }
+    return '0.153.0'
+}
+
 try {
     if ($Mode -eq 'Direct') {
         Start-DirectProxy
@@ -221,9 +241,10 @@ try {
         $openAIModelsJson = $null
         if ($Mode -in @('HybridForce', 'HybridConfigured', 'HybridNative')) {
             try {
+                $clientVersion = [Uri]::EscapeDataString((Get-CodexClientVersion))
                 $openAIResponse = Invoke-WebRequest `
-                    'http://127.0.0.1:18888/chatgpt-backend/backend-api/codex/models' `
-                    -Proxy $null -TimeoutSec 20
+                    "http://127.0.0.1:18888/chatgpt-backend/backend-api/codex/models?client_version=$clientVersion" `
+                    -Proxy $null -TimeoutSec 20 -UseBasicParsing
                 $openAIModelsJson = $openAIResponse.Content
             } catch {
                 Write-Warning 'OpenAI model refresh failed; the last valid GPT catalog will be kept.'
