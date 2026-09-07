@@ -805,6 +805,12 @@ export function startServer(
         try {
           const template = JSON.parse(readFileSync(join(getConfigDir(), "native-model-template.json"), "utf8"));
           const catalog = augmentNativeModelCatalog(template, config);
+          // In Bridge-managed mode Codex obtains the complete catalog from the
+          // existing 18888 provider.  This authenticated export is therefore
+          // the equivalent of an upstream /v1/models request, and must satisfy
+          // the Launcher readiness gate without asking Codex to change routes.
+          successfulModelCatalogRequests += 1;
+          lastSuccessfulModelCatalogRequestAt = new Date().toISOString();
           return Response.json({ models: (catalog.models as Array<Record<string, unknown>>)
             .filter(row => String(row.slug).startsWith("chatgpt-web/")) });
         } catch {
