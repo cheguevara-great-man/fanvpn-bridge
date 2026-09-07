@@ -310,6 +310,42 @@ test("launcher liveness verification checks only owned process and loopback CDP 
   }
 });
 
+test("launcher liveness waits briefly for Electron DevTools to bind after the descriptor exists", async () => {
+  let requests = 0;
+  const server = createServer((request, response) => {
+    requests += 1;
+    expect(request.url).toBe("/json/version");
+    if (requests < 3) {
+      response.writeHead(503, { "content-type": "text/plain" });
+      response.end("starting");
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({
+      webSocketDebuggerUrl: "ws://127.0.0.1:39120/devtools/browser/test",
+    }));
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test server has no port");
+    const path = descriptorFile(
+      "http://127.0.0.1:39111",
+      "production",
+      `http://127.0.0.1:${address.port}`,
+    );
+    await expect(inspectLauncherBrowserHostLiveness(path, { timeoutMs: 1_000 })).resolves.toMatchObject({
+      profile: "production",
+    });
+    expect(requests).toBe(3);
+  } finally {
+    await new Promise<void>(resolveClose => server.close(() => resolveClose()));
+  }
+});
+
 test("launcher session verification reports its own deadline instead of a generic abort", async () => {
   const server = createServer(async (request, response) => {
     for await (const _chunk of request) { /* consume request */ }

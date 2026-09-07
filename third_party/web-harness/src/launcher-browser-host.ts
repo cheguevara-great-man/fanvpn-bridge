@@ -165,20 +165,35 @@ export function readLauncherBrowserHostDescriptor(configuredPath: string): Launc
 }
 
 async function assertCdpReady(descriptor: LauncherBrowserHostDescriptor, timeoutMs: number): Promise<void> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(`${descriptor.endpoint}/json/version`, { signal: controller.signal });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const body = await response.json() as Record<string, unknown>;
-    if (typeof body.webSocketDebuggerUrl !== "string" || !body.webSocketDebuggerUrl.startsWith("ws://127.0.0.1:")) {
-      throw new Error("CDP metadata did not expose a loopback WebSocket endpoint");
+  // Electron writes the owner descriptor before Chromium has necessarily bound its
+  // DevTools HTTP listener.  A one-shot probe made immediately after sign-in made
+  // an otherwise successful login look like a failure on slower Windows starts.
+  // Keep the descriptor process-bound and loopback-only, but retry the readiness
+  // probe inside the caller's existing deadline rather than introducing a sleep.
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+  do {
+    const remainingMs = Math.max(1, deadline - Date.now());
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Math.min(1_000, remainingMs));
+    try {
+      const response = await fetch(`${descriptor.endpoint}/json/version`, { signal: controller.signal });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const body = await response.json() as Record<string, unknown>;
+      if (typeof body.webSocketDebuggerUrl !== "string" || !body.webSocketDebuggerUrl.startsWith("ws://127.0.0.1:")) {
+        throw new Error("CDP metadata did not expose a loopback WebSocket endpoint");
+      }
+      return;
+    } catch (error) {
+      lastError = error;
+    } finally {
+      clearTimeout(timer);
     }
-  } catch (error) {
-    throw new Error(`Launcher browser CDP endpoint is not ready: ${error instanceof Error ? error.message : String(error)}`);
-  } finally {
-    clearTimeout(timer);
-  }
+    if (Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
+  } while (Date.now() < deadline);
+  throw new Error(
+    `Launcher browser CDP endpoint is not ready: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+  );
 }
 
 export async function inspectLauncherBrowserHostLiveness(
