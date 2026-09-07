@@ -4,6 +4,8 @@
   "title": "FanVPN Bridge Native Messaging Protocol v1",
   "description": "Versioned envelopes exchanged between the native host and the Chrome extension.",
   "oneOf": [
+    { "$ref": "#/$defs/controlWebHarness" },
+    { "$ref": "#/$defs/controlWebHarnessResult" },
     { "$ref": "#/$defs/hello" },
     { "$ref": "#/$defs/helloAck" },
     { "$ref": "#/$defs/requestHead" },
@@ -37,6 +39,29 @@
     { "$ref": "#/$defs/controlUpdateResult" }
   ],
   "$defs": {
+    "controlWebHarness": {
+      "type": "object",
+      "required": ["v", "type", "id"],
+      "properties": {
+        "v": { "const": 1 },
+        "type": { "enum": ["control.web_harness.get", "control.web_harness.open", "control.web_harness.refresh", "control.web_harness.system", "control.web_harness.gateway"] },
+        "id": { "$ref": "#/$defs/requestId" }
+      },
+      "additionalProperties": false
+    },
+    "controlWebHarnessResult": {
+      "type": "object",
+      "required": ["v", "type", "id", "ok"],
+      "properties": {
+        "v": { "const": 1 },
+        "type": { "const": "control.web_harness.result" },
+        "id": { "$ref": "#/$defs/requestId" },
+        "ok": { "type": "boolean" },
+        "state": { "type": "object" },
+        "message": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
     "protocolVersion": { "const": 1 },
     "requestId": {
       "type": "string",
@@ -532,7 +557,7 @@
       ]
     },
     "updateProject": {
-      "enum": ["fanvpn-bridge", "browser-gateway"]
+      "enum": ["fanvpn-bridge", "browser-gateway", "web-harness"]
     },
     "controlUpdateStatus": {
       "allOf": [
@@ -560,7 +585,7 @@
             "type": { "const": "control.update.start" },
             "id": { "$ref": "#/$defs/requestId" },
             "project": { "$ref": "#/$defs/updateProject" },
-            "commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+            "commit": { "type": "string", "pattern": "^([a-f0-9]{40}|[a-f0-9]{64})$" },
             "install_root": { "type": "string", "maxLength": 4096 }
           },
           "additionalProperties": false

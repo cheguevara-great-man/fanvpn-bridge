@@ -13,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Iterable, cast
 from urllib.parse import urlsplit
+from .web_harness import WebHarnessError, clean_web_history, is_web_model, relay_web_response
 
 
 _LOG = logging.getLogger("fanvpn_bridge.server_client")
@@ -153,6 +154,21 @@ class ServerClientRequestHandler(BaseHTTPRequestHandler):
             if not _allowed_request(method, relative_path):
                 raise ServerClientError("route_not_found")
             body = self._body()
+            if method == "POST" and relative_path in {"/responses", "/responses/compact"}:
+                try:
+                    payload = json.loads(body)
+                except (ValueError, UnicodeError):
+                    raise ServerClientError("invalid_request_json")
+                if isinstance(payload, dict) and is_web_model(payload.get("model")):
+                    relay_web_response(self, method, relative_path, body)
+                    return
+                if isinstance(payload, dict):
+                    try:
+                        cleaned = clean_web_history(payload)
+                    except WebHarnessError as exc:
+                        raise ServerClientError("invalid_web_history") from exc
+                    if cleaned is not payload:
+                        body = json.dumps(cleaned, ensure_ascii=False).encode("utf-8")
             self._relay(method, relative_path + query, body, request_id)
         except ServerClientError as error:
             self.close_connection = True

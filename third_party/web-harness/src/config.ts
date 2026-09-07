@@ -226,7 +226,7 @@ export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
     version: 3,
     releaseVersion: VERSION,
     mode,
-    subagentProtocol: "compatibility-v1",
+    subagentProtocol: process.env.BRIDGE_WEB_MANAGED === "1" ? "native" : "compatibility-v1",
     host: "127.0.0.1",
     port: 17841,
     contextWindow: 256_000,

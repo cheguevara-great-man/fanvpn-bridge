@@ -35,6 +35,12 @@ const builderArgs = [
   "--publish",
   "never",
 ];
+// Reuse the version-pinned dependency installed by the frozen lockfile.
+// This avoids downloading the same Electron runtime a second time.
+const localElectron = path.join(root, "node_modules", "electron", "dist");
+if (process.platform === "win32" && fs.existsSync(path.join(localElectron, "electron.exe"))) {
+  builderArgs.push(`--config.electronDist=${localElectron}`);
+}
 if (target === "--mac" && !env.CSC_LINK && !env.CSC_NAME) {
   builderArgs.push("--config.mac.identity=-");
 }

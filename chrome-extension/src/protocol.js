@@ -25,6 +25,7 @@ export const MessageType = Object.freeze({
   CONTROL_MODE_GET: "control.mode.get",
   CONTROL_MODE_SET: "control.mode.set",
   CONTROL_MODE_RESULT: "control.mode.result",
+  CONTROL_WEB_HARNESS_RESULT: "control.web_harness.result",
   CONTROL_SERVER_EXECUTOR_GET: "control.server_executor.get",
   CONTROL_SERVER_EXECUTOR_SET: "control.server_executor.set",
   CONTROL_SERVER_EXECUTOR_RESULT: "control.server_executor.result",

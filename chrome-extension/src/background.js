@@ -24,6 +24,7 @@ const UPDATE_CHUNK_BYTES = 192 * 1024;
 const UPDATE_PROJECTS = Object.freeze({
   "fanvpn-bridge": "cheguevara-great-man/fanvpn-bridge",
   "browser-gateway": "cheguevara-great-man/browser-gateway",
+  "web-harness": "cheguevara-great-man/fanvpn-bridge",
 });
 
 let nativePort = null;
@@ -190,6 +191,7 @@ async function handleNativeMessage(message, port) {
   }
   if (
     message.type === MessageType.CONTROL_MODE_RESULT ||
+    message.type === MessageType.CONTROL_WEB_HARNESS_RESULT ||
     message.type === MessageType.CONTROL_SERVER_EXECUTOR_RESULT ||
     message.type === MessageType.CONTROL_ANTIGRAVITY_RESULT ||
     message.type === MessageType.CONTROL_DEVICE_RESULT ||
@@ -407,6 +409,23 @@ async function requestAntigravityControl(kind) {
   });
 }
 
+async function requestWebHarnessControl(action) {
+  await waitForNativeHandshake();
+  const id = crypto.randomUUID().replaceAll("-", "");
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pendingControls.delete(id);
+      reject(new Error("网页执行器控制超时，请检查 Native Host 版本"));
+    }, 15000);
+    pendingControls.set(id, { resolve, reject, timeout });
+    if (!postNative(envelope(`control.web_harness.${action}`, { id }))) {
+      pendingControls.delete(id);
+      clearTimeout(timeout);
+      reject(new Error("Native Host 当前不可用"));
+    }
+  });
+}
+
 async function requestDeviceControl(kind, config = null) {
   await waitForNativeHandshake();
   const id = crypto.randomUUID().replaceAll("-", "");
@@ -487,7 +506,7 @@ async function requestSoftwareUpdate(project, installRoot = "") {
   const repository = UPDATE_PROJECTS[project];
   if (!repository) throw new Error("不支持的软件更新项目");
   await waitForNativeHandshake();
-  const archive = await downloadUpdateArchive(repository);
+  const archive = project === "web-harness" ? await downloadWebHarnessArchive(repository) : await downloadUpdateArchive(repository);
   const id = crypto.randomUUID().replaceAll("-", "");
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -529,6 +548,38 @@ async function downloadUpdateArchive(repository) {
   const bytes = new Uint8Array(await response.arrayBuffer());
   if (bytes.byteLength === 0 || bytes.byteLength > 64 * 1024 * 1024) throw new Error("更新包大小异常");
   return { commit, bytes };
+}
+
+async function downloadWebHarnessArchive(repository) {
+  const base = `https://github.com/${repository}/releases/download/web-harness-v5.0.4-bridge.1/`;
+  const metadata = await fetch(base + "web-harness-release.json", { cache: "no-store" });
+  if (!metadata.ok) throw new Error(`网页执行器安装包尚不可用（HTTP ${metadata.status}）`);
+  const manifest = await metadata.json();
+  if (!/^web-harness-[0-9A-Za-z.-]+-win-x64\.zip$/.test(manifest.filename || "")
+      || !/^[a-f0-9]{64}$/.test(manifest.sha256 || "") || manifest.executable !== "WebHarness.exe") {
+    throw new Error("网页执行器发布信息无效");
+  }
+  const response = await fetch(base + manifest.filename, { cache: "no-store" });
+  if (!response.ok) throw new Error(`无法下载网页执行器（HTTP ${response.status}）`);
+  const chunks = [];
+  let size = 0;
+  const reader = response.body.getReader();
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > 512 * 1024 * 1024) throw new Error("网页执行器安装包过大");
+      chunks.push(value);
+    }
+  } catch (error) { await reader.cancel(); throw error; }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  const sha256 = [...digest].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  if (sha256 !== manifest.sha256) throw new Error("网页执行器安装包校验失败");
+  return { commit: sha256, bytes };
 }
 
 async function sendUpdateArchive(id, bytes) {
@@ -640,6 +691,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     requestServerExecutorControl("get")
       .then(sendResponse)
       .catch((error) => sendResponse({ ok: false, state: { mode: "browser_chain" }, message: error.message }));
+    return true;
+  }
+  if (message?.target === "background" && ["web-harness:get", "web-harness:open", "web-harness:refresh", "web-harness:system", "web-harness:gateway"].includes(message.kind)) {
+    requestWebHarnessControl(message.kind.split(":")[1])
+      .then(sendResponse).catch(error => sendResponse({ ok: false, message: error.message }));
     return true;
   }
   if (message?.target === "background" && message.kind === "server-executor:set") {

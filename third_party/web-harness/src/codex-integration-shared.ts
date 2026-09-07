@@ -247,11 +247,13 @@ export function getCodexHome(): string {
 }
 
 export function getCodexConfigPath(): string {
-  return join(getCodexHome(), "config.toml");
+  return join(process.env.BRIDGE_WEB_MANAGED === "1"
+    ? join(getConfigDir(), "integration") : getCodexHome(), "config.toml");
 }
 
 export function getCodexModelsCachePath(): string {
-  return join(getCodexHome(), "models_cache.json");
+  return join(process.env.BRIDGE_WEB_MANAGED === "1"
+    ? join(getConfigDir(), "integration") : getCodexHome(), "models_cache.json");
 }
 
 export function getCodexJournalPath(): string {

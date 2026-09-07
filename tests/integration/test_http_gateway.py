@@ -8,6 +8,7 @@ import time
 import unittest
 from pathlib import Path
 import tempfile
+from unittest.mock import patch
 
 from fanvpn_bridge.config import parse_config
 from fanvpn_bridge.dispatcher import NativeDispatcher
@@ -208,6 +209,18 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
             health["routes"],
             ["chatgpt-backend", "chatgpt-codex", "gemini", "openai"],
         )
+
+    def test_web_model_and_compaction_never_reach_official_dispatcher(self) -> None:
+        def local_reply(handler, method, suffix, body):
+            handler._send_json(200, {"local": True, "suffix": suffix})
+        with patch("fanvpn_bridge.http_server.relay_web_response", side_effect=local_reply):
+            for suffix in ("/responses", "/responses/compact"):
+                status, _, body = self.request("POST", "/hybrid/v1" + suffix,
+                    json.dumps({"model": "chatgpt-web/light", "input": "hello"}).encode(),
+                    {"content-type": "application/json"})
+                self.assertEqual(status, 200)
+                self.assertEqual(json.loads(body), {"local": True, "suffix": suffix})
+        self.assertEqual(self.upstream_counts, {})
 
     def test_hybrid_routes_gpt_and_gemini_by_model(self) -> None:
         status, _headers, body = self.request(

@@ -41,9 +41,10 @@
     "fast-uri": "3.1.6"
   },
   "build": {
-    "appId": "dev.codexwebgpt.launcher",
-    "productName": "Codex Web GPT",
-    "artifactName": "codex-web-gpt-${version}-${os}-${arch}.${ext}",
+    "appId": "dev.browseraibridge.webharness",
+    "productName": "WebHarness",
+    "executableName": "WebHarness",
+    "artifactName": "web-harness-${version}-${os}-${arch}.${ext}",
     "asar": true,
     "asarUnpack": [
       "assets/linux-appimage-runner.sh"
@@ -76,7 +77,7 @@
     },
     "win": {
       "icon": "assets/icon.ico",
-      "target": ["nsis"]
+      "target": ["zip"]
     },
     "linux": {
       "category": "Development",

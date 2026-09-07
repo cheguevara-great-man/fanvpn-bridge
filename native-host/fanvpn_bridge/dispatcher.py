@@ -33,6 +33,7 @@ from .server_executor_control import (
 )
 from .subagent_config import SubagentConfigurationController, SubagentConfigError
 from .update_control import LocalUpdateController, UpdateControlError
+from .web_harness import WebHarnessController, WebHarnessError
 from .protocol import (
     FlowWindow,
     PROTOCOL_VERSION,
@@ -43,7 +44,7 @@ from .protocol import (
 )
 
 
-HOST_VERSION = "3.8.7"
+HOST_VERSION = "3.9.0"
 _LOG = logging.getLogger("fanvpn_bridge.dispatcher")
 _LOG.addHandler(logging.NullHandler())
 
@@ -311,6 +312,16 @@ class NativeDispatcher:
         if message_type in {"control.mode.get", "control.mode.set"}:
             self._start_mode_control(message_type, message)
             return
+        if message_type in {"control.web_harness.get", "control.web_harness.open", "control.web_harness.refresh", "control.web_harness.system", "control.web_harness.gateway"}:
+            request_id = message.get("id")
+            if not isinstance(request_id, str) or not 16 <= len(request_id) <= 64 or not all(
+                character.isalnum() or character in "_-" for character in request_id
+            ):
+                raise BridgeError(ErrorCode.PROTOCOL_VIOLATION, "Invalid control request id")
+            threading.Thread(target=self._run_web_harness_control,
+                             args=(request_id, message_type.rsplit(".", 1)[1]),
+                             name="web-harness-control", daemon=True).start()
+            return
         if message_type in {"control.server_executor.get", "control.server_executor.set"}:
             self._start_server_executor_control(message_type, message)
             return
@@ -463,7 +474,8 @@ class NativeDispatcher:
             data = base64.b64decode(encoded, validate=True)
         except (ValueError, base64.binascii.Error) as exc:
             raise BridgeError(ErrorCode.PROTOCOL_VIOLATION, "Update data is not valid base64") from exc
-        if len(data) > 256 * 1024 or pending.bytes_written + len(data) > 64 * 1024 * 1024:
+        limit = (512 if pending.project == "web-harness" else 64) * 1024 * 1024
+        if len(data) > 256 * 1024 or pending.bytes_written + len(data) > limit:
             raise BridgeError(ErrorCode.MESSAGE_TOO_LARGE, "Update package exceeds the allowed size")
         pending.archive_handle.write(data)
         pending.bytes_written += len(data)
@@ -506,6 +518,26 @@ class NativeDispatcher:
                 Path(pending.archive_path).unlink(missing_ok=True)
             except OSError:
                 pass
+            self._control_lock.release()
+
+    def _run_web_harness_control(self, request_id: str, action: str) -> None:
+        if not self._control_lock.acquire(blocking=False):
+            self._channel.send(envelope("control.web_harness.result", id=request_id,
+                                        ok=False, message="另一个组件操作正在进行"))
+            return
+        try:
+            controller = WebHarnessController()
+            if action in {"system", "gateway"}:
+                state = controller.configure_network(action)
+            else:
+                state = controller.open() if action == "open" else controller.refresh_catalog() if action == "refresh" else controller.status()
+            self._channel.send(envelope("control.web_harness.result", id=request_id, ok=True, state=state))
+        except WebHarnessError as error:
+            self._channel.send(envelope("control.web_harness.result", id=request_id, ok=False, message=str(error)))
+        except Exception:
+            self._channel.send(envelope("control.web_harness.result", id=request_id, ok=False,
+                                        message="网页执行器未安装或无法启动，请检查安装状态"))
+        finally:
             self._control_lock.release()
 
     def _start_mode_control(self, message_type: str, message: Mapping[str, object]) -> None:

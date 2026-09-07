@@ -14,7 +14,9 @@ const {
   screen,
   shell,
   Tray,
+  session,
 } = require("electron");
+const { configureBridgeNetwork } = require("./bridge-network.cjs");
 const { BrowserHost, navigationErrorForLog } = require("./browser-host.cjs");
 const { BrowserControlServer } = require("./control-server.cjs");
 const { getAutostart, setAutostart } = require("./autostart.cjs");
@@ -43,6 +45,11 @@ const {
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 const SOURCE_ROOT = path.resolve(__dirname, "../..");
+// This distribution is always Bridge-managed, including shortcut/autostart
+// launches which do not inherit the Native Host's environment.
+process.env.BRIDGE_WEB_MANAGED = "1";
+process.env.CODEX_CHATGPT_WEB_HOME ||= path.join(process.env.LOCALAPPDATA || app.getPath("appData"), "BrowserAIBridge", "WebHarness");
+process.env.CODEX_WEB_GPT_LAUNCHER_DATA_DIR ||= path.join(process.env.CODEX_CHATGPT_WEB_HOME, "browser");
 const LAUNCHER_PROFILE = resolveLauncherProfile({ appData: app.getPath("appData") });
 const IS_DEV_PROFILE = LAUNCHER_PROFILE.kind === DEVELOPMENT_PROFILE;
 const CORE_HOME = LAUNCHER_PROFILE.coreHome;
@@ -929,6 +936,7 @@ async function start() {
   app.commandLine.appendSwitch("remote-debugging-port", String(cdpPort));
 
   await app.whenReady();
+  await configureBridgeNetwork({ app, session, coreHome: CORE_HOME, partition: LAUNCHER_PROFILE.browserPartition });
 
   const stateStore = createStateStore(path.join(app.getPath("userData"), "launcher-state.json"));
   if (IS_DEV_PROFILE && !stateStore.read().onboardingComplete) {
@@ -1025,7 +1033,7 @@ async function start() {
     currentVersion: app.getVersion(),
     platform: process.platform,
     arch: process.arch,
-    packaged: app.isPackaged && !IS_DEV_PROFILE,
+    packaged: app.isPackaged && !IS_DEV_PROFILE && process.env.BRIDGE_WEB_MANAGED !== "1",
     executablePath: process.execPath,
     runtimeExecutable: updaterRuntimeRoot
       ? runtimeBundlePaths(updaterRuntimeRoot, process.platform).executable

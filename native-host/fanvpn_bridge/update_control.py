@@ -73,6 +73,15 @@ class LocalUpdateController:
         commit: str,
         install_root: str | None = None,
     ) -> dict[str, object]:
+        if project == "web-harness":
+            from .web_harness_install import install_archive
+            from .web_harness import WebHarnessError
+            if install_root:
+                raise UpdateControlError("WebHarness uses its isolated per-user runtime directory")
+            try:
+                return {"project": project, **install_archive(archive, commit)}
+            except WebHarnessError as error:
+                raise UpdateControlError(str(error)) from error
         if project not in SUPPORTED_PROJECTS:
             raise UpdateControlError("Unsupported update project")
         if not _is_commit(commit):

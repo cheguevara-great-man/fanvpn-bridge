@@ -48,6 +48,9 @@ import { namespacedToolName, type AdapterEvent, type CodexParsedRequest } from "
 import type { CodexProviderConfig } from "./types";
 import type { ProviderAdapter } from "./adapters/base";
 import { VERSION } from "./version";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { getConfigDir } from "./config";
 
 type HttpTrackedEndpoint = "models" | "responses" | "compact" | "search" | "unspecified";
 
@@ -788,7 +791,27 @@ export function startServer(
     idleTimeout: 0,
     async fetch(req) {
       const url = new URL(req.url);
-      if (req.method === "GET" && url.pathname === "/healthz") {
+      if (process.env.BRIDGE_WEB_MANAGED === "1" && url.pathname.startsWith("/bridge/")) {
+        const actual = Buffer.from(req.headers.get("x-bridge-web-token") || "");
+        const expected = Buffer.from(config.controlToken);
+        if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
+          return new Response("Unauthorized", { status: 401 });
+        }
+        if (url.pathname.startsWith("/bridge/v1/")) url.pathname = url.pathname.slice("/bridge".length);
+      }
+      // Bridge owns the real Codex catalog. Export only Web rows using the
+      // caller's schema template, without requesting or forwarding login tokens.
+      if (process.env.BRIDGE_WEB_MANAGED === "1" && req.method === "GET" && url.pathname === "/bridge/models") {
+        try {
+          const template = JSON.parse(readFileSync(join(getConfigDir(), "native-model-template.json"), "utf8"));
+          const catalog = augmentNativeModelCatalog(template, config);
+          return Response.json({ models: (catalog.models as Array<Record<string, unknown>>)
+            .filter(row => String(row.slug).startsWith("chatgpt-web/")) });
+        } catch {
+          return Response.json({ error: { code: "web_catalog_template_unavailable" } }, { status: 503 });
+        }
+      }
+      if (req.method === "GET" && ["/healthz", "/bridge/health"].includes(url.pathname)) {
         return Response.json({
           status: "ok",
           service: "codex-chatgpt-web",

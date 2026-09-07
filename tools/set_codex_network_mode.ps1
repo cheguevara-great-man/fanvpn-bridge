@@ -300,6 +300,17 @@ function New-GeminiModelCatalog {
         $models.Add($model)
     }
 
+    $webCatalogPath = Join-Path $HomePath 'browser-ai-bridge-web-models.json'
+    if ($IncludeOpenAI -and (Test-Path -LiteralPath $webCatalogPath)) {
+        try {
+            $webCatalog = [IO.File]::ReadAllText($webCatalogPath) | ConvertFrom-Json
+            foreach ($webModel in @($webCatalog.models)) {
+                if ($webModel.slug -is [string] -and $webModel.slug.StartsWith('chatgpt-web/')) {
+                    $models.Add($webModel)
+                }
+            }
+        } catch { Write-Warning 'WebHarness model cache could not be read; native models are unchanged.' }
+    }
     $catalogJson = @{ models = $models.ToArray() } | ConvertTo-Json -Depth 100
     $temporaryCatalog = "$TargetPath.tmp.$PID"
     $utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)

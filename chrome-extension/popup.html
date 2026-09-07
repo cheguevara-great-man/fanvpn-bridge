@@ -104,6 +104,17 @@
     <div id="antigravity-note">CLI 按会话自动启动，不需要常驻。</div>
       <div class="hint">首次配置或需要更新时点击。完成后只需重启一次 VS Code。</div>
 
+    <h2>ChatGPT 网页执行器</h2>
+    <button type="button" id="web-harness-install">安装 / 更新 WebHarness</button>
+    <button type="button" id="web-harness-open">打开 WebHarness</button>
+    <button type="button" id="web-harness-refresh">配置完成后刷新网页模型</button>
+    <details><summary>网页执行器网络（退出执行器后设置）</summary>
+      <button type="button" data-web-network="system">使用系统网络 / Clash</button>
+      <button type="button" data-web-network="gateway">使用已保存的服务器代理</button>
+      <div class="hint">服务器代理使用本机已保存的 direct-proxy.json；不自动继承 Chrome 的代理设置，也不改变旧链路。</div>
+    </details>
+    <div class="hint" id="web-harness-status">独立本地网页会话；在执行器中配置自动模式或手动模式（Zero Risk）。该名称不代表零风险保证。</div>
+
     <h2>安装与升级</h2>
     <details id="software-update-settings">
       <summary>一键更新本机组件</summary>

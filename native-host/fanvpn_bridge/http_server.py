@@ -42,6 +42,7 @@ from .product_cache import CachedResponse, ProductResponseCache
 from .routing import RouteTable
 from .subagent_policy import SubagentPolicyStore
 from .usage_reporting import RequestUsageMetadata, TokenUsage, UsageExtractor, UsageReporter
+from .web_harness import WebHarnessError, clean_web_history, is_web_model, relay_web_response
 
 
 _HOP_BY_HOP = {
@@ -254,7 +255,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                     else:
                         self._send_json(200, provider.models_response())
                     return
-                if hybrid_path.endswith("/responses") and method == "POST":
+                if hybrid_path in {"/hybrid/v1/responses", "/hybrid/v1/responses/compact"} and method == "POST":
                     preloaded_body = b"".join(
                         self._request_body(
                             server.bridge_config.protocol.max_chunk_bytes,
@@ -274,10 +275,19 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                             ErrorCode.REQUEST_BODY_INVALID,
                             "Hybrid Responses request must be a JSON object",
                         )
+                    if is_web_model(hybrid_payload.get("model")):
+                        # Local web turns never enter the OpenAI account quota
+                        # reporter or acquire its Authorization header.
+                        relay_web_response(self, method, hybrid_path[len("/hybrid/v1"):], preloaded_body)
+                        return
+                    try:
+                        hybrid_payload = clean_web_history(hybrid_payload)
+                    except WebHarnessError as exc:
+                        raise BridgeError(ErrorCode.REQUEST_BODY_INVALID, str(exc)) from exc
                     local_headers = self._request_headers()
                     applied = (
                         server.subagent_policy.apply(hybrid_payload, local_headers)
-                        if server.subagent_policy is not None
+                        if server.subagent_policy is not None and hybrid_path.endswith("/responses")
                         else None
                     )
                     if applied is not None:
@@ -292,10 +302,10 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                         hybrid_payload, ensure_ascii=False, separators=(",", ":")
                     ).encode("utf-8")
                     requested_model = str(hybrid_payload.get("model") or "").strip()
-                    if requested_model.startswith("gemini-"):
+                    if requested_model.startswith("gemini-") and hybrid_path.endswith("/responses"):
                         self._handle_gemini_payload(server, hybrid_payload, request_id)
                         return
-                    local_target = "/chatgpt-codex/responses"
+                    local_target = "/chatgpt-codex" + hybrid_path[len("/hybrid/v1"):]
                 else:
                     # Compaction and future non-model endpoints remain on the
                     # native ChatGPT Codex route. They are product lifecycle

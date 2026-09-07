@@ -1,6 +1,47 @@
 import { applyBusyState } from "./popup_controls.js";
 
 const native = document.getElementById("native");
+for (const button of document.querySelectorAll("[data-web-network]")) {
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    try {
+      const result = await chrome.runtime.sendMessage({ target: "background", kind: `web-harness:${button.dataset.webNetwork}` });
+      document.getElementById("web-harness-status").textContent = result.ok ? "网络设置已保存，下次启动 WebHarness 生效。" : result.message;
+    } catch (error) { document.getElementById("web-harness-status").textContent = error.message; }
+    finally { button.disabled = false; }
+  });
+}
+document.getElementById("web-harness-install")?.addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  const label = document.getElementById("web-harness-status");
+  button.disabled = true;
+  label.textContent = "正在下载并校验安装包，请保持此窗口打开。升级前请退出 WebHarness。";
+  try {
+    const result = await chrome.runtime.sendMessage({ target: "background", kind: "software-update:run", project: "web-harness" });
+    label.textContent = result.ok ? "安装完成，点击打开 WebHarness。" : result.message;
+  } catch (error) { label.textContent = error.message; }
+  finally { button.disabled = false; }
+});
+document.getElementById("web-harness-refresh")?.addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    const result = await chrome.runtime.sendMessage({ target: "background", kind: "web-harness:refresh" });
+    document.getElementById("web-harness-status").textContent = result.ok
+      ? `已合并 ${result.state.models} 个网页模型；重启 Codex 后选择 chatgpt-web 模型。` : result.message;
+  } catch (error) { document.getElementById("web-harness-status").textContent = error.message; }
+  finally { button.disabled = false; }
+});
+document.getElementById("web-harness-open")?.addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  const label = document.getElementById("web-harness-status");
+  button.disabled = true;
+  try {
+    const result = await chrome.runtime.sendMessage({ target: "background", kind: "web-harness:open" });
+    label.textContent = result.ok ? "已打开执行器。首次使用请完成登录和 Connector 配置。" : result.message;
+  } catch (error) { label.textContent = error.message; }
+  finally { button.disabled = false; }
+});
 const handshake = document.getElementById("handshake");
 const executor = document.getElementById("executor");
 const siteAccess = document.getElementById("site-access");
