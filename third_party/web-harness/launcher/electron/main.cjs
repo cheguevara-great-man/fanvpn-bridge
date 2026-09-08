@@ -16,7 +16,7 @@ const {
   Tray,
   session,
 } = require("electron");
-const { configureBridgeNetwork } = require("./bridge-network.cjs");
+const { applyBridgeBrowserNetwork, prepareBridgeNetwork } = require("./bridge-network.cjs");
 const { BrowserHost, navigationErrorForLog } = require("./browser-host.cjs");
 const { BrowserControlServer } = require("./control-server.cjs");
 const { getAutostart, setAutostart } = require("./autostart.cjs");
@@ -48,8 +48,14 @@ const SOURCE_ROOT = path.resolve(__dirname, "../..");
 // This distribution is always Bridge-managed, including shortcut/autostart
 // launches which do not inherit the Native Host's environment.
 process.env.BRIDGE_WEB_MANAGED = "1";
+const IS_BRIDGE_MANAGED = process.env.BRIDGE_WEB_MANAGED === "1";
 process.env.CODEX_CHATGPT_WEB_HOME ||= path.join(process.env.LOCALAPPDATA || app.getPath("appData"), "BrowserAIBridge", "WebHarness");
 process.env.CODEX_WEB_GPT_LAUNCHER_DATA_DIR ||= path.join(process.env.CODEX_CHATGPT_WEB_HOME, "browser");
+// FanVPN owns the real Codex provider and unified model catalog. Upstream's
+// setup still needs a Codex-shaped target, but it must be a private staging
+// home so a failed WebHarness install can never change login or routing.
+process.env.CODEX_HOME = path.join(process.env.CODEX_CHATGPT_WEB_HOME, "integration");
+const BRIDGE_NETWORK = prepareBridgeNetwork({ app, coreHome: process.env.CODEX_CHATGPT_WEB_HOME });
 const LAUNCHER_PROFILE = resolveLauncherProfile({ appData: app.getPath("appData") });
 const IS_DEV_PROFILE = LAUNCHER_PROFILE.kind === DEVELOPMENT_PROFILE;
 const CORE_HOME = LAUNCHER_PROFILE.coreHome;
@@ -431,6 +437,7 @@ function registerIpc({ logger, stateStore }) {
   const handle = (channel, handler) => registerLoggedIpc(ipcMain, logger, channel, handler);
   handle("launcher:snapshot", async () => ({
     profile: LAUNCHER_PROFILE.kind,
+    bridgeManaged: IS_BRIDGE_MANAGED,
     profilePaths: {
       coreHome: CORE_HOME,
       codexHome: LAUNCHER_PROFILE.codexHome,
@@ -692,8 +699,8 @@ function registerIpc({ logger, stateStore }) {
     const result = IS_DEV_PROFILE ? await runtimeHost.setupDevCore() : await runtimeHost.setupCore();
     stateStore.update({
       coreSetupComplete: true,
-      codexCatalogVerified: IS_DEV_PROFILE ? true : false,
-      codexRestartRequired: IS_DEV_PROFILE ? false : true,
+      codexCatalogVerified: IS_DEV_PROFILE || IS_BRIDGE_MANAGED,
+      codexRestartRequired: !IS_DEV_PROFILE && !IS_BRIDGE_MANAGED,
       zeroRiskProEnabled: runtimeHost.runtimeConfigSnapshot().config?.zeroRiskProEnabled === true,
       ...(result.mode === "full" ? {
         mcpRuntimeInstalled: true,
@@ -710,8 +717,8 @@ function registerIpc({ logger, stateStore }) {
         message: error instanceof Error ? error.message : String(error),
       });
     });
-    if (!IS_DEV_PROFILE) startCatalogVerificationMonitor({ logger, stateStore });
-    return { ok: true, stdout: result.stdout, restartRequired: !IS_DEV_PROFILE };
+    if (!IS_DEV_PROFILE && !IS_BRIDGE_MANAGED) startCatalogVerificationMonitor({ logger, stateStore });
+    return { ok: true, stdout: result.stdout, restartRequired: !IS_DEV_PROFILE && !IS_BRIDGE_MANAGED };
   });
   handle("launcher:setup-mcp", async (_event, input) => {
     const currentMode = stateStore.read().browserInteractionMode;
@@ -737,15 +744,15 @@ function registerIpc({ logger, stateStore }) {
       ...(interactionMode === "manual" ? { experimentalBiggerContext: false } : {}),
       zeroRiskProEnabled: runtimeHost.runtimeConfigSnapshot().config?.zeroRiskProEnabled === true,
       coreSetupComplete: true,
-      codexCatalogVerified: IS_DEV_PROFILE,
+      codexCatalogVerified: IS_DEV_PROFILE || IS_BRIDGE_MANAGED,
       mcpRuntimeInstalled: true,
       mcpSetupComplete: false,
       mcpGuideStep: 2,
-      codexRestartRequired: IS_DEV_PROFILE ? false : true,
+      codexRestartRequired: !IS_DEV_PROFILE && !IS_BRIDGE_MANAGED,
     });
     send("launcher:state-changed", state);
     if (interactionModeChange) send("launcher:browser-state", browserHost.snapshot());
-    if (!IS_DEV_PROFILE) startCatalogVerificationMonitor({ logger, stateStore });
+    if (!IS_DEV_PROFILE && !IS_BRIDGE_MANAGED) startCatalogVerificationMonitor({ logger, stateStore });
     return { ok: true, stdout: result.stdout };
   });
   handle("launcher:set-mcp-step", (_event, step) => {
@@ -766,11 +773,11 @@ function registerIpc({ logger, stateStore }) {
     const result = await runtimeHost.setBiggerContext(enabled === true);
     const state = stateStore.update({
       experimentalBiggerContext: result.enabled,
-      codexCatalogVerified: IS_DEV_PROFILE ? true : false,
-      codexRestartRequired: IS_DEV_PROFILE ? false : true,
+      codexCatalogVerified: IS_DEV_PROFILE || IS_BRIDGE_MANAGED,
+      codexRestartRequired: !IS_DEV_PROFILE && !IS_BRIDGE_MANAGED,
     });
     send("launcher:state-changed", state);
-    if (!IS_DEV_PROFILE) startCatalogVerificationMonitor({ logger, stateStore });
+    if (!IS_DEV_PROFILE && !IS_BRIDGE_MANAGED) startCatalogVerificationMonitor({ logger, stateStore });
     return state;
   });
   handle("launcher:zero-risk-pro", async (_event, enabled) => {
@@ -785,11 +792,11 @@ function registerIpc({ logger, stateStore }) {
     const result = await runtimeHost.setZeroRiskPro(enabled === true);
     const state = stateStore.update({
       zeroRiskProEnabled: result.enabled,
-      codexCatalogVerified: IS_DEV_PROFILE,
-      codexRestartRequired: !IS_DEV_PROFILE,
+      codexCatalogVerified: IS_DEV_PROFILE || IS_BRIDGE_MANAGED,
+      codexRestartRequired: !IS_DEV_PROFILE && !IS_BRIDGE_MANAGED,
     });
     send("launcher:state-changed", state);
-    if (!IS_DEV_PROFILE) startCatalogVerificationMonitor({ logger, stateStore });
+    if (!IS_DEV_PROFILE && !IS_BRIDGE_MANAGED) startCatalogVerificationMonitor({ logger, stateStore });
     return state;
   });
   handle("launcher:browser-interaction-mode", async (_event, rawMode) => {
@@ -817,13 +824,15 @@ function registerIpc({ logger, stateStore }) {
       browserInteractionMode: mode,
       ...(mode === "manual" ? { experimentalBiggerContext: false } : {}),
       ...(result.configured ? {
-        codexCatalogVerified: IS_DEV_PROFILE,
-        codexRestartRequired: !IS_DEV_PROFILE,
+        codexCatalogVerified: IS_DEV_PROFILE || IS_BRIDGE_MANAGED,
+        codexRestartRequired: !IS_DEV_PROFILE && !IS_BRIDGE_MANAGED,
       } : {}),
     });
     send("launcher:state-changed", state);
     send("launcher:browser-state", browserHost.snapshot());
-    if (!IS_DEV_PROFILE && result.configured) startCatalogVerificationMonitor({ logger, stateStore });
+    if (!IS_DEV_PROFILE && !IS_BRIDGE_MANAGED && result.configured) {
+      startCatalogVerificationMonitor({ logger, stateStore });
+    }
     return { state, credentialsRequired: false, targetMode: mode };
   });
   handle("launcher:set-preference", (_event, key, value) => {
@@ -936,8 +945,6 @@ async function start() {
   app.commandLine.appendSwitch("remote-debugging-port", String(cdpPort));
 
   await app.whenReady();
-  await configureBridgeNetwork({ app, session, coreHome: CORE_HOME, partition: LAUNCHER_PROFILE.browserPartition });
-
   const stateStore = createStateStore(path.join(app.getPath("userData"), "launcher-state.json"));
   if (IS_DEV_PROFILE && !stateStore.read().onboardingComplete) {
     stateStore.update({
@@ -1028,6 +1035,11 @@ async function start() {
     getBrowserInteractionMode: () => stateStore.read().browserInteractionMode,
   });
   await browserHost.ready();
+  await applyBridgeBrowserNetwork({
+    session,
+    partition: LAUNCHER_PROFILE.browserPartition,
+    network: BRIDGE_NETWORK,
+  });
   const updaterRuntimeRoot = runtimeRootProvider();
   updateController = createUpdateController({
     currentVersion: app.getVersion(),
@@ -1130,12 +1142,18 @@ async function start() {
     }
   } else void (async () => {
     await startupAuthenticationRefresh;
+    const stateBeforeRuntimeUpgrade = stateStore.read();
     const upgrade = await runtimeHost.upgradeManagedRuntime();
     if (upgrade.updated) {
       const state = stateStore.update({
         coreSetupComplete: true,
-        codexCatalogVerified: false,
-        codexRestartRequired: true,
+        // A runtime binary upgrade does not change the installed Codex route
+        // or model catalog. Preserve an already-proven catalog instead of
+        // forcing the user through setup and a Codex restart again.
+        codexCatalogVerified: IS_BRIDGE_MANAGED
+          || stateBeforeRuntimeUpgrade.codexCatalogVerified === true,
+        codexRestartRequired: !IS_BRIDGE_MANAGED
+          && stateBeforeRuntimeUpgrade.codexRestartRequired === true,
         experimentalBiggerContext: runtimeHost.runtimeConfigSnapshot().config?.experimentalBiggerContext === true,
         zeroRiskProEnabled: runtimeHost.runtimeConfigSnapshot().config?.zeroRiskProEnabled === true,
         ...(upgrade.mode === "full" ? {
@@ -1180,7 +1198,10 @@ async function start() {
         mcpRuntimeInstalled: config.mode === "full",
         experimentalBiggerContext: config.experimentalBiggerContext === true,
         zeroRiskProEnabled: config.zeroRiskProEnabled === true,
-        ...(runtime.bridgeRouteChanged ? {
+        ...(IS_BRIDGE_MANAGED ? {
+          codexCatalogVerified: true,
+          codexRestartRequired: false,
+        } : runtime.bridgeRouteChanged ? {
           codexCatalogVerified: false,
           codexRestartRequired: true,
         } : {}),
@@ -1193,7 +1214,7 @@ async function start() {
         const state = stateStore.update(patch);
         send("launcher:state-changed", state);
       }
-      startCatalogVerificationMonitor({ logger, stateStore });
+      if (!IS_BRIDGE_MANAGED) startCatalogVerificationMonitor({ logger, stateStore });
       return;
     }
     if (runtime.status === "not-configured") {

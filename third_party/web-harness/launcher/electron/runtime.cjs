@@ -1124,6 +1124,9 @@ class RuntimeHost {
     const connectorMigrationRequired = existing.mode === "full"
       && isLegacyConnectorName(validateConnectorName(existing.config?.appName));
     const interactionMode = existing.config?.browserInteractionMode ?? "automatic";
+    const accountCapabilitiesMissing = interactionMode === "automatic"
+      && (typeof existing.config?.solAvailable !== "boolean"
+        || typeof existing.config?.proAvailable !== "boolean");
     const expectedTunnelProfile = interactionMode === "manual"
       ? "codex-chatgpt-web-zero-risk"
       : "codex-chatgpt-web";
@@ -1152,9 +1155,16 @@ class RuntimeHost {
       existing.mode === "full" ? "--full" : "--browser-only",
       "--browser-host-descriptor",
       this.browserDescriptorPath,
-      // A release may repair capability detection. Reusing the previous result can
-      // keep eligible models disabled even after the corrected probe is installed.
-      ...this.browserInteractionArgs({ mode: interactionMode, refreshCapabilities: true }),
+      // A routine runtime upgrade must not turn an already verified ChatGPT
+      // session into a hard dependency on the account-capability endpoint. That
+      // endpoint can independently trigger a security challenge even while the
+      // normal Temporary Chat surface is healthy. Probe only when the persisted
+      // capability result is genuinely absent; users can still request an
+      // explicit refresh from setup when account eligibility changes.
+      ...this.browserInteractionArgs({
+        mode: interactionMode,
+        refreshCapabilities: accountCapabilitiesMissing,
+      }),
       "--acknowledge-unofficial",
       "--restart-service",
     ];

@@ -75,6 +75,45 @@ class WebHarnessTests(unittest.TestCase):
             with self.assertRaises(WebHarnessError):
                 runtime_token(home)
 
+    def test_gateway_network_file_contains_only_loopback_proxy(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary) / "web"
+            local_app_data = Path(temporary) / "local"
+            config = local_app_data / "FanVPNBridge" / "direct-proxy.json"
+            config.parent.mkdir(parents=True)
+            config.write_text(json.dumps({
+                "host": "proxy.example", "port": 443,
+                "username": "private-user", "password": "private-password",
+            }))
+            with patch.dict("os.environ", {"LOCALAPPDATA": str(local_app_data)}):
+                WebHarnessController(home)._write_network("gateway")
+            value = json.loads((home / "network.json").read_text())
+            self.assertEqual(value, {
+                "mode": "gateway",
+                "tunnelProxyUrl": "http://127.0.0.1:18889",
+                "browserProxyUrl": "http://127.0.0.1:18889",
+            })
+            self.assertNotIn("private", (home / "network.json").read_text())
+
+    def test_open_starts_gateway_proxy_before_launcher(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary) / "web"
+            executable = home / "versions" / "current" / "WebHarness.exe"
+            executable.parent.mkdir(parents=True)
+            executable.write_bytes(b"fixture")
+            (home / "installation.json").write_text(json.dumps({"directory": "versions/current"}))
+            (home / "network.json").write_text(json.dumps({
+                "mode": "gateway", "tunnelProxyUrl": "http://127.0.0.1:18889",
+                "browserProxyUrl": "http://127.0.0.1:18889",
+            }))
+            controller = WebHarnessController(home)
+            with patch.object(controller, "_ensure_gateway_proxy") as ensure, \
+                    patch.object(controller, "status", return_value={}), \
+                    patch("fanvpn_bridge.web_harness.subprocess.Popen") as launch:
+                controller.open()
+            ensure.assert_called_once_with()
+            launch.assert_called_once()
+
     def test_stream_strips_account_credentials_and_flushes_each_chunk(self):
         handler = MagicMock()
         handler.headers = Message()

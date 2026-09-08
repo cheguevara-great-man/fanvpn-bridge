@@ -105,6 +105,7 @@
       <div class="hint">首次配置或需要更新时点击。完成后只需重启一次 VS Code。</div>
 
     <h2>ChatGPT 网页执行器</h2>
+    <button type="button" class="primary" data-mode="hybrid_native" id="web-harness-enable">启用 ChatGPT Web 模式</button>
     <button type="button" id="web-harness-install">安装 / 更新 WebHarness</button>
     <button type="button" id="web-harness-open">打开 WebHarness</button>
     <button type="button" id="web-harness-refresh">配置完成后刷新网页模型</button>
@@ -113,7 +114,7 @@
       <button type="button" data-web-network="gateway">使用已保存的服务器代理</button>
       <div class="hint">服务器代理使用本机已保存的 direct-proxy.json；不自动继承 Chrome 的代理设置，也不改变旧链路。</div>
     </details>
-    <div class="hint" id="web-harness-status">独立本地网页会话；在执行器中配置自动模式或手动模式（Zero Risk）。该名称不代表零风险保证。</div>
+    <div class="hint" id="web-harness-status">先点击“启用 ChatGPT Web 模式”。它会保留原来的 Direct 配置；需要退出时点击上方“服务器直连”，并自动恢复进入前的 GPT 模型。</div>
 
     <h2>安装与升级</h2>
     <details id="software-update-settings">

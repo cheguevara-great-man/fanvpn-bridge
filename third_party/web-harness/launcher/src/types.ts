@@ -93,6 +93,7 @@ export type UpdateState =
 
 export interface LauncherSnapshot {
   profile: LauncherProfile;
+  bridgeManaged: boolean;
   profilePaths: {
     coreHome: string;
     codexHome: string;

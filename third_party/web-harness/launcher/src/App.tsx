@@ -371,7 +371,7 @@ function LauncherShell({
     && browser?.authenticated !== true;
   const needsSetup = !needsBrowser && !interactionSetupComplete;
   const mcpOptional = snapshot.state.browserInteractionMode === "automatic"
-    && snapshot.state.codexCatalogVerified === true
+    && snapshot.state.coreSetupComplete === true
     && snapshot.state.mcpSetupComplete !== true;
   const updateVisible = ["available", "downloading", "installing"].includes(snapshot.update.status);
   const updateBusy = snapshot.update.status === "downloading" || snapshot.update.status === "installing";
@@ -1178,15 +1178,19 @@ function SetupSurface({
         </> : null}
         <SetupRow
           action={snapshot.state.coreSetupComplete
-            ? devProfile ? copy.devReinstall : copy.reinstall
-            : devProfile ? copy.devInstall : copy.install}
+            ? devProfile ? copy.devReinstall : snapshot.bridgeManaged ? copy.bridgeRestart : copy.reinstall
+            : devProfile ? copy.devInstall : snapshot.bridgeManaged ? copy.bridgeStart : copy.install}
           complete={snapshot.state.codexCatalogVerified === true}
-          description={devProfile ? copy.devStepInstallBody : copy.stepInstallBody}
+          description={devProfile
+            ? copy.devStepInstallBody
+            : snapshot.bridgeManaged ? copy.bridgeStepRuntimeBody : copy.stepInstallBody}
           disabled={busy || (!snapshot.smokePassed && snapshot.state.coreSetupComplete !== true)}
           index={manualInteraction ? 1 : 3}
           onAction={install}
           repeatable
-          title={devProfile ? copy.devStepInstall : copy.stepInstall}
+          title={devProfile
+            ? copy.devStepInstall
+            : snapshot.bridgeManaged ? copy.bridgeStepRuntime : copy.stepInstall}
           titleAction={manualInteraction ? (
             <ZeroRiskModelMenu
               busy={busy || snapshot.state.coreSetupComplete !== true}
@@ -1198,7 +1202,7 @@ function SetupSurface({
         />
       </div>
 
-      {!devProfile && snapshot.state.codexRestartRequired ? (
+      {!devProfile && !snapshot.bridgeManaged && snapshot.state.codexRestartRequired ? (
         <NoticeRow icon="alert" tone="warning">
           {copy.restartCodex}
         </NoticeRow>
@@ -1207,7 +1211,7 @@ function SetupSurface({
       <SectionHeading label="MCP" meta={manualInteraction ? copy.required : copy.optional} spaced />
       <button
         className="next-surface-row"
-        disabled={!manualInteraction && !snapshot.state.codexCatalogVerified}
+        disabled={!snapshot.state.coreSetupComplete}
         onClick={showMcp}
         type="button"
       >
@@ -1334,10 +1338,6 @@ function McpSurface({
       subtitle={devProfile ? copy.devMcpSubtitle : copy.mcpSubtitle}
       title={devProfile ? copy.devMcpTitle : "MCP"}
     >
-      {!manualInteraction && !configuringInactiveMode && !snapshot.state.codexCatalogVerified ? (
-        <NoticeRow icon="setup" tone="warning">{copy.mcpCatalogRequired}</NoticeRow>
-      ) : null}
-
       <div className="wizard-stepper" aria-label={`${step + 1} / 3`}>
         {steps.map((item, index) => (
           <button
@@ -1449,9 +1449,7 @@ function McpSurface({
             ) : null}
             {step === 1 ? (
               <p className="mcp-step-two-hint">
-                {manualInteraction || configuringInactiveMode || snapshot.state.codexCatalogVerified
-                  ? copy.mcpStepTwoHint
-                  : copy.mcpCatalogRequired}
+                {copy.mcpStepTwoHint}
               </p>
             ) : null}
             {step === 2 ? (
@@ -1496,7 +1494,6 @@ function McpSurface({
           <PrimaryButton
             disabled={
               busy
-              || (!manualInteraction && !configuringInactiveMode && !snapshot.state.codexCatalogVerified)
               || ((!credentialsConfigured || replacingCredentials) && (!tunnelId || !runtimeKey))
             }
             onClick={() => void install()}
@@ -1717,7 +1714,7 @@ function SettingsSurface({
         </SettingRow>
       </div>
 
-      {!devProfile && snapshot.state.codexRestartRequired ? (
+      {!devProfile && !snapshot.bridgeManaged && snapshot.state.codexRestartRequired ? (
         <NoticeRow icon="alert" tone="warning">
           {copy.restartCodex}
         </NoticeRow>

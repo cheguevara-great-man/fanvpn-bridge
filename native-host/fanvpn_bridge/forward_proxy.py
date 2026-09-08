@@ -167,6 +167,8 @@ class _ForwardProxyHandler(socketserver.BaseRequestHandler):
         if not self.server.capacity.acquire(blocking=False):
             self.request.sendall(b"HTTP/1.1 503 Busy\r\nConnection: close\r\n\r\n")
             return
+        method = "unknown"
+        target = "unknown"
         try:
             self.request.settimeout(CONNECT_TIMEOUT_SECONDS)
             request = _read_headers(self.request)
@@ -220,7 +222,9 @@ class _ForwardProxyHandler(socketserver.BaseRequestHandler):
                     upstream.settimeout(None)
                     _relay(self.request, upstream)
         except (ForwardProxyError, OSError, ssl.SSLError) as error:
-            self.server.log.warning("request_failed type=%s", type(error).__name__)
+            safe_target = target.split("?", 1)[0][:200]
+            self.server.log.warning("request_failed type=%s method=%s target=%s detail=%s",
+                                    type(error).__name__, method, safe_target, str(error)[:200])
             try:
                 self.request.sendall(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
             except OSError:

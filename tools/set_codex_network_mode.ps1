@@ -347,6 +347,39 @@ if ($isHybrid -and $OpenAIModelsJson) {
         (New-Object System.Text.UTF8Encoding($false))
     )
 }
+
+function Get-TopLevelTomlKeyLine {
+    param([string]$Text, [string]$Key)
+    $firstTable = [regex]::Match($Text, '(?m)^\s*\[')
+    $topLength = if ($firstTable.Success) { $firstTable.Index } else { $Text.Length }
+    $top = $Text.Substring(0, $topLength)
+    $match = [regex]::Match(
+        $top,
+        '(?m)^\s*' + [regex]::Escape($Key) + '\s*=.*$'
+    )
+    if (-not $match.Success) { return $null }
+    return $match.Value.TrimEnd("`r", "`n")
+}
+
+function Set-TopLevelTomlKeyLine {
+    param(
+        [string]$Text,
+        [string]$Key,
+        [AllowNull()][string]$Line
+    )
+    $firstTable = [regex]::Match($Text, '(?m)^\s*\[')
+    $topLength = if ($firstTable.Success) { $firstTable.Index } else { $Text.Length }
+    $top = $Text.Substring(0, $topLength)
+    $tables = $Text.Substring($topLength)
+    $pattern = '(?m)^\s*' + [regex]::Escape($Key) + '\s*=.*(?:\r?\n|$)'
+    if ([regex]::IsMatch($top, $pattern)) {
+        $replacement = if ($null -eq $Line) { '' } else { $Line + "`r`n" }
+        $top = [regex]::Replace($top, $pattern, $replacement, 1)
+    } elseif ($null -ne $Line) {
+        $top = $Line + "`r`n" + $top.TrimStart()
+    }
+    return $top + $tables
+}
 if (($effectiveMode -eq 'GeminiAccount' -or $isHybrid) -and $GeminiModelsJson) {
     try {
         $parsedGeminiModels = $GeminiModelsJson | ConvertFrom-Json
@@ -598,6 +631,47 @@ if ($effectiveMode -eq 'GeminiAccount') {
         $geminiModelEnd
     )
     $content = ($geminiModelBlock -join "`r`n") + "`r`n`r`n" + $top.TrimStart() + $tables.TrimStart()
+}
+
+# Hybrid exposes models that the Direct provider cannot understand. Preserve
+# the exact model that was active before entering Hybrid, then restore it when
+# the user returns to Direct/Browser mode if the current selection is a
+# Hybrid-only Gemini or ChatGPT Web model. This prevents a stale
+# `chatgpt-web/*` slug from being sent to the official Codex endpoint.
+$hybridModelBegin = '# BEGIN Browser AI Bridge managed Hybrid model restore'
+$hybridModelEnd = '# END Browser AI Bridge managed Hybrid model restore'
+$hybridModelPattern = '(?ms)^' + [regex]::Escape($hybridModelBegin) + '.*?^' +
+    [regex]::Escape($hybridModelEnd) + '\s*'
+$hybridModelMatch = [regex]::Match($content, $hybridModelPattern)
+$previousHybridModelLine = $null
+if ($hybridModelMatch.Success) {
+    $saved = [regex]::Match(
+        $hybridModelMatch.Value,
+        '(?m)^# previous-hybrid-model-base64: (?<value>[A-Za-z0-9+/=]+|absent)\s*$'
+    )
+    if (-not $saved.Success) {
+        throw 'Managed Hybrid model restore block is missing its restore metadata.'
+    }
+    $previousHybridModelLine = ConvertFrom-RestoreValue $saved.Groups['value'].Value
+    $content = [regex]::Replace($content, $hybridModelPattern, '', 1)
+}
+
+if ($isHybrid) {
+    if (-not $hybridModelMatch.Success) {
+        $previousHybridModelLine = Get-TopLevelTomlKeyLine -Text $content -Key 'model'
+    }
+    $hybridModelBlock = @(
+        $hybridModelBegin,
+        "# previous-hybrid-model-base64: $(ConvertTo-RestoreValue $previousHybridModelLine)",
+        $hybridModelEnd
+    )
+    $content = ($hybridModelBlock -join "`r`n") + "`r`n" + $content.TrimStart()
+} elseif ($hybridModelMatch.Success) {
+    $currentModelLine = Get-TopLevelTomlKeyLine -Text $content -Key 'model'
+    if ($currentModelLine -match '^\s*model\s*=\s*"(?:chatgpt-web/|gemini-)') {
+        $content = Set-TopLevelTomlKeyLine `
+            -Text $content -Key 'model' -Line $previousHybridModelLine
+    }
 }
 
 # Browser mode is deliberately lean: only the model Responses API is routed

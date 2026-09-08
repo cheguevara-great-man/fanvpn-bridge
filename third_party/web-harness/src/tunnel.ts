@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { unzipSync } from "fflate";
@@ -239,10 +240,10 @@ function tunnel(config: AppConfig): TunnelConfig {
   return config.tunnel;
 }
 
-export function connectTunnel(config: AppConfig): void {
+export async function connectTunnel(config: AppConfig): Promise<void> {
   const settings = tunnel(config);
   mkdirSync(settings.profileDir, { recursive: true, mode: 0o700 });
-  const result = runCommand(settings.binaryPath, [
+  const args = [
     "runtimes", "connect",
     "--alias", settings.alias,
     "--profile", settings.profileName,
@@ -252,18 +253,43 @@ export function connectTunnel(config: AppConfig): void {
     "--runtime-api-key", `file:${settings.runtimeKeyFile}`,
     "--mcp-command", mcpCommand(config),
     "--json",
-  ], { timeout: TUNNEL_READY_TIMEOUT_MS });
-  const structuredOutput = result.stdout.trim();
-  const launchError = structuredOutput
-    ? tunnelConnectLaunchError(structuredOutput)
-    : undefined;
-  if (result.status !== 0) {
-    const detail = launchError && launchError !== "tunnel-client returned non-JSON connect output"
-      ? launchError
-      : safeTunnelDetail(tunnelCommandOutput(result) || `exit ${result.status}`);
-    throw new Error(`Tunnel managed startup failed: ${detail}`);
+  ];
+  // `runtimes connect` can remain alive while supervising its native runtime.
+  // spawnSync mistakes that normal lifecycle for an ETIMEDOUT.  Start it in
+  // the background and prove readiness through the independent status probe.
+  const child = spawn(settings.binaryPath, args, {
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  let output = "";
+  const append = (chunk: Buffer | string) => { output = `${output}${chunk.toString()}`.slice(-8_192); };
+  child.stdout?.on("data", append);
+  child.stderr?.on("data", append);
+  let exited: { code: number | null; signal: NodeJS.Signals | null } | undefined;
+  let spawnError: Error | undefined;
+  child.once("error", error => { spawnError = error; });
+  child.once("exit", (code, signal) => { exited = { code, signal }; });
+
+  const deadline = Date.now() + TUNNEL_READY_TIMEOUT_MS;
+  let lastDetail = "Tunnel runtime is starting";
+  while (Date.now() < deadline) {
+    if (spawnError) throw new Error(`Tunnel managed startup failed: ${safeTunnelDetail(spawnError.message)}`);
+    if (exited && exited.code !== 0) {
+      const detail = tunnelConnectLaunchError(output.trim())
+        || safeTunnelDetail(output || `exit ${exited.code}${exited.signal ? ` (${exited.signal})` : ""}`);
+      throw new Error(`Tunnel managed startup failed: ${detail}`);
+    }
+    try {
+      const status = tunnelStatus(config);
+      lastDetail = status.detail;
+      if (status.ok) return;
+    } catch (error) {
+      lastDetail = safeTunnelDetail(error instanceof Error ? error.message : String(error));
+    }
+    await new Promise(resolveWait => setTimeout(resolveWait, TUNNEL_STATUS_POLL_INTERVAL_MS));
   }
-  if (launchError) throw new Error(`Tunnel runtime exited during launch: ${launchError}`);
+  if (!child.killed) child.kill();
+  throw new Error(`Tunnel runtime did not become healthy and ready: ${lastDetail}`);
 }
 
 export function stopTunnel(config: AppConfig): void {

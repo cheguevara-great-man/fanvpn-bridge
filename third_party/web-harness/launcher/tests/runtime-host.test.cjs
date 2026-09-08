@@ -391,7 +391,6 @@ test("launcher update transaction upgrades its owned full runtime with saved con
     "--browser-host-descriptor",
     "/runtime/launcher-browser.json",
     "--automatic-browser-interaction",
-    "--refresh-account-capabilities",
     "--acknowledge-unofficial",
     "--restart-service",
     "--app-name",
@@ -440,6 +439,8 @@ test("launcher update transaction does not preserve a stale disconnected route p
     mode: "browser-only",
     browserHost: "launcher",
     releaseVersion: "1.1.1",
+    solAvailable: true,
+    proAvailable: false,
   });
 
   const result = await fixture.host.upgradeManagedRuntime();
@@ -447,6 +448,17 @@ test("launcher update transaction does not preserve a stale disconnected route p
   assert.equal(result.updated, true);
   assert.equal("bridgeEnabled" in result, false);
   assert.equal(fixture.invocation().args.includes("disconnect"), false);
+  assert.equal(fixture.invocation().args.includes("--refresh-account-capabilities"), false);
+});
+
+test("launcher runtime upgrade probes account capabilities only when the saved result is missing", async () => {
+  const fixture = hostFor({
+    mode: "browser-only",
+    browserHost: "launcher",
+    releaseVersion: "1.1.1",
+  });
+
+  assert.equal((await fixture.host.upgradeManagedRuntime()).updated, true);
   assert.equal(fixture.invocation().args.includes("--refresh-account-capabilities"), true);
 });
 

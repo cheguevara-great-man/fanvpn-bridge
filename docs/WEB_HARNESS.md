@@ -1,6 +1,6 @@
 # ChatGPT 网页执行器
 
-本功能在 `codex/web-harness` 分支提供预览版。已完成本地代码检查、回归测试与 Windows 打包启动检查；真实账号的 Connector 和工具调用仍待交互验收。不要把预览版当作已验证的稳定版。
+本功能在 `codex/web-harness` 分支提供预览版。已完成本地代码检查、回归测试、Windows 打包启动检查，以及真实账号的 Tunnel、Connector、流式回答和本机工具调用验收。仍建议先在非关键任务中使用。
 
 网页执行器是第三条模型链路：本机登录 ChatGPT 网页，Codex 继续管理任务、工具与审批。
 原生 GPT 使用既有浏览器或服务器中心链路；Gemini 使用既有账号适配器。
@@ -8,7 +8,8 @@
 ## 上游来源
 
 - 仓库：https://github.com/miuuyy/codex-chatgpt-web
-- 固定版本：v5.0.4
+- Bridge 发行版本：v5.0.13
+- 导入基线：v5.0.4
 - 固定提交：c648c09501bb1b704c7ad5273fb5f5d6b8992dd2
 - 源码：`third_party/web-harness`，通过 Git subtree 导入，保留 MIT 与第三方许可证。
 
@@ -35,7 +36,8 @@
 2. 选择网络：本机已有可用系统代理时使用系统网络；没有 Clash 时可选择「使用已保存的服务器代理」。后者读取 `%LOCALAPPDATA%\FanVPNBridge\direct-proxy.json`，缺少该文件时必须先配置服务器凭据，不会悄悄使用其他服务器。
 3. 点击「打开 WebHarness」，在独立浏览器会话中登录自己的 ChatGPT。
 4. 在执行器向导中配置 Secure MCP Tunnel 和 Connector，然后选择自动模式或手动模式（Zero Risk）。两种模式的 Connector 和凭据独立，不能混用。
-5. Bridge 选择 Hybrid 模式，或保留已经配置好模型目录的服务器中心模式。点击「配置完成后刷新网页模型」，重启 Codex 后选择 `chatgpt-web/` 模型。
+5. 点击「启用 ChatGPT Web 模式」。该按钮进入 Hybrid Native 统一路由，但会保存进入前的 Direct 模型和配置。点击「配置完成后刷新网页模型」，重启 Codex 后选择 `chatgpt-web/` 模型。
+6. 退出网页模型时，在 Bridge 弹窗点击原来的「服务器直连」「浏览器精简」或「浏览器完整」。如果当前仍选中 `chatgpt-web/*` 或 Gemini，Bridge 会自动恢复进入 Hybrid 前的 GPT，避免把网页模型误发给官方 Codex 后端。
 
 自动模式由执行器操作自己的 ChatGPT 页面；手动模式需要用户粘贴并发送提示词，再确认已发送。
 「Zero Risk」是上游模式名称，不是零账号风险、零安全风险的保证。
@@ -77,11 +79,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_web_harness.ps
 ```
 
 需要 Windows、Node.js、Bun；依赖按上游锁文件安装。产物位于 `dist-web-harness`，包含 Windows ZIP 和校验清单。
-扩展安装按钮读取本仓库 `web-harness-v5.0.4-bridge.1` 发布资产；该发布未上传之前，按钮会明确提示不可用。
+扩展安装按钮读取本仓库对应的 WebHarness 发布资产；发布资产不可用时按钮会明确报错，不会覆盖当前可用版本。
 
 ## 诊断边界
 
 本地测试覆盖路径校验、凭据隔离、分流和目录合并，不替代真实账号的工具调用验收。
 网络设置为服务器代理时，Electron 页面使用 HTTPS 代理；子进程得到标准代理环境变量。
-Secure MCP Tunnel 是否接受该网络环境，仍需用实际连接验证；不同网络策略可能影响连接。
+Secure MCP Tunnel 已在服务器代理模式下完成真实连接和工具调用验证；公司网络策略或服务器出口变化仍可能影响连接。
 不要把 `config.json`、`network.json`、Cookie 或登录 token 发到日志或问题报告。

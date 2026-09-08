@@ -385,7 +385,7 @@ async function bootstrapTunnelProfile(config: AppConfig): Promise<void> {
     // `runtimes connect` writes the native profile and returns once its managed runtime is healthy.
     // Readiness follows after a successful control-plane poll, so setup proves it separately before
     // stopping the validation runtime. The launcher supervisor reconnects the committed profile.
-    connectTunnel(config);
+    await connectTunnel(config);
     const status = await waitForTunnelReady(config);
     if (!status.ok) throw new Error(`Tunnel runtime did not become healthy and ready: ${status.detail}`);
   } catch (error) {

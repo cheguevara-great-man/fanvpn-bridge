@@ -1,6 +1,6 @@
 # FanVPN Bridge
 
-> 本分支新增 [ChatGPT 网页执行器 WebHarness（预览）](docs/WEB_HARNESS.md)：支持自动操作与手动 Zero Risk 入口，原有 GPT/Gemini 和服务器中心链路保留。真实账号工具调用尚待交互验收。
+> 本分支新增 [ChatGPT 网页执行器 WebHarness（预览）](docs/WEB_HARNESS.md)：支持自动操作与手动 Zero Risk 入口，原有 GPT/Gemini、Direct 和服务器中心链路保留。真实账号 Tunnel、Connector、流式回答与本机工具调用已经完成端到端验收。
 
 > 首次安装与之后的一键更新，请看[安装与升级](docs/INSTALL_AND_UPDATE.md)。首次需要一次 Chrome“加载已解压的扩展程序”；以后可直接在扩展弹窗的“安装与升级”中完成源码、Native Host 和扩展重载。
 

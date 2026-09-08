@@ -382,6 +382,43 @@ class NetworkModeScriptTests(unittest.TestCase):
             self.assertIn('model = "gpt-5.6-sol"', force)
             self.assertNotIn('default_subagent_model = "gemini-3.7-flash"', force)
 
+    def test_leaving_hybrid_restores_native_model_after_web_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            codex_home = Path(directory)
+            config_path = codex_home / "config.toml"
+            config_path.write_text(
+                'model_provider = "browser_ai_direct"\n'
+                'model = "gpt-5.6-sol"\n',
+                encoding="utf-8",
+            )
+            (codex_home / "models_cache.json").write_text(
+                json.dumps({
+                    "models": [{
+                        "slug": "gpt-5.6-sol",
+                        "display_name": "GPT-5.6 Sol",
+                        "visibility": "list",
+                        "model_messages": {"instructions_template": "You are Codex."},
+                    }]
+                }),
+                encoding="utf-8",
+            )
+            models = json.dumps(["gemini-3.7-flash"])
+
+            hybrid = self.run_mode(codex_home, "HybridNative", models)
+            self.assertIn("managed Hybrid model restore", hybrid)
+            self.assertIn('model = "gpt-5.6-sol"', hybrid)
+
+            config_path.write_text(
+                hybrid.replace('model = "gpt-5.6-sol"', 'model = "chatgpt-web/high"'),
+                encoding="utf-8",
+            )
+            direct = self.run_mode(codex_home, "Direct")
+
+            self.assertIn('model_provider = "browser_ai_direct"', direct)
+            self.assertIn('model = "gpt-5.6-sol"', direct)
+            self.assertNotIn('model = "chatgpt-web/high"', direct)
+            self.assertNotIn("managed Hybrid model restore", direct)
+
 
 if __name__ == "__main__":
     unittest.main()

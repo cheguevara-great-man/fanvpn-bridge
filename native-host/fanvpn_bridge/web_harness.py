@@ -11,6 +11,8 @@ import tomllib
 import base64
 import select
 import socket
+import sys
+import time
 from pathlib import Path
 
 WEB_PREFIX = "chatgpt-web/"
@@ -138,12 +140,72 @@ class WebHarnessController:
                 raise WebHarnessError("请先安装网页执行器") from error
             if not executable.is_file():
                 raise WebHarnessError("网页执行器文件不存在，请重新安装")
+            network_path = self.home / "network.json"
+            if not network_path.exists():
+                source = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "FanVPNBridge" / "direct-proxy.json"
+                if source.is_file():
+                    self._write_network("gateway")
+            network = self._read_network()
+            if network.get("tunnelProxyUrl") == "http://127.0.0.1:18889":
+                self._ensure_gateway_proxy()
             environment = dict(os.environ)
             environment.update(BRIDGE_WEB_MANAGED="1", CODEX_CHATGPT_WEB_HOME=str(self.home),
                                CODEX_WEB_GPT_LAUNCHER_DATA_DIR=str(self.home / "browser"))
             subprocess.Popen([str(executable)], env=environment, cwd=executable.parent,
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return self.status()
+
+    def _read_network(self) -> dict:
+        try:
+            value = json.loads((self.home / "network.json").read_text(encoding="utf-8"))
+            return value if isinstance(value, dict) else {"mode": "system"}
+        except (OSError, ValueError):
+            return {"mode": "system"}
+
+    def _write_network(self, mode: str) -> None:
+        value = {"mode": mode}
+        source = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "FanVPNBridge" / "direct-proxy.json"
+        if source.is_file():
+            from .forward_proxy import load_upstream_config
+            load_upstream_config(source)
+            value["tunnelProxyUrl"] = "http://127.0.0.1:18889"
+            if mode == "gateway":
+                value["browserProxyUrl"] = "http://127.0.0.1:18889"
+        elif mode == "gateway":
+            raise WebHarnessError("尚未保存服务器直连配置")
+        self.home.mkdir(parents=True, exist_ok=True)
+        destination = self.home / "network.json"
+        temporary = destination.with_suffix(".next")
+        temporary.write_text(json.dumps(value), encoding="utf-8")
+        os.replace(temporary, destination)
+
+    @staticmethod
+    def _gateway_proxy_ready() -> bool:
+        try:
+            with socket.create_connection(("127.0.0.1", 18889), timeout=0.25):
+                return True
+        except OSError:
+            return False
+
+    def _ensure_gateway_proxy(self) -> None:
+        if self._gateway_proxy_ready():
+            return
+        source = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "FanVPNBridge" / "direct-proxy.json"
+        from .forward_proxy import load_upstream_config
+        load_upstream_config(source)
+        if getattr(sys, "frozen", False):
+            command = [sys.executable]
+        else:
+            command = [sys.executable, "-m", "fanvpn_bridge.main"]
+        command.extend(["--forward-proxy", "--proxy-config", str(source), "--proxy-port", "18889"])
+        subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if self._gateway_proxy_ready():
+                return
+            time.sleep(0.1)
+        raise WebHarnessError("服务器直连代理未能在 127.0.0.1:18889 启动")
 
     def models(self, template: dict) -> list[dict]:
         if not self.status().get("ready"):
@@ -198,18 +260,7 @@ class WebHarnessController:
             raise WebHarnessError("Unsupported WebHarness network mode")
         if self.status().get("running"):
             raise WebHarnessError("请先退出 WebHarness，再切换网络")
-        value = {"mode": "system"}
-        if mode == "gateway":
-            from .forward_proxy import load_upstream_config
-            source = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "FanVPNBridge" / "direct-proxy.json"
-            proxy = load_upstream_config(source)
-            value = {"mode": "gateway", "host": proxy.host, "port": proxy.port,
-                     "username": proxy.username, "password": proxy.password}
-        self.home.mkdir(parents=True, exist_ok=True)
-        destination = self.home / "network.json"
-        temporary = destination.with_suffix(".next")
-        temporary.write_text(json.dumps(value), encoding="utf-8")
-        os.replace(temporary, destination)
+        self._write_network(mode)
         return {"network": mode, "restart_required": True}
 
 

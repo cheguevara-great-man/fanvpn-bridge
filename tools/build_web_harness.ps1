@@ -19,6 +19,10 @@ try {
     } finally { Pop-Location }
     & $Bun x tsc --noEmit
     if ($LASTEXITCODE -ne 0) { throw 'WebHarness typecheck failed' }
+    # The launcher packages build/runtime, which is generated from the root
+    # source tree. Rebuild it first so source fixes are included in the archive.
+    & $Bun run build
+    if ($LASTEXITCODE -ne 0) { throw 'WebHarness runtime build failed' }
     & $Bun run app:package
     if ($LASTEXITCODE -ne 0) { throw 'WebHarness packaging failed' }
   }
@@ -28,10 +32,12 @@ try {
     $target = Join-Path $OutputDirectory $archives[0].Name
     Copy-Item -LiteralPath $archives[0].FullName -Destination $target
     $manifest = [ordered]@{
-        version = '5.0.4-bridge.1'
+        version = '5.0.13-bridge.1'
         upstream_commit = 'c648c09501bb1b704c7ad5273fb5f5d6b8992dd2'
         filename = $archives[0].Name
-        sha256 = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant()
+        sha256 = [BitConverter]::ToString(
+            [Security.Cryptography.SHA256]::Create().ComputeHash(
+                [IO.File]::ReadAllBytes($target))).Replace('-', '').ToLowerInvariant()
         executable = 'WebHarness.exe'
     }
     [IO.File]::WriteAllText((Join-Path $OutputDirectory 'web-harness-release.json'), ($manifest | ConvertTo-Json), [Text.UTF8Encoding]::new($false))

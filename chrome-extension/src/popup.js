@@ -156,7 +156,9 @@ for (const button of modeButtons) {
       if (result?.ok !== true) throw new Error(result?.message || "模式切换失败");
       renderMode(result.mode);
       if (result.mode === "hybrid_configured") await refreshSubagents();
-      showNotice("切换成功，VS Code 已按所选模式启动。");
+      showNotice(button.id === "web-harness-enable"
+        ? "ChatGPT Web 模式已启用；原 Direct 配置已保留。重新打开 Codex 后选择 chatgpt-web 模型。"
+        : "切换成功，VS Code 已按所选模式启动。");
     } catch (error) { showError(error.message || String(error)); }
     finally { setBusy(false); }
   });
