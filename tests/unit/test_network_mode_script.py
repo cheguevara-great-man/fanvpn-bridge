@@ -430,6 +430,26 @@ class NetworkModeScriptTests(unittest.TestCase):
             self.assertNotIn('model = "chatgpt-web/high"', direct)
             self.assertNotIn("managed Hybrid model restore", direct)
 
+    def test_direct_repairs_legacy_catalog_blocks_and_stale_web_model(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            codex_home = Path(directory)
+            config_path = codex_home / "config.toml"
+            config_path.write_text(
+                'model_provider = "browser_ai_bridge"\n'
+                'model_catalog_json = "C:/Users/test/.codex/browser-ai-bridge-gemini-models.json"\n\n'
+                '# BEGIN Browser AI Bridge managed Gemini model catalog\n'
+                '# previous-model-catalog-base64: absent\n'
+                '# END Browser AI Bridge managed ChatGPT base URL\n\n'
+                'model = "chatgpt-web/high"\n',
+                encoding="utf-8",
+            )
+
+            direct = self.run_mode(codex_home, "Direct")
+
+            self.assertNotIn("managed Gemini model catalog", direct)
+            self.assertNotIn("model_catalog_json", direct)
+            self.assertNotIn("chatgpt-web/high", direct)
+
 
 if __name__ == "__main__":
     unittest.main()

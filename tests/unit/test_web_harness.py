@@ -108,11 +108,27 @@ class WebHarnessTests(unittest.TestCase):
             }))
             controller = WebHarnessController(home)
             with patch.object(controller, "_ensure_gateway_proxy") as ensure, \
+                    patch.object(controller, "_show_running_launcher", return_value=False), \
                     patch.object(controller, "status", return_value={}), \
                     patch("fanvpn_bridge.web_harness.subprocess.Popen") as launch:
                 controller.open()
             ensure.assert_called_once_with()
             launch.assert_called_once()
+
+    def test_open_shows_an_existing_launcher_without_spawning_another(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary) / "web"
+            executable = home / "versions" / "current" / "WebHarness.exe"
+            executable.parent.mkdir(parents=True)
+            executable.write_bytes(b"fixture")
+            (home / "installation.json").write_text(json.dumps({"directory": "versions/current"}))
+            controller = WebHarnessController(home)
+            with patch.object(controller, "_show_running_launcher", return_value=True), \
+                    patch.object(controller, "status", return_value={"running": True}), \
+                    patch("fanvpn_bridge.web_harness.subprocess.Popen") as launch:
+                result = controller.open()
+            self.assertEqual(result, {"running": True})
+            launch.assert_not_called()
 
     def test_gateway_proxy_ready_requires_the_managed_health_response(self):
         connection = MagicMock()

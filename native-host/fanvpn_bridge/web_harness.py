@@ -13,6 +13,7 @@ import select
 import socket
 import sys
 import time
+import urllib.parse
 from pathlib import Path
 
 WEB_PREFIX = "chatgpt-web/"
@@ -148,12 +149,47 @@ class WebHarnessController:
             network = self._read_network()
             if network.get("tunnelProxyUrl") == "http://127.0.0.1:18889":
                 self._ensure_gateway_proxy()
+            if self._show_running_launcher():
+                return self.status()
             environment = dict(os.environ)
             environment.update(BRIDGE_WEB_MANAGED="1", CODEX_CHATGPT_WEB_HOME=str(self.home),
                                CODEX_WEB_GPT_LAUNCHER_DATA_DIR=str(self.home / "browser"))
             subprocess.Popen([str(executable)], env=environment, cwd=executable.parent,
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return self.status()
+
+    def _show_running_launcher(self) -> bool:
+        """Ask an existing launcher to show itself instead of relying on focus stealing."""
+        descriptor_path = self.home / "runtime" / "launcher-browser.json"
+        try:
+            descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
+            control = descriptor["control"]
+            endpoint = urllib.parse.urlparse(control["endpoint"])
+            token = control["token"]
+            if endpoint.scheme != "http" or endpoint.hostname != "127.0.0.1" or not endpoint.port:
+                return False
+            if not isinstance(token, str) or not token:
+                return False
+            connection = http.client.HTTPConnection("127.0.0.1", endpoint.port, timeout=2)
+            try:
+                body = b"{}"
+                connection.request(
+                    "POST",
+                    "/v1/launcher/show",
+                    body,
+                    {
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json",
+                        "Content-Length": str(len(body)),
+                    },
+                )
+                response = connection.getresponse()
+                response.read(64 * 1024)
+                return response.status == 200
+            finally:
+                connection.close()
+        except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException):
+            return False
 
     def _read_network(self) -> dict:
         try:

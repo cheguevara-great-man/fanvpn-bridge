@@ -987,6 +987,7 @@ async function start() {
     logger,
     getBrowserHost: () => browserHost,
     getPreferences: () => stateStore.read(),
+    showLauncher: showMainWindow,
   }).start();
   runtimeSupervisor = new RuntimeSupervisor({
     app,

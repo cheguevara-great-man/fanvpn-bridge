@@ -3,6 +3,29 @@ const assert = require("node:assert/strict");
 const { BrowserHost } = require("../electron/browser-host.cjs");
 const { BrowserControlServer } = require("../electron/control-server.cjs");
 
+test("browser control server brings the launcher window to the foreground", async () => {
+  let shown = 0;
+  const server = await new BrowserControlServer({
+    logger: { info: () => {}, warn: () => {}, error: () => {} },
+    getBrowserHost: () => null,
+    getPreferences: () => ({}),
+    showLauncher: () => { shown += 1; },
+  }).start();
+  const descriptor = server.descriptor();
+  try {
+    const response = await fetch(`${descriptor.endpoint}/v1/launcher/show`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${descriptor.token}`, "content-type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true });
+    assert.equal(shown, 1);
+  } finally {
+    await server.close();
+  }
+});
+
 test("browser control server authenticates and owns turn visibility", async () => {
   const calls = [];
   const logs = [];

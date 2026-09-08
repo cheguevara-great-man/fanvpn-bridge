@@ -30,7 +30,7 @@
 
 ## 使用入口
 
-需要同时更新本分支的 Chrome 扩展和 Native Host（3.10.0）。只替换扩展目录不能更新后端。
+需要同时更新本分支的 Chrome 扩展和 Native Host（3.10.1）。只替换扩展目录不能更新后端。
 
 1. 在 Bridge 弹窗的「ChatGPT 网页执行器」中点击「安装 / 更新 WebHarness」。
 2. 选择网络：本机已有可用系统代理时使用系统网络；没有 Clash 时可选择「使用已保存的服务器代理」。后者读取 `%LOCALAPPDATA%\FanVPNBridge\direct-proxy.json`，缺少该文件时必须先配置服务器凭据，不会悄悄使用其他服务器。

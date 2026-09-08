@@ -299,12 +299,15 @@ try {
         $env:HTTP_PROXY = 'http://127.0.0.1:18889'
         $env:HTTPS_PROXY = 'http://127.0.0.1:18889'
         $env:ALL_PROXY = 'http://127.0.0.1:18889'
+        $env:http_proxy = 'http://127.0.0.1:18889'
+        $env:https_proxy = 'http://127.0.0.1:18889'
+        $env:all_proxy = 'http://127.0.0.1:18889'
         $launchArguments = @(
             '--proxy-server=http://127.0.0.1:18889',
             '--proxy-bypass-list=127.0.0.1;localhost'
         ) + $launchArguments
     } else {
-        foreach ($name in @('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY')) {
+        foreach ($name in @('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy')) {
             $item = Get-Item "Env:$name" -ErrorAction SilentlyContinue
             if ($item -and $item.Value -eq 'http://127.0.0.1:18889') {
                 Remove-Item "Env:$name" -ErrorAction SilentlyContinue
@@ -316,6 +319,7 @@ try {
         if ($noProxy -notcontains $entry) { $noProxy += $entry }
     }
     $env:NO_PROXY = $noProxy -join ','
+    $env:no_proxy = $env:NO_PROXY
     Start-Process -FilePath $codeExecutable -ArgumentList $launchArguments
 } catch {
     foreach ($snapshot in $snapshots) { Restore-FileState -State $snapshot }

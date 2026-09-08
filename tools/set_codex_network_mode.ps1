@@ -24,6 +24,15 @@ $content = if (Test-Path -LiteralPath $configPath) {
     ''
 }
 
+# Builds distributed before the unified profile work accidentally closed the
+# managed catalog block with the ChatGPT-base-url marker.  Such a block cannot
+# be recognized by the normal restore path and every subsequent switch adds
+# another copy.  Remove all of those malformed blocks up front.  The generated
+# catalog path is removed below when the user leaves Gemini/Hybrid mode.
+$legacyGeminiCatalogPattern = '(?ms)^# BEGIN Browser AI Bridge managed Gemini model catalog\r?\n' +
+    '.*?^# END Browser AI Bridge managed ChatGPT base URL\s*'
+$content = [regex]::Replace($content, $legacyGeminiCatalogPattern, '')
+
 function Get-TomlTableMatch {
     param([string]$Text, [string]$Table)
     $pattern = '(?ms)^\s*\[' + [regex]::Escape($Table) + '\]\s*(?:\r?\n|$)(?<body>.*?)(?=^\s*\[|\z)'
@@ -537,6 +546,16 @@ $tables = $content.Substring($topLength)
 if ($previousCatalogLine -and -not [regex]::IsMatch($top, '(?m)^\s*model_catalog_json\s*=')) {
     $top = $previousCatalogLine + "`r`n" + $top.TrimStart()
 }
+$generatedCatalogPattern = '(?mi)^\s*model_catalog_json\s*=\s*["''].*browser-ai-bridge-gemini-models\.json["'']\s*$'
+if (-not ($effectiveMode -eq 'GeminiAccount' -or $isHybrid) -and
+    [regex]::IsMatch($top, $generatedCatalogPattern)) {
+    $top = [regex]::Replace(
+        $top,
+        $generatedCatalogPattern + '(?:\r?\n|$)',
+        '',
+        1
+    )
+}
 $content = $top + $tables
 
 if ($effectiveMode -eq 'GeminiAccount' -or $isHybrid) {
@@ -666,7 +685,7 @@ if ($isHybrid) {
         $hybridModelEnd
     )
     $content = ($hybridModelBlock -join "`r`n") + "`r`n" + $content.TrimStart()
-} elseif ($hybridModelMatch.Success) {
+} elseif ($effectiveMode -ne 'GeminiAccount') {
     $currentModelLine = Get-TopLevelTomlKeyLine -Text $content -Key 'model'
     if ($currentModelLine -match '^\s*model\s*=\s*"(?:chatgpt-web/|gemini-)') {
         $content = Set-TopLevelTomlKeyLine `
