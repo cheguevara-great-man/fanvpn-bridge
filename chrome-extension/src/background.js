@@ -347,11 +347,17 @@ function negotiatedProtocolLimits(message) {
   };
 }
 
-async function requestModeControl(kind, mode) {
+async function requestModeControl(kind, mode, profile = null) {
   await waitForNativeHandshake();
   const id = crypto.randomUUID().replaceAll("-", "");
   const type = kind === "set" ? MessageType.CONTROL_MODE_SET : MessageType.CONTROL_MODE_GET;
-  const message = envelope(type, kind === "set" ? { id, mode } : { id });
+  const fields = kind === "set" ? { id, mode } : { id };
+  if (kind === "set" && profile) {
+    fields.vscode_network = profile.vscode_network;
+    fields.gpt_route = profile.gpt_route;
+    fields.subagent_policy = profile.subagent_policy;
+  }
+  const message = envelope(type, fields);
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       pendingControls.delete(id);
@@ -678,11 +684,22 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
   if (message?.target === "background" && message.kind === "codex-mode:set") {
-    if (!["direct", "browser_lean", "browser_full", "gemini_account", "hybrid_force", "hybrid_configured", "hybrid_native"].includes(message.mode)) {
+    if (!["direct", "server_center", "browser_lean", "browser_full", "gemini_account", "hybrid_force", "hybrid_configured", "hybrid_native"].includes(message.mode)) {
       sendResponse({ ok: false, mode: "unmanaged", message: "不支持的模式" });
       return false;
     }
-    requestModeControl("set", message.mode)
+    const vscodeNetwork = message.profile?.vscode_network;
+    const gptRoute = message.profile?.gpt_route;
+    const subagentPolicy = message.profile?.subagent_policy;
+    if (message.profile && (
+      !["system", "server"].includes(vscodeNetwork) ||
+      !["direct", "browser_full", "server_center"].includes(gptRoute) ||
+      !["force", "configured", "native"].includes(subagentPolicy)
+    )) {
+      sendResponse({ ok: false, mode: "unmanaged", message: "不支持的组合配置" });
+      return false;
+    }
+    requestModeControl("set", message.mode, message.profile || null)
       .then(sendResponse)
       .catch((error) => sendResponse({ ok: false, mode: "unmanaged", message: error.message }));
     return true;

@@ -48,12 +48,12 @@ Claude Code 使用 Gemini 时，由 CC Switch 转换 Anthropic Messages 与 Gemi
 - 仅监听 `127.0.0.1`，校验本地 Host/Origin，上游由静态 allowlist 限制。
 - Chrome 出口不可用时失败关闭，不回退到系统直连。
 - Codex 首次登录可通过一次性助手完成，无需复制其他电脑的 `auth.json`。
-- Codex 提供 Browser Lean、Browser Full、Google 账号 Gemini、GPT+Gemini Hybrid 和可选 Direct；
-  `Browser` 默认等同 Browser Lean。
-- Chrome 扩展弹窗还提供三种 Hybrid 子 Agent 策略；主 Agent 可从同一菜单选择 GPT/Gemini，子 Agent可选择
-  固定 Gemini、默认 Gemini 但允许 Codex 覆盖，或完全原生决策。关闭全部
-  VS Code 后点击，Bridge 会事务式更新托管配置并按所选模式启动 VS Code。需要进程级环境的模式都应从按钮启动，
-  不能只看上次磁盘配置后再从普通 VS Code 图标打开。
+- Chrome 扩展把 Codex 配置拆为四个互不混淆的选择：VS Code 通用网络、模型目录、原生 GPT 请求链路和
+  子 Agent 策略。统一模型目录可同时显示 GPT、Gemini 与 WebGPT；其中原生 GPT 可独立选择官方直连、
+  浏览器完整或服务器中心，Gemini 与 WebGPT 继续使用各自固定链路。
+- 子 Agent 可选择固定 Gemini、默认 Gemini 但允许 Codex 覆盖，或完全原生决策。关闭全部 VS Code 后
+  点击“应用配置并启动 VS Code”，Bridge 会事务式更新托管配置并启动新进程。Browser Lean 只作为旧配置
+  兼容项保留，不再显示在弹窗中。
 - A/B 事务式更新，切换前自动冒烟测试，失败时恢复旧注册。
 - Windows 登录后自动启动 Chrome 并等待 Bridge ready。
 - VS Code Claude Code 可在 Anthropic 官方模式和 Gemini 模式之间切换，且不接管全局 Claude 配置。
@@ -92,9 +92,9 @@ Invoke-RestMethod http://127.0.0.1:18888/ready -Proxy $null
 返回 HTTP 200 且 `ready=true` 后，再按[客户端使用指南](docs/USAGE.md)配置
 Codex、Claude Code 或 CC Switch。
 
-完成 Codex 登录后，推荐完全退出 VS Code，打开 FanVPN AI Bridge 弹窗并点击“浏览器精简”或
-“浏览器完整（实验）”。按钮会写入受管理的 provider 和产品端点配置，再自动启动 VS Code；
-不需要手工输入各模式的 provider。“服务器直连”只有在完成可选直连安装后才能使用。
+完成 Codex 登录后，完全退出 VS Code，在 FanVPN AI Bridge 弹窗依次选择通用网络、模型模式、
+原生 GPT 请求链路和子 Agent 策略，再点击“应用配置并启动 VS Code”。“使用美国服务器”与 WebHarness
+会复用同一个 `127.0.0.1:18889` 代理监听器，不会为每个调用方重复开启端口。
 
 使用 Antigravity 时，在同一弹窗点击“一键配置 Antigravity”，完成后重启一次 VS Code。按钮显示
 “已配置”后，首次使用还需按 [Antigravity 登录说明](docs/ANTIGRAVITY_CLI.md#首次账号登录)在
@@ -124,10 +124,9 @@ PowerShell 中完成一次 Google 授权；此后只需从 VS Code 的 Antigravi
 
 路由来自 `config/routes.example.json`。API Key 不应写入路由配置。
 
-默认 `Browser` 是稳定优先的 Browser Lean，不接管 Codex Apps、插件目录和完整账号产品后端。
-Browser Full（浏览器完整，实验）会把产品后端也交给 Chrome，并使用有界、短期、仅进程内存在的
-只读元数据缓存。Host 或 Chrome 重启后缓存立即清空。个人 Skills、本地脚本及手工配置的本地 MCP
-在 Lean 中仍可使用。具体边界见[客户端使用](docs/USAGE.md)。
+弹窗不再提供 Browser Lean；旧脚本和旧配置中的 `Browser` / `BrowserLean` 仍可兼容读取。
+Browser Full 会把产品后端也交给 Chrome，并使用有界、短期、仅进程内存在的只读元数据缓存。
+Host 或 Chrome 重启后缓存立即清空。具体边界见[客户端使用](docs/USAGE.md)。
 
 ## 文档
 

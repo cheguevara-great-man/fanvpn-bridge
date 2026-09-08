@@ -263,6 +263,17 @@ class NetworkModeScriptTests(unittest.TestCase):
             self.assertIn("shell_snapshot = true # user value", direct)
             self.assertNotIn("managed Windows compatibility", direct)
 
+    def test_server_center_mode_installs_only_the_fixed_loopback_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            codex_home = Path(directory)
+            (codex_home / "config.toml").write_text(
+                'model = "gpt-test"\n', encoding="utf-8"
+            )
+            content = self.run_mode(codex_home, "ServerCenter")
+            self.assertIn('model_provider = "server_codex_executor"', content)
+            self.assertIn('base_url = "http://127.0.0.1:18890/v1"', content)
+            self.assertEqual(content.count("[model_providers.server_codex_executor]"), 1)
+
     def test_upgrade_removes_221_backend_route_and_restores_original_url(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             codex_home = Path(directory)

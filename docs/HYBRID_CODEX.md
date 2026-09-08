@@ -8,12 +8,12 @@ MCP、Skills、计划、工具循环和子 Agent 编排始终由 Codex 负责。
 
 1. 先按 [Gemini 账号说明](GEMINI_ACCOUNT.md#第一次使用)完成一次 Google 登录。
 2. 完全关闭所有 VS Code 窗口。
-3. 打开 **Browser AI Bridge** 扩展，选择下面三个 Hybrid 按钮之一。
-4. VS Code 自动打开后，直接在 Codex 原生模型菜单选择 GPT 或 Gemini。
+3. 打开 **Browser AI Bridge** 扩展，把“Codex 模型模式”选为“GPT + Gemini + WebGPT”，再选择所需的原生 GPT 请求链路和子 Agent 策略。
+4. 点击“应用配置并启动 VS Code”，然后直接在 Codex 原生模型菜单选择 GPT、Gemini 或 WebGPT。
 
 Hybrid 继续使用原来的 `browser_ai_bridge` Provider 标识，因此不会为了增加 Gemini 而人为切断已有 GPT
-任务的本地分区。ChatGPT 产品后端仍保持启用，GPT 任务、账号信息、Apps 和插件目录继续走 Browser Full
-链路。Gemini 任务以本地使用为主，不承诺同步到 ChatGPT 云端。
+任务的本地分区。原生 GPT 推理可在统一 Provider 内独立选择官方直连、浏览器完整或服务器中心；
+ChatGPT 产品后端仍走固定的 Browser Full 链路。Gemini 任务以本地使用为主，不承诺同步到 ChatGPT 云端。
 
 ## 三种子 Agent 策略
 
@@ -50,7 +50,7 @@ Codex 的解析优先级是：角色文件中固定的模型/强度，其次是�
 Hybrid Provider 使用 `http://127.0.0.1:18888/hybrid/v1`：
 
 - 请求模型以 `gemini-` 开头：交给 Google 账号推理适配器；
-- 其他模型：交给原有 `chatgpt-codex` 路由；
+- 其他原生 GPT 模型：按 `hybrid-route.json` 中的固定枚举交给官方直连、`chatgpt-codex` 浏览器链路或本机服务器中心客户端；
 - `/responses/compact` 等产品生命周期接口始终交给 ChatGPT Codex；
 - 请求不能提供任意上游地址，Hybrid 不是开放代理。
 
@@ -60,5 +60,5 @@ Hybrid Provider 使用 `http://127.0.0.1:18888/hybrid/v1`：
 
 ## 回退
 
-原有“浏览器完整”“浏览器精简”“仅 Gemini”和“服务器直连”入口全部保留。Hybrid 配置失败时，模式切换
-事务会恢复修改前的 `config.toml`、模型目录、VS Code 设置和子 Agent策略文件。
+弹窗仅保留新的四层配置；Browser Lean 只为旧脚本兼容保留。配置失败时，模式切换事务会恢复修改前的
+`config.toml`、模型目录、VS Code 设置、路由状态和子 Agent 策略文件。

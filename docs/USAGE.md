@@ -99,9 +99,9 @@ C:\Users\<你的 Windows 用户名>\.codex\auth.json
 如果脚本提示当前 Host 不包含 `auth-openai`，先按[安装文档](INSTALLATION.md)更新
 Native Host，并刷新 Chrome 扩展。
 
-使用扩展弹窗时不需要手工输入各模式的托管 provider。完成登录后可以直接关闭全部
-VS Code 窗口，在 FanVPN AI Bridge 弹窗中点击“浏览器精简”；Bridge 会保留其他 Codex 配置，
-创建 `browser_ai_bridge` / `browser_ai_direct` provider，并在第一次修改前生成
+使用扩展弹窗时不需要手工输入各模式的托管 provider。完成登录后关闭全部 VS Code 窗口，
+在 FanVPN AI Bridge 弹窗中选择四层配置并点击“应用配置并启动 VS Code”；Bridge 会保留其他 Codex 配置，
+创建受管 provider，并在第一次修改前生成
 `config.toml.before-network-mode.bak`。下面的复制方式仍可用于不使用模式管理的手工配置，但旧的
 `fanvpn_chatgpt` provider 会在弹窗中显示为“未由 Bridge 管理”，直到第一次选择托管模式。
 
@@ -138,39 +138,39 @@ enabled = false
 `~/.codex/auth.json`。成功判据是：Codex 直接进入聊天页，并能在关闭 Clash 的情况下
 完成一次真实对话。
 
-## VS Code 网络模式
+## VS Code 与 Codex 四层配置
 
-2.6.0 起，推荐直接从 FanVPN AI Bridge 扩展弹窗选择：
+3.10.0 起，弹窗把原来混在一起的“模式”拆成四个相互独立的选择：
 
-| 弹窗按钮 | 模式 | 网络链路与用途 |
+| 层级 | 可选项 | 只控制什么 |
 |---|---|---|
-| 服务器直连 | Direct | `VS Code -> 127.0.0.1:18889 -> 自有 HTTPS 代理`，不经过 Chrome；需先完成可选直连安装 |
-| 浏览器精简 | Browser Lean | 核心模型请求经 `18888 -> Chrome -> 浏览器代理扩展`，是稳定默认模式 |
-| 浏览器完整（实验） | Browser Full | 在 Lean 基础上转发 ChatGPT 产品后端、Apps、插件、连接器和 VS Code Codex 界面请求 |
-| Codex + Gemini 账号 | Gemini Account | Codex 继续执行工具和 Agent 循环，Gemini 使用 Google 登录账号额度提供模型推理 |
-| 子 Agent 固定 Gemini | Hybrid Force | 主 Agent 菜单同时提供 GPT/Gemini；可见协作与审查子 Agent 固定为 Gemini 3.7 Flash High |
-| 子 Agent 默认 Gemini | Hybrid Configured | 主 Agent 菜单同时提供 GPT/Gemini；使用可被显式选择覆盖的子 Agent 默认值和自定义角色 |
-| Codex 原生决策 | Hybrid Native | 主 Agent 菜单同时提供 GPT/Gemini；不改写 Codex 的子 Agent 选择 |
+| VS Code 通用网络 | 系统网络 / 美国服务器 | 是否让新启动的整个 VS Code 使用共享 `127.0.0.1:18889` |
+| Codex 模型模式 | 仅原生 GPT / GPT + Gemini + WebGPT | Codex 模型目录和统一路由能力 |
+| 原生 GPT 请求链路 | 官方直连 / 浏览器完整 / 服务器中心 | 只决定原生 GPT 推理请求的出口；不改变 Gemini、WebGPT 或整个 VS Code 网络 |
+| 子 Agent 策略 | 固定 Gemini / 默认 Gemini / Codex 原生决策 | 只决定统一模型模式下的子 Agent 模型策略 |
 
-Codex CLI 与 VS Code Codex 共用 `~/.codex/config.toml` 和 `~/.codex/auth.json`；配置好 Browser Lean 且 Chrome、Bridge 与浏览器代理扩展正常运行后，可直接在 PowerShell 中执行 `codex` 使用同一条浏览器链路，无需额外适配或重新登录。
+因此可以组合“美国服务器网络 + 统一模型 + 官方直连 + Codex 原生决策”，也可以组合
+“系统网络 + 统一模型 + 浏览器完整 + 默认 Gemini”。原生 GPT、Gemini 和 WebGPT 会同时出现在同一个
+模型目录中，但按各自固定规则分流。
+
+Codex CLI 与 VS Code Codex 共用 `~/.codex/config.toml` 和 `~/.codex/auth.json`。CLI 会读取同一模型与
+GPT 路由配置；“VS Code 通用网络”只通过启动进程环境影响 VS Code，不会自动包住从普通 PowerShell
+启动的 CLI。
 
 切换前必须关闭所有 VS Code 窗口并等待 `Code.exe` 退出，再点击所需按钮。点击成功后，Bridge 会
 自动启动新的 VS Code；已有 VS Code 进程仍在运行时，Host 会拒绝切换，避免单实例进程继续使用旧环境。
 弹窗中的“上次托管配置”只表示磁盘配置，不表示某个已经运行的 VS Code 进程正在使用该模式。
-Direct 未安装凭据时会显示错误并失败关闭，不会回退到浏览器链路或本机公网。
+选择美国服务器网络或原生 GPT 官方直连且需要 `18889` 时，缺少代理凭据会明确报错并失败关闭，
+不会回退到其他链路或本机公网。
 启动器会先快照 Codex 配置、VS Code 设置、相关备份和端点状态；任一配置步骤或 VS Code 启动失败时，
 会恢复全部文件和切换前的 Direct 代理状态，不会留下半套模式。
 
-安装可选直连模式后，桌面还会建立三个同等入口：**VS Code - Browser Bridge**、
-**VS Code - Browser Full (Experimental)** 和 **VS Code - Direct US Proxy**。扩展弹窗中的两个
-浏览器模式不要求安装 Direct；桌面入口和命令行只是备用方式。
+旧安装生成的桌面入口继续兼容，但推荐使用弹窗四层配置。Browser Lean 不再显示在弹窗中，旧脚本中的
+`Browser` / `BrowserLean` 仍可用于回退和兼容旧部署。
 
-所有托管模式都会
-保留 `~/.codex/config.toml` 中的其他内容。Browser Lean 会暂时把 `apps`、`plugins`、
-`remote_plugin` 和 `analytics.enabled` 设为 `false`；Browser Full 与 Direct 会恢复切换前每一项的
-原始值或“原本不存在”的状态。Browser Full 还会临时写入产品后端地址，离开 Full 时精确恢复。
-浏览器模式还会把隐藏的 VS Code 设置 `chatgpt.apiEndpoint` 临时改为 `localhost`，Direct 模式
-恢复用户原值或“原本不存在”的状态。
+所有托管配置都会保留 `~/.codex/config.toml` 中的其他内容。统一模型使用 `browser_ai_bridge` 的
+`18888/hybrid/v1` 入口，再由 Host 根据模型和固定路由状态分流；GPT-only 模式则可以直接选择相应
+Provider。产品后端独立固定在 Browser Full 路由，不会因为原生 GPT 选择官方直连或服务器中心而误发。
 
 Browser Full 启动器还会仅给本次 VS Code 进程传入一个非敏感的
 `CODEX_CONNECTORS_TOKEN=browser-ai-bridge-managed` 标记。它不是 OpenAI Token，也不能单独访问
@@ -178,9 +178,12 @@ Browser Full 启动器还会仅给本次 VS Code 进程传入一个非敏感的
 `https://chatgpt.com` 的固定 MCP/Apps 接口后，才会在内存中把标记替换为当前
 `~/.codex/auth.json` 的有效凭据。Browser Lean 和 Direct 不使用这个标记，也不会修改用户级环境变量。
 
-Direct 的代理参数、Browser Full 的 MCP 标记以及浏览器模式的登录刷新地址都属于本次启动进程，
-不会因为磁盘上显示某个模式就自动注入到普通 VS Code 图标。因此每次使用这三种托管模式时，都应先
-退出全部 VS Code，再从扩展按钮、对应桌面入口或下方启动命令进入。
+美国服务器代理参数、Browser Full 的 MCP 标记以及登录刷新地址都属于本次启动进程，
+不会因为磁盘上显示某个配置就自动注入到已经运行的 VS Code。因此应用配置时应先退出全部 VS Code，
+再由扩展按钮启动。
+
+`18889` 是共享的本地代理监听器，不是每个功能各开一个端口。启动器和 WebHarness 都先验证
+`browser-ai-bridge.local/ready` 的服务身份；已有健康实例时直接复用，异常监听器不会被当成可用代理。
 
 部分 Codex 版本即使已有 Bearer Token，仍会按 MCP 协议尝试 GET 通知流并探测 OAuth 元数据。2.5.0
 起这些无副作用请求由 Host 在本机立即返回，不再经过 Chrome 和浏览器代理。Browser Full 的插件

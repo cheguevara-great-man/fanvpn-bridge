@@ -102,12 +102,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 - 协议握手：完成。
 - 浏览器执行器：`offscreen`。
 - ChatGPT 网站权限：已授权。
-- 弹窗下方出现“VS Code Codex 模式”，并提供“服务器直连”“浏览器精简”、
-  “浏览器完整”和“Codex + Gemini 账号”四个按钮。
+- 弹窗下方出现四层 Codex 配置：VS Code 通用网络、Codex 模型模式、原生 GPT 请求链路和
+  子 Agent 策略，并提供“应用配置并启动 VS Code”按钮。
 
-第一次选择前，弹窗可能显示“未由 Bridge 管理”；这只表示现有 Codex provider 还不是 2.6.0 的
-托管配置，不代表 Native Messaging 故障。三模式按钮要求 Chrome 扩展和正在运行的 Native Host
-均为 2.6.0；只刷新扩展但仍运行旧 Host 时，模式读取或切换会失败。
+第一次选择前，弹窗可能显示“未由 Bridge 管理”；这只表示现有 Codex provider 还不是当前版本的
+托管配置，不代表 Native Messaging 故障。四层配置要求 Chrome 扩展和正在运行的 Native Host
+版本一致；只刷新扩展但仍运行旧 Host 时，模式读取或切换会失败。
 
 在 PowerShell 中运行：
 
@@ -128,8 +128,8 @@ gemini-openai
 openai
 ```
 
-`chatgpt-backend` 的存在不代表默认会使用它：Browser Lean 不设置产品后端地址，只有显式选择
-Browser Full 才会发起这类请求。如果该路由缺失，说明运行中的 Host 不是当前版本，请核对安装输出中的
+`chatgpt-backend` 的存在不代表任意请求都会使用它：它只承载固定的 ChatGPT 产品控制面；原生 GPT
+推理仍按弹窗选择的官方直连、浏览器完整或服务器中心执行。如果该路由缺失，说明运行中的 Host 不是当前版本，请核对安装输出中的
 Native Host 路径并完全重开 Chrome。
 
 如需完整诊断，可运行：

@@ -18,6 +18,7 @@ from .errors import BridgeError
 from .framing import FramedMessageChannel
 from .forward_proxy import ForwardProxyError, run_forward_proxy
 from .gemini_account import GeminiAccountProvider
+from .hybrid_route import HybridRouteStore
 from .http_server import create_http_server
 from .mode_control import CodexModeController
 from .product_cache import ProductResponseCache
@@ -43,6 +44,7 @@ def run(config_path: Path) -> int:
     )
     channel = FramedMessageChannel(sys.stdin.buffer, sys.stdout.buffer)
     subagent_policy = SubagentPolicyStore(cache_base / "subagent-policy.json")
+    hybrid_route_store = HybridRouteStore(cache_base / "hybrid-route.json")
     gemini_account = GeminiAccountProvider(
         bridge_url=f"http://{config.listen_host}:{config.listen_port}",
         timeout_seconds=config.protocol.request_timeout_seconds,
@@ -85,6 +87,7 @@ def run(config_path: Path) -> int:
         usage_reporter=usage_reporter,
         gemini_account=gemini_account,
         subagent_policy=subagent_policy,
+        hybrid_route_store=hybrid_route_store,
     )
     server_thread = threading.Thread(
         target=server.serve_forever,
@@ -105,6 +108,7 @@ def run(config_path: Path) -> int:
             usage_reporter=usage_reporter,
             gemini_account=gemini_account,
             subagent_policy=subagent_policy,
+            hybrid_route_store=hybrid_route_store,
         )
     except OSError as error:
         log.warning("vscode_product_api_unavailable listen=%s:8000 error=%s", config.listen_host, error)

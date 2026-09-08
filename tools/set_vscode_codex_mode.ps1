@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('Browser', 'BrowserLean', 'BrowserFull', 'Direct', 'GeminiAccount', 'HybridForce', 'HybridConfigured', 'HybridNative')]
+    [ValidateSet('Browser', 'BrowserLean', 'BrowserFull', 'Direct', 'ServerCenter', 'GeminiAccount', 'HybridForce', 'HybridConfigured', 'HybridNative')]
     [string]$Mode,
 
     [string]$CodexHome = (Join-Path $HOME '.codex'),

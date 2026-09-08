@@ -14,6 +14,7 @@ from fanvpn_bridge.config import parse_config
 from fanvpn_bridge.dispatcher import NativeDispatcher
 from fanvpn_bridge.diagnostics import DiagnosticOptions
 from fanvpn_bridge.http_server import create_http_server
+from fanvpn_bridge.hybrid_route import HybridRouteStore
 from fanvpn_bridge.product_cache import ProductResponseCache
 from fanvpn_bridge.routing import RouteTable
 from fanvpn_bridge.subagent_policy import SubagentPolicyConfig, SubagentPolicyStore
@@ -136,6 +137,7 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
         self.dispatcher.start(handshake_timeout=2)
         self.product_cache = ProductResponseCache()
         self.subagent_policy = SubagentPolicyStore(Path(self.temp.name) / "subagent-policy.json")
+        self.hybrid_route = HybridRouteStore(Path(self.temp.name) / "hybrid-route.json")
         self.server = create_http_server(
             self.config,
             RouteTable(self.config.routes),
@@ -145,6 +147,7 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
             product_cache=self.product_cache,
             gemini_account=_FakeGeminiAccount(),
             subagent_policy=self.subagent_policy,
+            hybrid_route_store=self.hybrid_route,
         )
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -160,6 +163,7 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
             product_cache=self.product_cache,
             gemini_account=_FakeGeminiAccount(),
             subagent_policy=self.subagent_policy,
+            hybrid_route_store=self.hybrid_route,
         )
         self.product_thread = threading.Thread(
             target=self.product_server.serve_forever,
@@ -241,6 +245,55 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body)["model"], "gemini-3.7-flash")
+
+    def test_hybrid_direct_reuses_the_single_managed_proxy(self) -> None:
+        calls = {}
+
+        class FakeResponse:
+            status = 200
+            reason = "OK"
+
+            def __init__(self):
+                self.parts = [b'{"ok":true}', b""]
+
+            def getheaders(self):
+                return [("Content-Type", "application/json")]
+
+            def read1(self, _size):
+                return self.parts.pop(0)
+
+        class FakeConnection:
+            def __init__(self, host, port, **_kwargs):
+                calls["endpoint"] = (host, port)
+
+            def set_tunnel(self, host, port, headers=None):
+                calls["tunnel"] = (host, port, headers)
+
+            def request(self, method, path, body=None, headers=None):
+                calls["request"] = (method, path, body, headers)
+
+            def getresponse(self):
+                return FakeResponse()
+
+            def close(self):
+                return None
+
+        self.hybrid_route.write(gpt_route="direct", vscode_network="server")
+        with patch("fanvpn_bridge.http_server.HTTPSConnection", FakeConnection):
+            status, headers, body = self.request(
+                "POST",
+                "/hybrid/v1/responses",
+                json.dumps({"model": "gpt-5.6-sol", "input": "hello"}).encode(),
+                {"content-type": "application/json", "authorization": "Bearer account-token"},
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {"ok": True})
+        self.assertEqual(headers["X-FanVPN-Hybrid-GPT-Route"], "direct")
+        self.assertEqual(calls["endpoint"], ("127.0.0.1", 18889))
+        self.assertEqual(calls["tunnel"][:2], ("chatgpt.com", 443))
+        self.assertEqual(calls["request"][1], "/backend-api/codex/responses")
+        sent_headers = {name.lower(): value for name, value in calls["request"][3].items()}
+        self.assertEqual(sent_headers["authorization"], "Bearer account-token")
 
     def test_hybrid_force_policy_changes_only_marked_subagent(self) -> None:
         self.subagent_policy.write(SubagentPolicyConfig(mode="force_gemini_37_high"))

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import re
@@ -10,8 +11,11 @@ import sys
 from contextlib import contextmanager
 import msvcrt
 
+from .hybrid_route import SUPPORTED_GPT_ROUTES, SUPPORTED_VSCODE_NETWORKS
+
 
 MODE_DIRECT = "direct"
+MODE_SERVER_CENTER = "server_center"
 MODE_BROWSER_LEAN = "browser_lean"
 MODE_BROWSER_FULL = "browser_full"
 MODE_GEMINI_ACCOUNT = "gemini_account"
@@ -20,11 +24,12 @@ MODE_HYBRID_CONFIGURED = "hybrid_configured"
 MODE_HYBRID_NATIVE = "hybrid_native"
 MODE_UNMANAGED = "unmanaged"
 SUPPORTED_MODES = frozenset({
-    MODE_DIRECT, MODE_BROWSER_LEAN, MODE_BROWSER_FULL, MODE_GEMINI_ACCOUNT,
+    MODE_DIRECT, MODE_SERVER_CENTER, MODE_BROWSER_LEAN, MODE_BROWSER_FULL, MODE_GEMINI_ACCOUNT,
     MODE_HYBRID_FORCE, MODE_HYBRID_CONFIGURED, MODE_HYBRID_NATIVE,
 })
 _SCRIPT_MODES = {
     MODE_DIRECT: "Direct",
+    MODE_SERVER_CENTER: "ServerCenter",
     MODE_BROWSER_LEAN: "BrowserLean",
     MODE_BROWSER_FULL: "BrowserFull",
     MODE_GEMINI_ACCOUNT: "GeminiAccount",
@@ -86,6 +91,8 @@ class CodexModeController:
         provider = provider_match.group("value")
         if provider == "browser_ai_direct":
             return MODE_DIRECT
+        if provider == "server_codex_executor":
+            return MODE_SERVER_CENTER
         if provider == "browser_ai_gemini_account":
             return MODE_GEMINI_ACCOUNT
         if provider != "browser_ai_bridge":
@@ -115,7 +122,53 @@ class CodexModeController:
             return MODE_BROWSER_FULL
         return MODE_BROWSER_LEAN
 
-    def set_mode(self, mode: str) -> str:
+    def get_profile(self) -> dict[str, str]:
+        mode = self.get_mode()
+        route_path = self._state_path.parent / "hybrid-route.json"
+        try:
+            value = json.loads(route_path.read_text(encoding="utf-8"))
+            value = value if isinstance(value, dict) else {}
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            value = {}
+        route = value.get("gpt_route")
+        network = value.get("vscode_network")
+        if route not in SUPPORTED_GPT_ROUTES:
+            route = (
+                "server_center" if mode == MODE_SERVER_CENTER
+                else "direct" if mode == MODE_DIRECT
+                else "browser_full"
+            )
+        if network not in SUPPORTED_VSCODE_NETWORKS:
+            network = "server" if mode == MODE_DIRECT else "system"
+        inferred_policy = {
+            MODE_HYBRID_FORCE: "force",
+            MODE_HYBRID_CONFIGURED: "configured",
+            MODE_HYBRID_NATIVE: "native",
+        }.get(mode, "native")
+        policy = value.get("subagent_policy")
+        if policy not in {"force", "configured", "native"}:
+            policy = inferred_policy
+        model_mode = value.get("model_mode")
+        if model_mode not in {"gpt_only", "unified"}:
+            model_mode = "unified" if mode in {
+                MODE_HYBRID_FORCE, MODE_HYBRID_CONFIGURED, MODE_HYBRID_NATIVE
+            } else "gpt_only"
+        return {
+            "mode": mode,
+            "model_mode": str(model_mode),
+            "vscode_network": str(network),
+            "gpt_route": str(route),
+            "subagent_policy": policy,
+        }
+
+    def set_mode(
+        self,
+        mode: str,
+        *,
+        vscode_network: str | None = None,
+        gpt_route: str | None = None,
+        subagent_policy: str | None = None,
+    ) -> str:
         if mode not in SUPPORTED_MODES:
             raise ModeControlError("Unsupported Codex mode")
         script = self._tools_directory / "start_vscode_network_mode.ps1"
@@ -140,6 +193,18 @@ class CodexModeController:
             "-StatePath",
             str(self._state_path),
         ]
+        if vscode_network is not None:
+            if vscode_network not in SUPPORTED_VSCODE_NETWORKS:
+                raise ModeControlError("Unsupported VS Code network")
+            command.extend(["-VsCodeNetwork", vscode_network.title()])
+        if gpt_route is not None:
+            if gpt_route not in SUPPORTED_GPT_ROUTES:
+                raise ModeControlError("Unsupported Hybrid GPT route")
+            command.extend(["-HybridGptRoute", gpt_route])
+        if subagent_policy is not None:
+            if subagent_policy not in {"force", "configured", "native"}:
+                raise ModeControlError("Unsupported subagent policy")
+            command.extend(["-ProfileSubagentPolicy", subagent_policy])
         managed_paths = [
             self._codex_home / "config.toml",
             Path(str(self._codex_home / "config.toml") + ".before-network-mode.bak"),
@@ -149,6 +214,7 @@ class CodexModeController:
             self._settings_path,
             Path(str(self._settings_path) + ".before-network-mode.bak"),
             self._state_path,
+            self._state_path.parent / "hybrid-route.json",
         ]
         agents_directory = self._codex_home / "agents"
         role_paths = set(agents_directory.glob("browser-ai-bridge-*.toml"))

@@ -44,7 +44,7 @@ from .protocol import (
 )
 
 
-HOST_VERSION = "3.9.0"
+HOST_VERSION = "3.10.0"
 _LOG = logging.getLogger("fanvpn_bridge.dispatcher")
 _LOG.addHandler(logging.NullHandler())
 
@@ -560,12 +560,25 @@ class NativeDispatcher:
             return
         threading.Thread(
             target=self._run_mode_control,
-            args=(request_id, mode if isinstance(mode, str) else None),
+            args=(
+                request_id,
+                mode if isinstance(mode, str) else None,
+                message.get("vscode_network") if isinstance(message.get("vscode_network"), str) else None,
+                message.get("gpt_route") if isinstance(message.get("gpt_route"), str) else None,
+                message.get("subagent_policy") if isinstance(message.get("subagent_policy"), str) else None,
+            ),
             name="fanvpn-mode-control",
             daemon=True,
         ).start()
 
-    def _run_mode_control(self, request_id: str, requested_mode: str | None) -> None:
+    def _run_mode_control(
+        self,
+        request_id: str,
+        requested_mode: str | None,
+        vscode_network: str | None,
+        gpt_route: str | None,
+        subagent_policy: str | None,
+    ) -> None:
         if not self._control_lock.acquire(blocking=False):
             self._send_mode_result(
                 request_id,
@@ -582,13 +595,23 @@ class NativeDispatcher:
                 mode = self._mode_controller.get_mode()
                 restart_required = False
             else:
-                mode = self._mode_controller.set_mode(requested_mode)
+                if gpt_route == "server_center":
+                    if self._server_executor_controller is None:
+                        raise ModeControlError("Server-center control is unavailable")
+                    self._server_executor_controller.ensure_client_running()
+                mode = self._mode_controller.set_mode(
+                    requested_mode,
+                    vscode_network=vscode_network,
+                    gpt_route=gpt_route,
+                    subagent_policy=subagent_policy,
+                )
                 restart_required = False
             self._send_mode_result(
                 request_id,
                 ok=True,
                 mode=mode,
                 restart_required=restart_required,
+                profile=self._mode_controller.get_profile(),
             )
         except ModeControlError as error:
             current = self._mode_controller.get_mode() if self._mode_controller else "unmanaged"
@@ -597,6 +620,7 @@ class NativeDispatcher:
                 ok=False,
                 mode=current,
                 restart_required=False,
+                profile=self._mode_controller.get_profile() if self._mode_controller else None,
                 message=str(error),
             )
         except Exception:
@@ -606,6 +630,7 @@ class NativeDispatcher:
                 ok=False,
                 mode=current,
                 restart_required=False,
+                profile=self._mode_controller.get_profile() if self._mode_controller else None,
                 message="Mode switch failed unexpectedly",
             )
         finally:
@@ -618,6 +643,7 @@ class NativeDispatcher:
         ok: bool,
         mode: str,
         restart_required: bool,
+        profile: Mapping[str, object] | None = None,
         message: str | None = None,
     ) -> None:
         fields: dict[str, object] = {
@@ -628,6 +654,8 @@ class NativeDispatcher:
         }
         if message:
             fields["message"] = message[:512]
+        if profile is not None:
+            fields["profile"] = dict(profile)
         try:
             self._channel.send(envelope("control.mode.result", **fields))
         except Exception:

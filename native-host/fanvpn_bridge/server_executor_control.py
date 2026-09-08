@@ -120,6 +120,35 @@ class ServerExecutorTransportController:
         state["restart_vscode_required"] = True
         return state
 
+    def ensure_client_running(self) -> dict[str, object]:
+        """Start the 18890 client for Hybrid without changing Codex Provider."""
+        if self._readiness_probe():
+            return self.get_state()
+        try:
+            config = load_server_client_config(self._client_config_path)
+            write_server_client_config(
+                self._client_config_path,
+                executor_url=config.executor_url,
+                device_token=config.device_token,
+                local_token=config.local_token,
+                transport="browser",
+                browser_bridge_url=_BROWSER_BRIDGE_URL,
+            )
+            self._process_stopper()
+            self._process_starter(self._client_command())
+            deadline = time.monotonic() + 7
+            while time.monotonic() < deadline:
+                if self._readiness_probe():
+                    return self.get_state()
+                time.sleep(0.1)
+        except (OSError, ServerClientError, subprocess.SubprocessError) as exc:
+            self._process_stopper()
+            raise ServerExecutorControlError("服务器中心客户端无法启动") from exc
+        self._process_stopper()
+        raise ServerExecutorControlError(
+            "服务器中心客户端未启动；请确认 Chrome、Browser Gateway 与 AI Bridge 都已连接"
+        )
+
     def _switch_to_server_center(self) -> None:
         try:
             config = load_server_client_config(self._client_config_path)

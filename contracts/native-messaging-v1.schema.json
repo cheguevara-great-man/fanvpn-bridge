@@ -297,7 +297,22 @@
       ]
     },
     "codexMode": {
-      "enum": ["direct", "browser_lean", "browser_full", "unmanaged"]
+      "enum": [
+        "direct", "server_center", "browser_lean", "browser_full", "gemini_account",
+        "hybrid_force", "hybrid_configured", "hybrid_native", "unmanaged"
+      ]
+    },
+    "codexProfile": {
+      "type": "object",
+      "required": ["vscode_network", "model_mode", "gpt_route", "subagent_policy"],
+      "properties": {
+        "mode": { "$ref": "#/$defs/codexMode" },
+        "vscode_network": { "enum": ["system", "server"] },
+        "model_mode": { "enum": ["gpt_only", "unified"] },
+        "gpt_route": { "enum": ["direct", "browser_full", "server_center"] },
+        "subagent_policy": { "enum": ["force", "configured", "native"] }
+      },
+      "additionalProperties": false
     },
     "controlModeGet": {
       "allOf": [
@@ -324,7 +339,15 @@
             "v": { "$ref": "#/$defs/protocolVersion" },
             "type": { "const": "control.mode.set" },
             "id": { "$ref": "#/$defs/requestId" },
-            "mode": { "enum": ["direct", "browser_lean", "browser_full"] }
+            "mode": {
+              "enum": [
+                "direct", "server_center", "browser_lean", "browser_full", "gemini_account",
+                "hybrid_force", "hybrid_configured", "hybrid_native"
+              ]
+            },
+            "vscode_network": { "enum": ["system", "server"] },
+            "gpt_route": { "enum": ["direct", "browser_full", "server_center"] },
+            "subagent_policy": { "enum": ["force", "configured", "native"] }
           },
           "additionalProperties": false
         }
@@ -343,6 +366,7 @@
             "ok": { "type": "boolean" },
             "mode": { "$ref": "#/$defs/codexMode" },
             "restart_vscode_required": { "type": "boolean" },
+            "profile": { "$ref": "#/$defs/codexProfile" },
             "message": { "type": "string", "maxLength": 512 }
           },
           "additionalProperties": false

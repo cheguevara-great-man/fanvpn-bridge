@@ -8,14 +8,17 @@ import os
 import queue
 import select
 import socket
+import ssl
 import threading
 import time
 import uuid
 from dataclasses import dataclass
+from http.client import HTTPConnection, HTTPSConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable, Iterable, Sequence, cast
 from urllib.parse import urlsplit
+from urllib.request import getproxies
 
 from .codex_product_auth import CodexProductAuth
 from .config import BridgeConfig
@@ -38,6 +41,13 @@ from .diagnostics import (
 )
 from .errors import BridgeError, ErrorCode
 from .gemini_account import GeminiAccountError, GeminiAccountProvider
+from .hybrid_route import (
+    GPT_ROUTE_BROWSER_FULL,
+    GPT_ROUTE_DIRECT,
+    GPT_ROUTE_SERVER_CENTER,
+    HybridRouteStore,
+    VSCODE_NETWORK_SERVER,
+)
 from .product_cache import CachedResponse, ProductResponseCache
 from .routing import RouteTable
 from .subagent_policy import SubagentPolicyStore
@@ -144,6 +154,7 @@ class BridgeHTTPServer(ThreadingHTTPServer):
         usage_reporter: UsageReporter | None = None,
         gemini_account: GeminiAccountProvider | None = None,
         subagent_policy: SubagentPolicyStore | None = None,
+        hybrid_route_store: HybridRouteStore | None = None,
         product_api_alias: bool = False,
     ) -> None:
         self.bridge_config = config
@@ -156,6 +167,7 @@ class BridgeHTTPServer(ThreadingHTTPServer):
         self.usage_reporter = usage_reporter
         self.gemini_account = gemini_account
         self.subagent_policy = subagent_policy
+        self.hybrid_route_store = hybrid_route_store
         self.product_api_alias = product_api_alias
         super().__init__(server_address, BridgeRequestHandler)
 
@@ -304,6 +316,20 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                     requested_model = str(hybrid_payload.get("model") or "").strip()
                     if requested_model.startswith("gemini-") and hybrid_path.endswith("/responses"):
                         self._handle_gemini_payload(server, hybrid_payload, request_id)
+                        return
+                    hybrid_route = (
+                        server.hybrid_route_store.read()
+                        if server.hybrid_route_store is not None
+                        else {"gpt_route": GPT_ROUTE_BROWSER_FULL, "vscode_network": "system"}
+                    )
+                    if hybrid_route["gpt_route"] in {GPT_ROUTE_DIRECT, GPT_ROUTE_SERVER_CENTER}:
+                        self._relay_hybrid_gpt(
+                            method,
+                            hybrid_path[len("/hybrid/v1"):],
+                            preloaded_body,
+                            hybrid_route,
+                            request_id,
+                        )
                         return
                     local_target = "/chatgpt-codex" + hybrid_path[len("/hybrid/v1"):]
                 else:
@@ -613,6 +639,114 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             if name.lower() not in excluded
             and (allowlist is None or name.lower() in allowlist)
         ]
+
+    def _relay_hybrid_gpt(
+        self,
+        method: str,
+        suffix: str,
+        body: bytes,
+        route_state: dict[str, str],
+        request_id: str,
+    ) -> None:
+        """Relay a GPT turn without changing the single Hybrid Provider.
+
+        Targets are fixed by the Bridge.  Neither the client nor the persisted
+        profile can supply an arbitrary URL.
+        """
+
+        route = route_state["gpt_route"]
+        timeout = cast(BridgeHTTPServer, self.server).bridge_config.protocol.request_timeout_seconds
+        headers = {
+            header.name: header.value
+            for header in self._request_headers()
+            if header.name.lower() not in {"cookie", "content-length"}
+        }
+        headers["Content-Length"] = str(len(body))
+        headers["Accept-Encoding"] = "identity"
+        connection: HTTPConnection | HTTPSConnection
+        target_path: str
+        if route == GPT_ROUTE_SERVER_CENTER:
+            try:
+                from .server_client import default_server_client_config_path, load_server_client_config
+
+                client_config = load_server_client_config(default_server_client_config_path())
+            except Exception as exc:
+                raise BridgeError(
+                    ErrorCode.EGRESS_UNAVAILABLE,
+                    "Server-center client is not configured",
+                ) from exc
+            connection = HTTPConnection("127.0.0.1", 18890, timeout=timeout)
+            target_path = "/v1" + suffix
+            if client_config.local_token:
+                headers["Authorization"] = "Bearer " + client_config.local_token
+        else:
+            proxy_url = None
+            if route_state["vscode_network"] == VSCODE_NETWORK_SERVER:
+                proxy_url = "http://127.0.0.1:18889"
+            else:
+                proxy_url = getproxies().get("https")
+            if proxy_url:
+                parsed = urlsplit(proxy_url)
+                if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+                    raise BridgeError(ErrorCode.EGRESS_UNAVAILABLE, "System HTTPS proxy is invalid")
+                connection = HTTPSConnection(
+                    parsed.hostname,
+                    parsed.port or (443 if parsed.scheme == "https" else 80),
+                    timeout=timeout,
+                    context=ssl.create_default_context(),
+                )
+                tunnel_headers = {}
+                if parsed.username is not None:
+                    # Credentials in arbitrary system proxy URLs are deliberately
+                    # not accepted.  The managed 18889 process owns upstream auth.
+                    raise BridgeError(ErrorCode.EGRESS_UNAVAILABLE, "Authenticated system proxy URLs are unsupported")
+                connection.set_tunnel("chatgpt.com", 443, headers=tunnel_headers)
+            else:
+                connection = HTTPSConnection(
+                    "chatgpt.com", 443, timeout=timeout, context=ssl.create_default_context()
+                )
+            target_path = "/backend-api/codex" + suffix
+        started = time.monotonic()
+        response_started = False
+        try:
+            connection.request(method, target_path, body=body or None, headers=headers)
+            response = connection.getresponse()
+            self.send_response(response.status, response.reason)
+            excluded = _HOP_BY_HOP | _BROWSER_DECODED_RESPONSE_HEADERS | {"set-cookie"}
+            for name, value in response.getheaders():
+                lowered = name.lower()
+                if lowered not in excluded and not lowered.startswith("access-control-"):
+                    self.send_header(name, value)
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("X-FanVPN-Hybrid-GPT-Route", route)
+            self.end_headers()
+            response_started = True
+            while True:
+                # read1 returns the next available buffered/chunked payload
+                # instead of waiting to fill 64 KiB, preserving SSE streaming.
+                chunk = response.read1(64 * 1024)
+                if not chunk:
+                    break
+                self._write_chunk(chunk)
+            self._write_chunk(b"")
+            _LOG.info(
+                "hybrid_gpt_complete request_id=%s route=%s method=%s status=%s total_ms=%s",
+                request_id,
+                route,
+                method,
+                response.status,
+                _elapsed_ms(started),
+            )
+        except (OSError, ssl.SSLError) as exc:
+            if response_started:
+                self.close_connection = True
+                return
+            raise BridgeError(
+                ErrorCode.EGRESS_UNAVAILABLE,
+                f"Hybrid GPT {route} transport is unavailable",
+            ) from exc
+        finally:
+            connection.close()
 
     def _validate_local_request(self, server: BridgeHTTPServer) -> None:
         host = self.headers.get("Host")
@@ -1248,6 +1382,7 @@ def create_http_server(
     usage_reporter: UsageReporter | None = None,
     gemini_account: GeminiAccountProvider | None = None,
     subagent_policy: SubagentPolicyStore | None = None,
+    hybrid_route_store: HybridRouteStore | None = None,
 ) -> BridgeHTTPServer:
     auth_path = codex_auth_path or Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "auth.json"
     return BridgeHTTPServer(
@@ -1262,5 +1397,6 @@ def create_http_server(
         usage_reporter=usage_reporter,
         gemini_account=gemini_account,
         subagent_policy=subagent_policy,
+        hybrid_route_store=hybrid_route_store,
         product_api_alias=product_api_alias,
     )

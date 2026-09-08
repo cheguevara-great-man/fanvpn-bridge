@@ -201,13 +201,11 @@ Select-String "$env:USERPROFILE\.codex\config.toml" -Pattern `
 
 最后在 VS Code Codex 新建任务并发送一条消息。服务器统计网页应把请求计入当前注册设备。
 
-## 8. 切回旧浏览器链路
+## 8. 切换原生 GPT 链路
 
-完全退出 VS Code，在 FanVPN AI Bridge 的“Codex 链路选择”中点击“旧浏览器链路”，再重新打开 VS Code。
-Bridge 会停止独立 `18890` 进程，并恢复切换前的 Provider；`18888`、Chrome 和 Browser Gateway 不会被关闭。
-
-点击上方任意普通 Codex 模式（浏览器精简、浏览器完整、仅 Gemini 或 Hybrid）时，插件也会先退出服务器中心，
-避免 `18888` 与 `18890` 两套 Provider 同时被选中。
+完全退出 VS Code，在 FanVPN AI Bridge 的“原生 GPT 模型请求链路”中选择“服务器中心”即可使用；
+选择“官方直连”或“浏览器完整”会停止把新的 GPT 请求送往服务器中心。统一模型目录本身无需退出，
+Gemini 与 WebGPT 仍使用各自固定链路；`18888`、Chrome 和 Browser Gateway 不会被关闭。
 
 ## 9. 可选 Direct 传输
 

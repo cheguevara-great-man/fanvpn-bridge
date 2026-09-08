@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('Browser', 'BrowserLean', 'BrowserFull', 'Direct', 'GeminiAccount', 'HybridForce', 'HybridConfigured', 'HybridNative')]
+    [ValidateSet('Browser', 'BrowserLean', 'BrowserFull', 'Direct', 'ServerCenter', 'GeminiAccount', 'HybridForce', 'HybridConfigured', 'HybridNative')]
     [string]$Mode,
 
     [string]$CodexHome = (Join-Path $HOME '.codex'),
@@ -9,6 +9,15 @@ param(
     [string]$SettingsPath = (Join-Path $env:APPDATA 'Code\User\settings.json'),
 
     [string]$StatePath = (Join-Path $env:LOCALAPPDATA 'FanVPNBridge\vscode-codex-endpoint.json'),
+
+    [ValidateSet('Auto', 'System', 'Server')]
+    [string]$VsCodeNetwork = 'Auto',
+
+    [ValidateSet('browser_full', 'direct', 'server_center')]
+    [string]$HybridGptRoute = 'browser_full',
+
+    [ValidateSet('force', 'configured', 'native')]
+    [string]$ProfileSubagentPolicy = 'native',
 
     [Parameter(ValueFromRemainingArguments)]
     [string[]]$CodeArguments
@@ -20,6 +29,10 @@ $credentialPath = Join-Path $runtimeDirectory 'direct-proxy.json'
 $pidPath = Join-Path $runtimeDirectory 'direct-proxy.pid'
 $registryPath = 'HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.fanvpn.bridge'
 $managedConnectorsToken = 'browser-ai-bridge-managed'
+$hybridRoutePath = Join-Path $runtimeDirectory 'hybrid-route.json'
+$effectiveVsCodeNetwork = if ($VsCodeNetwork -eq 'Auto') {
+    if ($Mode -eq 'Direct') { 'Server' } else { 'System' }
+} else { $VsCodeNetwork }
 
 if (Get-Process -Name Code -ErrorAction SilentlyContinue) {
     Write-Output 'BRIDGE_MODE_ERROR=VSCODE_RUNNING'
@@ -59,13 +72,13 @@ function Stop-DirectProxy {
 }
 
 function Test-DirectProxyHealthy {
-    if (-not (Test-Path -LiteralPath $pidPath -PathType Leaf)) { return $false }
-    $savedPid = 0
-    if (-not [int]::TryParse(([System.IO.File]::ReadAllText($pidPath).Trim()), [ref]$savedPid)) {
+    try {
+        $ready = Invoke-RestMethod 'http://browser-ai-bridge.local/ready' `
+            -Proxy 'http://127.0.0.1:18889' -TimeoutSec 1
+        return $ready.mode -eq 'vscode-direct-proxy'
+    } catch {
         return $false
     }
-    $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $savedPid" -ErrorAction SilentlyContinue
-    return $null -ne $processInfo -and $processInfo.CommandLine -match '(?i)(^|\s)--forward-proxy(\s|$)'
 }
 
 function Start-DirectProxy {
@@ -166,6 +179,7 @@ $snapshots = @(
     Save-FileState -Path $settingsFullPath
     Save-FileState -Path "$settingsFullPath.before-network-mode.bak"
     Save-FileState -Path $stateFullPath
+    Save-FileState -Path $hybridRoutePath
     foreach ($rolePath in $managedRolePaths) { Save-FileState -Path $rolePath }
 )
 $directProxyWasRunning = Test-DirectProxyHealthy
@@ -191,21 +205,14 @@ function Get-CodexClientVersion {
 }
 
 try {
+    if ($effectiveVsCodeNetwork -eq 'Server') { Start-DirectProxy }
     if ($Mode -eq 'Direct') {
-        Start-DirectProxy
         & (Join-Path $PSScriptRoot 'set_vscode_codex_mode.ps1') -Mode $Mode `
             -CodexHome $CodexHome -SettingsPath $SettingsPath -StatePath $StatePath
-        $env:HTTP_PROXY = 'http://127.0.0.1:18889'
-        $env:HTTPS_PROXY = 'http://127.0.0.1:18889'
-        $env:ALL_PROXY = 'http://127.0.0.1:18889'
         Remove-Item Env:CODEX_REFRESH_TOKEN_URL_OVERRIDE -ErrorAction SilentlyContinue
         Remove-Item Env:CODEX_REVOKE_TOKEN_URL_OVERRIDE -ErrorAction SilentlyContinue
         Remove-Item Env:CODEX_CONNECTORS_TOKEN -ErrorAction SilentlyContinue
-        $launchArguments = @(
-            '--proxy-server=http://127.0.0.1:18889',
-            '--proxy-bypass-list=127.0.0.1;localhost',
-            '--new-window'
-        ) + @($CodeArguments | Where-Object { $null -ne $_ -and $_ -ne '' })
+        $launchArguments = @('--new-window') + @($CodeArguments | Where-Object { $null -ne $_ -and $_ -ne '' })
     } else {
         # Validate the Browser product endpoint before changing any file or
         # stopping an already working Direct proxy.
@@ -274,16 +281,45 @@ try {
             $CodeArguments | Where-Object { $null -ne $_ -and $_ -ne '' }
         )
     }
+    $routeState = [ordered]@{
+        gpt_route = $HybridGptRoute
+        vscode_network = $effectiveVsCodeNetwork.ToLowerInvariant()
+        model_mode = if ($Mode -in @('HybridForce', 'HybridConfigured', 'HybridNative')) { 'unified' } else { 'gpt_only' }
+        subagent_policy = $ProfileSubagentPolicy
+    } | ConvertTo-Json
+    New-Item -ItemType Directory -Path $runtimeDirectory -Force | Out-Null
+    $routeTemporary = "$hybridRoutePath.$PID.next"
+    [System.IO.File]::WriteAllText(
+        $routeTemporary,
+        $routeState,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    Move-Item -LiteralPath $routeTemporary -Destination $hybridRoutePath -Force
+    if ($effectiveVsCodeNetwork -eq 'Server') {
+        $env:HTTP_PROXY = 'http://127.0.0.1:18889'
+        $env:HTTPS_PROXY = 'http://127.0.0.1:18889'
+        $env:ALL_PROXY = 'http://127.0.0.1:18889'
+        $launchArguments = @(
+            '--proxy-server=http://127.0.0.1:18889',
+            '--proxy-bypass-list=127.0.0.1;localhost'
+        ) + $launchArguments
+    } else {
+        foreach ($name in @('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY')) {
+            $item = Get-Item "Env:$name" -ErrorAction SilentlyContinue
+            if ($item -and $item.Value -eq 'http://127.0.0.1:18889') {
+                Remove-Item "Env:$name" -ErrorAction SilentlyContinue
+            }
+        }
+    }
     $noProxy = @($env:NO_PROXY -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
     foreach ($entry in @('127.0.0.1', 'localhost')) {
         if ($noProxy -notcontains $entry) { $noProxy += $entry }
     }
     $env:NO_PROXY = $noProxy -join ','
     Start-Process -FilePath $codeExecutable -ArgumentList $launchArguments
-    if ($Mode -ne 'Direct') { Stop-DirectProxy }
 } catch {
     foreach ($snapshot in $snapshots) { Restore-FileState -State $snapshot }
-    if ($Mode -eq 'Direct' -and -not $directProxyWasRunning) {
+    if ($effectiveVsCodeNetwork -eq 'Server' -and -not $directProxyWasRunning) {
         Stop-DirectProxy
     }
     throw

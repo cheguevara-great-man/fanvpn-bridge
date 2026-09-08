@@ -47,20 +47,34 @@
     <div class="row"><span>ChatGPT 网站权限</span><strong id="site-access">检查中</strong></div>
     <div class="row"><span>版本</span><span id="version">-</span></div>
 
-    <h2>VS Code Codex 模式</h2>
+    <h2>1. VS Code 通用网络</h2>
     <div class="modes">
-      <button type="button" data-mode="direct">服务器直连</button>
-      <button type="button" data-mode="browser_lean">浏览器精简</button>
-      <button type="button" data-mode="browser_full">浏览器完整</button>
-      <button type="button" data-mode="gemini_account">仅 Gemini</button>
+      <button type="button" data-profile-key="vscode_network" data-profile-value="system">使用系统网络</button>
+      <button type="button" data-profile-key="vscode_network" data-profile-value="server">使用美国服务器</button>
     </div>
-    <h2>Hybrid：GPT + Gemini</h2>
+    <div class="hint">美国服务器模式让新启动的整个 VS Code 使用共享的 18889；端口已存在时只复用，不重复启动。</div>
+
+    <h2>2. Codex 模型模式</h2>
     <div class="modes">
-      <button type="button" data-mode="hybrid_force">子 Agent 固定 Gemini</button>
-      <button type="button" data-mode="hybrid_configured">子 Agent 默认 Gemini</button>
-      <button type="button" data-mode="hybrid_native">Codex 原生决策</button>
+      <button type="button" data-profile-key="model_mode" data-profile-value="gpt_only">仅原生 GPT</button>
+      <button type="button" data-profile-key="model_mode" data-profile-value="unified">GPT + Gemini + WebGPT</button>
     </div>
-    <div class="hint">主 Agent 始终可在 Codex 模型菜单中自由选择 GPT 或 Gemini。</div>
+
+    <h2>3. 原生 GPT 模型请求链路</h2>
+    <div class="modes">
+      <button type="button" data-profile-key="gpt_route" data-profile-value="direct">官方直连</button>
+      <button type="button" data-profile-key="gpt_route" data-profile-value="browser_full">浏览器完整</button>
+      <button type="button" data-profile-key="gpt_route" data-profile-value="server_center">服务器中心</button>
+    </div>
+    <div class="hint">只影响原生 GPT 模型请求；Gemini、WebHarness 与 ChatGPT 产品接口保持各自固定链路。</div>
+
+    <h2>4. 子 Agent 策略</h2>
+    <div class="modes">
+      <button type="button" data-profile-key="subagent_policy" data-profile-value="force">固定 Gemini</button>
+      <button type="button" data-profile-key="subagent_policy" data-profile-value="configured">默认 Gemini</button>
+      <button type="button" data-profile-key="subagent_policy" data-profile-value="native">Codex 原生决策</button>
+    </div>
+    <div class="hint">该设置不改变 VS Code 网络或原生 GPT 链路。</div>
     <details id="subagent-settings">
       <summary>配置“默认 Gemini”与自定义角色</summary>
       <label>默认子 Agent 模型<select id="subagent-model"></select></label>
@@ -70,14 +84,8 @@
       <button type="button" class="primary" id="save-subagents">保存子 Agent 配置</button>
       <div class="hint">角色由 Codex 按描述选择；显式指定的角色/模型仍优先于默认值。</div>
     </details>
+    <button type="button" class="primary" id="apply-codex-profile">应用配置并启动 VS Code</button>
     <div id="mode-note">正在读取上次托管配置……</div>
-
-    <h2>Codex 链路选择</h2>
-    <div class="modes">
-      <button type="button" data-server-route="browser_chain">旧浏览器链路</button>
-      <button type="button" data-server-route="server_center">服务器中心（经浏览器）</button>
-    </div>
-    <div id="server-route-note" class="hint">服务器中心仍通过 Chrome、Browser Gateway 和本扩展出网；不会改用 VS Code 直连服务器。</div>
 
     <h2>Google 账号额度</h2>
     <div class="quota-card">
@@ -105,7 +113,6 @@
       <div class="hint">首次配置或需要更新时点击。完成后只需重启一次 VS Code。</div>
 
     <h2>ChatGPT 网页执行器</h2>
-    <button type="button" class="primary" data-mode="hybrid_native" id="web-harness-enable">启用 ChatGPT Web 模式</button>
     <button type="button" id="web-harness-install">安装 / 更新 WebHarness</button>
     <button type="button" id="web-harness-open">打开 WebHarness</button>
     <button type="button" id="web-harness-refresh">配置完成后刷新网页模型</button>
@@ -114,7 +121,7 @@
       <button type="button" data-web-network="gateway">使用已保存的服务器代理</button>
       <div class="hint">服务器代理使用本机已保存的 direct-proxy.json；不自动继承 Chrome 的代理设置，也不改变旧链路。</div>
     </details>
-    <div class="hint" id="web-harness-status">先点击“启用 ChatGPT Web 模式”。它会保留原来的 Direct 配置；需要退出时点击上方“服务器直连”，并自动恢复进入前的 GPT 模型。</div>
+    <div class="hint" id="web-harness-status">安装并完成登录后，在上方选择“GPT + Gemini + WebGPT”，然后应用配置。</div>
 
     <h2>安装与升级</h2>
     <details id="software-update-settings">

@@ -13,6 +13,7 @@ from fanvpn_bridge.mode_control import (
     MODE_BROWSER_FULL,
     MODE_BROWSER_LEAN,
     MODE_DIRECT,
+    MODE_SERVER_CENTER,
     MODE_GEMINI_ACCOUNT,
     MODE_HYBRID_CONFIGURED,
     MODE_HYBRID_FORCE,
@@ -51,6 +52,9 @@ class CodexModeControllerTests(unittest.TestCase):
 
             self.write_config(root, 'model_provider = "browser_ai_direct"\n')
             self.assertEqual(controller.get_mode(), MODE_DIRECT)
+
+            self.write_config(root, 'model_provider = "server_codex_executor"\n')
+            self.assertEqual(controller.get_mode(), MODE_SERVER_CENTER)
 
             self.write_config(root, 'model_provider = "browser_ai_bridge"\n')
             self.assertEqual(controller.get_mode(), MODE_BROWSER_LEAN)
@@ -112,6 +116,45 @@ class CodexModeControllerTests(unittest.TestCase):
 
             with patch("fanvpn_bridge.mode_control.subprocess.run", side_effect=run):
                 self.assertEqual(controller.set_mode(MODE_BROWSER_FULL), MODE_BROWSER_FULL)
+
+    def test_profile_options_are_forwarded_and_read_back(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            controller = self.make_controller(root)
+
+            def run(command: list[str], **_kwargs: object) -> SimpleNamespace:
+                self.assertEqual(command[command.index("-VsCodeNetwork") + 1], "Server")
+                self.assertEqual(command[command.index("-HybridGptRoute") + 1], "direct")
+                self.assertEqual(command[command.index("-ProfileSubagentPolicy") + 1], "configured")
+                self.write_config(
+                    root,
+                    'model_provider = "browser_ai_bridge"\n\n'
+                    '[model_providers.browser_ai_bridge]\n'
+                    'base_url = "http://127.0.0.1:18888/hybrid/v1"\n',
+                )
+                state = root / "hybrid-route.json"
+                state.write_text(
+                    '{"gpt_route":"direct","vscode_network":"server",'
+                    '"model_mode":"unified","subagent_policy":"configured"}',
+                    encoding="utf-8",
+                )
+                (root / "subagent-policy.json").write_text(
+                    '{"mode":"configured"}', encoding="utf-8"
+                )
+                return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+            with patch("fanvpn_bridge.mode_control.subprocess.run", side_effect=run):
+                controller.set_mode(
+                    MODE_HYBRID_CONFIGURED,
+                    vscode_network="server",
+                    gpt_route="direct",
+                    subagent_policy="configured",
+                )
+            profile = controller.get_profile()
+            self.assertEqual(profile["model_mode"], "unified")
+            self.assertEqual(profile["vscode_network"], "server")
+            self.assertEqual(profile["gpt_route"], "direct")
+            self.assertEqual(profile["subagent_policy"], "configured")
 
     def test_running_vscode_has_a_specific_actionable_error(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

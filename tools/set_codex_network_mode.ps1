@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('Browser', 'BrowserLean', 'BrowserFull', 'Direct', 'GeminiAccount', 'HybridForce', 'HybridConfigured', 'HybridNative')]
+    [ValidateSet('Browser', 'BrowserLean', 'BrowserFull', 'Direct', 'ServerCenter', 'GeminiAccount', 'HybridForce', 'HybridConfigured', 'HybridNative')]
     [string]$Mode,
 
     [string]$CodexHome = (Join-Path $HOME '.codex'),
@@ -435,7 +435,7 @@ $content = [regex]::Replace($content, $providerPattern, '')
 # this script before appending their canonical definitions; otherwise the
 # resulting TOML contains duplicate tables and Codex may only partially load
 # product features such as Apps and plugins.
-foreach ($managedProviderName in @('browser_ai_bridge', 'browser_ai_direct', 'browser_ai_gemini_account')) {
+foreach ($managedProviderName in @('browser_ai_bridge', 'browser_ai_direct', 'browser_ai_gemini_account', 'server_codex_executor')) {
     $unmanagedProviderPattern = '(?ms)^\s*\[model_providers\.' +
         [regex]::Escape($managedProviderName) + '\]\s*(?:\r?\n|$).*?(?=^\s*\[|\z)'
     $content = [regex]::Replace($content, $unmanagedProviderPattern, '')
@@ -761,6 +761,8 @@ if ($effectiveMode -ne 'Direct') {
 
 $provider = if ($effectiveMode -eq 'Direct') {
     'browser_ai_direct'
+} elseif ($effectiveMode -eq 'ServerCenter') {
+    'server_codex_executor'
 } else {
     'browser_ai_bridge'
 }
@@ -798,6 +800,13 @@ base_url = "http://127.0.0.1:18888/gemini-account/v1"
 # even for a local custom provider. The bearer token is accepted only by the
 # loopback Bridge and is never forwarded to Google.
 requires_openai_auth = true
+wire_api = "responses"
+supports_websockets = false
+
+[model_providers.server_codex_executor]
+name = "Server-side Codex Executor"
+base_url = "http://127.0.0.1:18890/v1"
+requires_openai_auth = false
 wire_api = "responses"
 supports_websockets = false
 $providerEnd

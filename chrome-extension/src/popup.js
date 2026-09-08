@@ -51,9 +51,8 @@ const antigravityButton = document.getElementById("antigravity-setup");
 const antigravityNote = document.getElementById("antigravity-note");
 const noticeBox = document.getElementById("notice");
 const errorBox = document.getElementById("error");
-const modeButtons = [...document.querySelectorAll("button[data-mode]")];
-const serverRouteButtons = [...document.querySelectorAll("button[data-server-route]")];
-const serverRouteNote = document.getElementById("server-route-note");
+const profileButtons = [...document.querySelectorAll("button[data-profile-key]")];
+const applyProfileButton = document.getElementById("apply-codex-profile");
 const subagentModel = document.getElementById("subagent-model");
 const subagentEffort = document.getElementById("subagent-effort");
 const subagentRoles = document.getElementById("subagent-roles");
@@ -73,19 +72,12 @@ const bridgeUpdateButton = document.getElementById("bridge-update");
 const gatewayUpdateButton = document.getElementById("gateway-update");
 const softwareUpdateNote = document.getElementById("software-update-note");
 let availableModels = [];
-let serverRouteState = null;
-let serverRouteAvailable = true;
 let uiBusy = false;
-
-const MODE_LABELS = {
-  gemini_account: "仅 Gemini 账号",
-  hybrid_force: "Hybrid · 子 Agent 固定 Gemini 3.7 Flash High",
-  hybrid_configured: "Hybrid · 子 Agent 默认 Gemini（Codex 可覆盖）",
-  hybrid_native: "Hybrid · Codex 原生子 Agent 决策",
-  direct: "服务器直连",
-  browser_lean: "浏览器精简",
-  browser_full: "浏览器完整",
-  unmanaged: "未由 Bridge 管理",
+let selectedProfile = {
+  vscode_network: "system",
+  model_mode: "unified",
+  gpt_route: "browser_full",
+  subagent_policy: "native",
 };
 
 try {
@@ -109,9 +101,6 @@ try { await refreshMode(); } catch (error) {
   modeNote.textContent = "上次托管配置：读取失败";
   showError(error.message || String(error));
 }
-try { await refreshServerRoute(); } catch (error) {
-  renderServerRouteUnavailable(error.message || String(error));
-}
 try { await refreshAntigravity(); } catch (error) {
   renderAntigravity(null);
   showError(error.message || String(error));
@@ -133,53 +122,31 @@ quotaRefreshButton.addEventListener("click", async () => {
   } finally { quotaRefreshButton.disabled = false; }
 });
 
-for (const button of modeButtons) {
-  button.addEventListener("click", async () => {
-    setBusy(true);
-    hideMessages();
-    try {
-      // Every Codex mode in this section belongs to the established 18888
-      // browser/direct family.  Stop an independently selected 18890 client
-      // first so the UI and config.toml cannot describe conflicting modes.
-      if (serverRouteState?.mode === "server_center") {
-        const routeResult = await chrome.runtime.sendMessage({
-          target: "background", kind: "server-executor:set", mode: "browser_chain",
-        });
-        if (routeResult?.ok !== true) {
-          throw new Error(routeResult?.message || "无法退出服务器中心链路");
-        }
-        renderServerRoute(routeResult.state);
-      }
-      const result = await chrome.runtime.sendMessage({
-        target: "background", kind: "codex-mode:set", mode: button.dataset.mode,
-      });
-      if (result?.ok !== true) throw new Error(result?.message || "模式切换失败");
-      renderMode(result.mode);
-      if (result.mode === "hybrid_configured") await refreshSubagents();
-      showNotice(button.id === "web-harness-enable"
-        ? "ChatGPT Web 模式已启用；原 Direct 配置已保留。重新打开 Codex 后选择 chatgpt-web 模型。"
-        : "切换成功，VS Code 已按所选模式启动。");
-    } catch (error) { showError(error.message || String(error)); }
-    finally { setBusy(false); }
+for (const button of profileButtons) {
+  button.addEventListener("click", () => {
+    selectedProfile[button.dataset.profileKey] = button.dataset.profileValue;
+    renderProfile(selectedProfile);
   });
 }
 
-for (const button of serverRouteButtons) {
-  button.addEventListener("click", async () => {
-    setBusy(true);
-    hideMessages();
-    try {
-      const result = await chrome.runtime.sendMessage({
-        target: "background", kind: "server-executor:set", mode: button.dataset.serverRoute,
-      });
-      if (result?.state) renderServerRoute(result.state);
-      if (result?.ok !== true) throw new Error(result?.message || "链路切换失败");
-      renderServerRoute(result.state);
-      showNotice("链路已切换。请完全退出并重新打开 VS Code 后再使用 Codex。");
-    } catch (error) { showError(error.message || String(error)); }
-    finally { setBusy(false); }
-  });
-}
+applyProfileButton.addEventListener("click", async () => {
+  setBusy(true);
+  hideMessages();
+  try {
+    const mode = modeForProfile(selectedProfile);
+    const result = await chrome.runtime.sendMessage({
+      target: "background",
+      kind: "codex-mode:set",
+      mode,
+      profile: selectedProfile,
+    });
+    if (result?.ok !== true) throw new Error(result?.message || "配置应用失败");
+    renderProfile(result.profile || selectedProfile);
+    if (mode === "hybrid_configured") await refreshSubagents();
+    showNotice("配置已应用；VS Code 已按所选网络、模型和子 Agent 策略启动。");
+  } catch (error) { showError(error.message || String(error)); }
+  finally { setBusy(false); }
+});
 
 antigravityButton.addEventListener("click", async () => {
   setBusy(true);
@@ -229,46 +196,7 @@ saveSubagentsButton.addEventListener("click", async () => {
 async function refreshMode() {
   const result = await chrome.runtime.sendMessage({ target: "background", kind: "codex-mode:get" });
   if (result?.ok !== true) throw new Error(result?.message || "无法读取 Codex 模式");
-  renderMode(result.mode);
-}
-
-async function refreshServerRoute() {
-  const result = await chrome.runtime.sendMessage({ target: "background", kind: "server-executor:get" });
-  if (result?.ok !== true) throw new Error(result?.message || "无法读取链路状态");
-  renderServerRoute(result.state);
-}
-
-function renderServerRoute(state) {
-  serverRouteAvailable = true;
-  serverRouteState = state || { mode: "browser_chain" };
-  const mode = state?.mode === "server_center" ? "server_center" : "browser_chain";
-  for (const button of serverRouteButtons) {
-    button.classList.toggle("active", button.dataset.serverRoute === mode);
-  }
-  if (mode === "server_center") {
-    const ready = state?.client_running === true;
-    const direct = state?.transport === "direct";
-    serverRouteNote.textContent = ready
-      ? (direct
-        ? "服务器中心已启用：18890 → HTTPS → 服务器。"
-        : "服务器中心已启用：18890 → 本扩展 → 浏览器代理 → 服务器。")
-      : "服务器中心已选中，但 18890 客户端未运行；请再次点击或检查 Chrome 与本扩展。";
-    return;
-  }
-  serverRouteNote.textContent = state?.configured === false
-    ? "旧浏览器链路正在使用；服务器中心尚未完成设备注册。"
-    : "旧浏览器链路：VS Code → 18888 → 本扩展 → 浏览器代理 → ChatGPT。";
-}
-
-function renderServerRouteUnavailable(message) {
-  serverRouteAvailable = false;
-  serverRouteState = null;
-  for (const button of serverRouteButtons) {
-    button.classList.remove("active");
-    button.disabled = true;
-  }
-  serverRouteNote.textContent =
-    `链路控制暂不可用（${message}）。上方 Codex 模式仍可正常选择；更新 AI Bridge Host 后可恢复此功能。`;
+  renderProfile(result.profile || profileFromLegacyMode(result.mode));
 }
 
 async function refreshAntigravity() {
@@ -387,9 +315,36 @@ function readRole(container) {
     .map((key) => [key, container.querySelector(`[data-key="${key}"]`).value]));
 }
 
-function renderMode(mode) {
-  modeNote.textContent = `上次托管配置：${MODE_LABELS[mode] || mode}`;
-  for (const button of modeButtons) button.classList.toggle("active", button.dataset.mode === mode);
+function profileFromLegacyMode(mode) {
+  const unified = ["hybrid_force", "hybrid_configured", "hybrid_native"].includes(mode);
+  return {
+    vscode_network: mode === "direct" ? "server" : "system",
+    model_mode: unified ? "unified" : "gpt_only",
+    gpt_route: mode === "direct" ? "direct" : mode === "server_center" ? "server_center" : "browser_full",
+    subagent_policy: mode === "hybrid_force" ? "force" : mode === "hybrid_configured" ? "configured" : "native",
+  };
+}
+
+function modeForProfile(profile) {
+  if (profile.model_mode === "unified") {
+    return ({ force: "hybrid_force", configured: "hybrid_configured", native: "hybrid_native" })[profile.subagent_policy] || "hybrid_native";
+  }
+  return ({ direct: "direct", browser_full: "browser_full", server_center: "server_center" })[profile.gpt_route] || "browser_full";
+}
+
+function renderProfile(profile) {
+  selectedProfile = { ...selectedProfile, ...profile };
+  for (const button of profileButtons) {
+    button.classList.toggle(
+      "active",
+      selectedProfile[button.dataset.profileKey] === button.dataset.profileValue,
+    );
+  }
+  const network = selectedProfile.vscode_network === "server" ? "美国服务器" : "系统网络";
+  const models = selectedProfile.model_mode === "unified" ? "GPT + Gemini + WebGPT" : "仅 GPT";
+  const route = ({ direct: "官方直连", browser_full: "浏览器完整", server_center: "服务器中心" })[selectedProfile.gpt_route];
+  const policy = ({ force: "固定 Gemini", configured: "默认 Gemini", native: "Codex 原生决策" })[selectedProfile.subagent_policy];
+  modeNote.textContent = `待应用配置：${network} · ${models} · ${route} · ${policy}`;
 }
 
 function renderAntigravity(state) {
@@ -404,7 +359,8 @@ function renderAntigravity(state) {
 function setBusy(busy) {
   uiBusy = busy;
   const controls = [
-    ...modeButtons,
+    ...profileButtons,
+    applyProfileButton,
     antigravityButton,
     addRoleButton,
     saveSubagentsButton,
@@ -412,7 +368,7 @@ function setBusy(busy) {
     bridgeUpdateButton,
     gatewayUpdateButton,
   ];
-  applyBusyState(controls, serverRouteButtons, { busy: uiBusy, serverRouteAvailable });
+  applyBusyState(controls, [], { busy: uiBusy, serverRouteAvailable: true });
 }
 function hideMessages() { noticeBox.hidden = true; errorBox.hidden = true; }
 function showNotice(message) { errorBox.hidden = true; noticeBox.hidden = false; noticeBox.textContent = message; }

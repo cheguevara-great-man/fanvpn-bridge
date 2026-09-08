@@ -49,8 +49,10 @@ Chrome 扩展弹窗
   -> 事务式更新托管配置并启动 VS Code
 ```
 
-扩展只能提交 `direct`、`browser_lean`、`browser_full`、`gemini_account`、`hybrid_force`、
-`hybrid_configured`、`hybrid_native` 七个固定枚举值，不能指定命令、脚本路径或任意参数。启动器在修改前
+扩展提交的四层配置都只能取固定枚举：VS Code 网络为 `system/server`，模型目录为
+`gpt_only/unified`，原生 GPT 路由为 `direct/browser_full/server_center`，子 Agent 为
+`force/configured/native`。Host 再把组合映射到既有托管模式；旧 `browser_lean` 仅保留兼容读取，
+扩展不能指定命令、脚本路径或任意上游。启动器在修改前
 快照 Codex 配置、VS Code 设置、备份文件和端点状态；任何配置步骤或 VS Code
 启动失败时恢复快照，并恢复切换前的 Direct 代理进程状态。
 
@@ -96,8 +98,9 @@ A/B 更新流程负责验证和切换；构建缓存与当前注册的运行槽�
 
 常规透明转发使用 `http://127.0.0.1:18888/{route}`，其中 `route` 必须存在于运行时
 `routes.json`，客户端不能提供任意上游 URL。`/gemini-account/v1/*` 和 `/hybrid/v1/*` 是 Host 内置的
-受限协议适配端点，不接受客户端指定上游。Hybrid 的 `/responses` 按 `gemini-` 模型前缀选择 Google
-账号适配器，其余模型进入固定 `chatgpt-codex` 路由；`/responses/compact` 等维护接口始终走 GPT 链路。
+受限协议适配端点，不接受客户端指定上游。Hybrid 的 `/responses` 按 `gemini-` 和 `chatgpt-web/`
+模型前缀选择固定适配器，其余 GPT 模型再按本地受管状态选择官方直连、浏览器完整或服务器中心；
+`/responses/compact` 等维护接口始终走固定 GPT 生命周期链路。
 
 Gemini Account Provider 从 Windows 凭据管理器读取 Google OAuth 登录，通过已有 `antigravity`
 静态路由访问固定 Google Code Assist 接口。它只转换消息、工具定义、工具结果与流式事件；文件、Shell、

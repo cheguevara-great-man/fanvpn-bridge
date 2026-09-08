@@ -22,6 +22,23 @@ class NativeMessagingSchemaTests(unittest.TestCase):
         self.assertEqual(response_properties["timing"]["$ref"], "#/$defs/browserTiming")
         self.assertEqual(error_properties["timing"]["$ref"], "#/$defs/browserTiming")
 
+    def test_mode_schema_covers_the_independent_profile(self) -> None:
+        schema = json.loads(
+            (ROOT / "contracts" / "native-messaging-v1.schema.json").read_text(encoding="utf-8")
+        )
+        definitions = schema["$defs"]
+        profile = definitions["codexProfile"]
+        self.assertEqual(
+            set(profile["required"]),
+            {"vscode_network", "model_mode", "gpt_route", "subagent_policy"},
+        )
+        mode_set = definitions["controlModeSet"]["allOf"][1]["properties"]
+        self.assertIn("vscode_network", mode_set)
+        self.assertIn("gpt_route", mode_set)
+        self.assertIn("subagent_policy", mode_set)
+        mode_result = definitions["controlModeResult"]["allOf"][1]["properties"]
+        self.assertEqual(mode_result["profile"]["$ref"], "#/$defs/codexProfile")
+
 
 if __name__ == "__main__":
     unittest.main()

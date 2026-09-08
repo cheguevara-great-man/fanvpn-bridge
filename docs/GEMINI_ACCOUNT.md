@@ -81,12 +81,12 @@ Google 可能调整账号可用模型、额度和命名，
 
 | 模式 | Agent | 模型与额度 | 网络出口 |
 |---|---|---|---|
-| 浏览器精简 / 完整 | Codex | OpenAI 登录账号 | Chrome 浏览器链路 |
+| 仅原生 GPT / 统一模型中的 GPT | Codex | OpenAI 登录账号 | 按所选 GPT 请求链路 |
 | Codex + Gemini 账号 | Codex | Google 登录账号 | Chrome 浏览器链路 |
 | Antigravity CLI | Antigravity | Google 登录账号 | Chrome 浏览器链路 |
 
-切换模式不会删除 OpenAI 的 `auth.json` 或 Google 的 Windows 登录凭据。以后切回“浏览器精简”或
-“浏览器完整”，仍可继续使用 OpenAI 登录账号。
+切换模型模式或 GPT 请求链路不会删除 OpenAI 的 `auth.json` 或 Google 的 Windows 登录凭据。
+以后切回“仅原生 GPT”或在统一目录选择 GPT，仍可继续使用 OpenAI 登录账号。
 
 ## 当前边界
 

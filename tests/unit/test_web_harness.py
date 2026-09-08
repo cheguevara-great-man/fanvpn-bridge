@@ -114,6 +114,44 @@ class WebHarnessTests(unittest.TestCase):
             ensure.assert_called_once_with()
             launch.assert_called_once()
 
+    def test_gateway_proxy_ready_requires_the_managed_health_response(self):
+        connection = MagicMock()
+        response = connection.getresponse.return_value
+        response.status = 200
+        response.read.return_value = b'{"status":"ok","mode":"vscode-direct-proxy"}'
+        with patch("fanvpn_bridge.web_harness.http.client.HTTPConnection", return_value=connection):
+            self.assertTrue(WebHarnessController._gateway_proxy_ready())
+        connection.request.assert_called_once_with(
+            "GET",
+            "http://browser-ai-bridge.local/ready",
+            headers={"Host": "browser-ai-bridge.local"},
+        )
+        connection.close.assert_called_once_with()
+
+        response.read.return_value = b'{"status":"ok","mode":"other-service"}'
+        with patch("fanvpn_bridge.web_harness.http.client.HTTPConnection", return_value=connection):
+            self.assertFalse(WebHarnessController._gateway_proxy_ready())
+
+    def test_gateway_proxy_start_registers_the_shared_process(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            local_app_data = Path(temporary)
+            config = local_app_data / "FanVPNBridge" / "direct-proxy.json"
+            config.parent.mkdir(parents=True)
+            config.write_text(json.dumps({
+                "host": "proxy.example", "port": 443,
+                "username": "user", "password": "password",
+            }))
+            process = MagicMock(pid=4567)
+            controller = WebHarnessController(Path(temporary) / "web")
+            with patch.dict("os.environ", {"LOCALAPPDATA": str(local_app_data)}), \
+                    patch.object(controller, "_gateway_proxy_ready", side_effect=[False, True]), \
+                    patch("fanvpn_bridge.web_harness.subprocess.Popen", return_value=process):
+                controller._ensure_gateway_proxy()
+            self.assertEqual(
+                (config.parent / "direct-proxy.pid").read_text(encoding="ascii"),
+                "4567",
+            )
+
     def test_stream_strips_account_credentials_and_flushes_each_chunk(self):
         handler = MagicMock()
         handler.headers = Message()

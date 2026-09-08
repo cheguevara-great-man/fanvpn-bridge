@@ -30,14 +30,14 @@
 
 ## 使用入口
 
-需要同时更新本分支的 Chrome 扩展和 Native Host（3.9.0）。只替换扩展目录不能更新后端。
+需要同时更新本分支的 Chrome 扩展和 Native Host（3.10.0）。只替换扩展目录不能更新后端。
 
 1. 在 Bridge 弹窗的「ChatGPT 网页执行器」中点击「安装 / 更新 WebHarness」。
 2. 选择网络：本机已有可用系统代理时使用系统网络；没有 Clash 时可选择「使用已保存的服务器代理」。后者读取 `%LOCALAPPDATA%\FanVPNBridge\direct-proxy.json`，缺少该文件时必须先配置服务器凭据，不会悄悄使用其他服务器。
 3. 点击「打开 WebHarness」，在独立浏览器会话中登录自己的 ChatGPT。
 4. 在执行器向导中配置 Secure MCP Tunnel 和 Connector，然后选择自动模式或手动模式（Zero Risk）。两种模式的 Connector 和凭据独立，不能混用。
-5. 点击「启用 ChatGPT Web 模式」。该按钮进入 Hybrid Native 统一路由，但会保存进入前的 Direct 模型和配置。点击「配置完成后刷新网页模型」，重启 Codex 后选择 `chatgpt-web/` 模型。
-6. 退出网页模型时，在 Bridge 弹窗点击原来的「服务器直连」「浏览器精简」或「浏览器完整」。如果当前仍选中 `chatgpt-web/*` 或 Gemini，Bridge 会自动恢复进入 Hybrid 前的 GPT，避免把网页模型误发给官方 Codex 后端。
+5. 在 Bridge 弹窗的“Codex 模型模式”选择“GPT + Gemini + WebGPT”。原生 GPT 的请求链路可继续独立选择官方直连、浏览器完整或服务器中心。
+6. 点击“配置完成后刷新网页模型”，再点击“应用配置并启动 VS Code”。重启后的 Codex 模型菜单可直接在原生 GPT、Gemini 和 `chatgpt-web/*` 之间切换，不需要为了网页模型来回覆盖 Provider。
 
 自动模式由执行器操作自己的 ChatGPT 页面；手动模式需要用户粘贴并发送提示词，再确认已发送。
 「Zero Risk」是上游模式名称，不是零账号风险、零安全风险的保证。
@@ -47,9 +47,9 @@
 
 | 所选模型 | 本地入口 | 实际后端 |
 |---|---|---|
-| 原生 GPT | 原有 18888 或 18890 | 原浏览器链路或服务器执行器 |
+| 原生 GPT | 18888 Hybrid | 按弹窗选择进入官方直连、浏览器完整或服务器中心 |
 | Gemini | 原有 18888 Hybrid | 既有 Google 账号适配器 |
-| `chatgpt-web/*` | 18888 Hybrid 或 18890 | 本机 WebHarness 17841 |
+| `chatgpt-web/*` | 18888 Hybrid | 本机 WebHarness 17841 |
 
 网页模型不使用服务器上登录的账号，也不会经过官方 Codex Credits 上报器。
 本地文件、终端工具和审批仍由 Codex 管理；不增加自动批准权限。

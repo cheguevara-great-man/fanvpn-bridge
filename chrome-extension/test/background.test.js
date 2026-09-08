@@ -147,6 +147,50 @@ test("serializes native messages, caches the offscreen context, retries, and res
     });
     assert.equal((await modeResponse).mode, "browser_full");
 
+    const profile = {
+      vscode_network: "server",
+      model_mode: "unified",
+      gpt_route: "direct",
+      subagent_policy: "native",
+    };
+    const modeSetResponse = new Promise((resolve) => {
+      const handled = chrome.runtime.onMessage.emit(
+        { target: "background", kind: "codex-mode:set", mode: "hybrid_native", profile },
+        {},
+        resolve,
+      );
+      assert.deepEqual(handled, [true]);
+    });
+    await waitFor(
+      () => nativeOutbound.some((message) => message.type === "control.mode.set"),
+      "profile mode control request was not sent",
+    );
+    const modeSetRequest = nativeOutbound.find((message) => message.type === "control.mode.set");
+    assert.deepEqual(
+      {
+        mode: modeSetRequest.mode,
+        vscode_network: modeSetRequest.vscode_network,
+        gpt_route: modeSetRequest.gpt_route,
+        subagent_policy: modeSetRequest.subagent_policy,
+      },
+      {
+        mode: "hybrid_native",
+        vscode_network: "server",
+        gpt_route: "direct",
+        subagent_policy: "native",
+      },
+    );
+    nativeMessages.emit({
+      v: 1,
+      type: "control.mode.result",
+      id: modeSetRequest.id,
+      ok: true,
+      mode: "hybrid_native",
+      restart_vscode_required: false,
+      profile,
+    });
+    assert.deepEqual((await modeSetResponse).profile, profile);
+
     const serverRouteResponse = new Promise((resolve) => {
       const handled = chrome.runtime.onMessage.emit(
         { target: "background", kind: "server-executor:get" },

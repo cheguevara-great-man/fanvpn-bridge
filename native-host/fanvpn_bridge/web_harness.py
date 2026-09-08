@@ -181,11 +181,24 @@ class WebHarnessController:
 
     @staticmethod
     def _gateway_proxy_ready() -> bool:
+        connection: http.client.HTTPConnection | None = None
         try:
-            with socket.create_connection(("127.0.0.1", 18889), timeout=0.25):
-                return True
-        except OSError:
+            connection = http.client.HTTPConnection("127.0.0.1", 18889, timeout=0.5)
+            connection.request(
+                "GET",
+                "http://browser-ai-bridge.local/ready",
+                headers={"Host": "browser-ai-bridge.local"},
+            )
+            response = connection.getresponse()
+            if response.status != 200:
+                return False
+            payload = json.loads(response.read())
+            return isinstance(payload, dict) and payload.get("mode") == "vscode-direct-proxy"
+        except (OSError, ValueError, http.client.HTTPException):
             return False
+        finally:
+            if connection is not None:
+                connection.close()
 
     def _ensure_gateway_proxy(self) -> None:
         if self._gateway_proxy_ready():
@@ -198,8 +211,17 @@ class WebHarnessController:
         else:
             command = [sys.executable, "-m", "fanvpn_bridge.main"]
         command.extend(["--forward-proxy", "--proxy-config", str(source), "--proxy-port", "18889"])
-        subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        pid_path = source.parent / "direct-proxy.pid"
+        pid_temporary = pid_path.with_name(f"{pid_path.name}.{os.getpid()}.next")
+        pid_temporary.write_text(str(process.pid), encoding="ascii")
+        os.replace(pid_temporary, pid_path)
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
             if self._gateway_proxy_ready():
