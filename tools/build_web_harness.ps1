@@ -32,8 +32,8 @@ try {
     $target = Join-Path $OutputDirectory $archives[0].Name
     Copy-Item -LiteralPath $archives[0].FullName -Destination $target
     $manifest = [ordered]@{
-        version = '5.0.13-bridge.5'
-        upstream_commit = 'c648c09501bb1b704c7ad5273fb5f5d6b8992dd2'
+        version = '5.0.6-bridge.1'
+        upstream_commit = 'e85e3693fdb4e3e033348c08df0298c20fcdb612'
         filename = $archives[0].Name
         sha256 = [BitConverter]::ToString(
             [Security.Cryptography.SHA256]::Create().ComputeHash(

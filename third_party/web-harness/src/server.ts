@@ -35,7 +35,7 @@ import {
   requireChatGptWebModelRoute,
   type ChatGptWebModelRoute,
 } from "./chatgpt-web-models";
-import { forwardNativeCodexRequest, type NativeFetch } from "./native-passthrough";
+import { forwardNativeCodexRequest, type NativeFetch, type NativeImageEndpoint } from "./native-passthrough";
 import {
   buildCompactV1Output,
   COMPACT_PROMPT,
@@ -52,7 +52,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getConfigDir } from "./config";
 
-type HttpTrackedEndpoint = "models" | "responses" | "compact" | "search" | "unspecified";
+type HttpTrackedEndpoint = "models" | "responses" | "compact" | "search" | "unspecified" | NativeImageEndpoint;
 
 export interface NativeCodexTurnIdentity {
   threadId: string;
@@ -409,6 +409,22 @@ export async function nativeSearchRequest(
 ): Promise<Response> {
   try {
     return await forwardNativeCodexRequest(req, "alpha/search", fetchUpstream);
+  } catch (error) {
+    return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function nativeImagesRequest(
+  req: Request,
+  endpoint: NativeImageEndpoint,
+  fetchUpstream?: NativeFetch,
+): Promise<Response> {
+  const authorization = req.headers.get("authorization") ?? "";
+  if (!authorization.startsWith("Bearer ") || authorization.length <= "Bearer ".length) {
+    return formatErrorResponse(401, "authentication_error", "Native image requests require incoming Codex Bearer authorization");
+  }
+  try {
+    return await forwardNativeCodexRequest(req, endpoint, fetchUpstream);
   } catch (error) {
     return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : String(error));
   }
@@ -1032,6 +1048,19 @@ export function startServer(
           req.signal,
           process.platform,
           "search",
+        );
+      }
+      if (req.method === "POST"
+        && (url.pathname === "/v1/images/generations" || url.pathname === "/v1/images/edits")) {
+        if (draining) return formatErrorResponse(503, "server_error", "codex-chatgpt-web is draining for a requested service operation");
+        const endpoint: NativeImageEndpoint = url.pathname === "/v1/images/generations"
+          ? "images/generations"
+          : "images/edits";
+        return httpTurns.track(
+          signal => nativeImagesRequest(new Request(req, { signal }), endpoint, dependencies.fetchUpstream),
+          req.signal,
+          process.platform,
+          endpoint,
         );
       }
       return new Response("Not found", { status: 404 });

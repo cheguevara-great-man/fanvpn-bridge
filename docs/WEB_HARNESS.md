@@ -8,9 +8,10 @@
 ## 上游来源
 
 - 仓库：https://github.com/miuuyy/codex-chatgpt-web
-- Bridge 发行版本：v5.0.13
-- 导入基线：v5.0.4
-- 固定提交：c648c09501bb1b704c7ad5273fb5f5d6b8992dd2
+- Bridge 发行版本：v5.0.6-bridge.1
+- 当前上游基线：v5.0.6（完整合并；最初导入为 v5.0.4）
+- 固定提交：e85e3693fdb4e3e033348c08df0298c20fcdb612
+- 旧版显示的 5.0.13 是本项目自行递增的包版本，并不代表上游版本。
 - 源码：`third_party/web-harness`，通过 Git subtree 导入，保留 MIT 与第三方许可证。
 
 ## 集成边界
