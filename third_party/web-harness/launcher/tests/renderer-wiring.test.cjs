@@ -10,6 +10,14 @@ const electronMain = fs.readFileSync(path.join(launcherRoot, "electron", "main.c
 const browserHostSource = fs.readFileSync(path.join(launcherRoot, "electron", "browser-host.cjs"), "utf8");
 const preloadSource = fs.readFileSync(path.join(launcherRoot, "electron", "preload.cjs"), "utf8");
 
+test("Bridge saves native authority home before isolating launcher setup", () => {
+  const save = electronMain.indexOf("process.env.BRIDGE_WEB_CODEX_AUTHORITY_HOME ||=");
+  const isolate = electronMain.indexOf('process.env.CODEX_HOME = path.join(process.env.CODEX_CHATGPT_WEB_HOME, "integration")');
+  assert.ok(save >= 0 && isolate > save);
+  assert.match(electronMain.slice(save, isolate), /process\.env\.CODEX_HOME\?\.trim\(\)/);
+  assert.match(electronMain.slice(save, isolate), /app\.getPath\("home"\)/);
+});
+
 test("embedded ChatGPT is measured only after its animated surface mounts", () => {
   assert.match(appSource, /const \[browserSlot, setBrowserSlot\] = useState<HTMLDivElement \| null>\(null\)/);
   assert.match(appSource, /setBrowserSurfaceActive\(browserSurfaceActive\)\.then\(\(\) => \{/);

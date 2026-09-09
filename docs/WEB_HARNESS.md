@@ -30,7 +30,7 @@
 
 ## 使用入口
 
-需要同时更新本分支的 Chrome 扩展和 Native Host（3.10.1）。只替换扩展目录不能更新后端。
+需要同时更新本分支的 Chrome 扩展和 Native Host（3.10.3）。只替换扩展目录不能更新后端。
 
 1. 在 Bridge 弹窗的「ChatGPT 网页执行器」中点击「安装 / 更新 WebHarness」。
 2. 选择网络：本机已有可用系统代理时使用系统网络；没有 Clash 时可选择「使用已保存的服务器代理」。后者读取 `%LOCALAPPDATA%\FanVPNBridge\direct-proxy.json`，缺少该文件时必须先配置服务器凭据，不会悄悄使用其他服务器。
@@ -63,6 +63,22 @@
 - `installation.json`：当前版本与上一版本路径。
 - `config.json`、`browser`：执行器配置与独立网页登录状态。
 - `integration`：上游专用 Codex 配置副本，不是用户真实 `.codex\config.toml`。
+
+### 第二轮 `missing cwd` 的目录隔离修复（bridge.5）
+
+安装配置仍写入 `integration`，但线程环境的只读校验必须查询真实 Codex home。
+启动器在隔离 `CODEX_HOME` 前保存 `BRIDGE_WEB_CODEX_AUTHORITY_HOME`；运行时只在
+历史 rollout 与当前任务 visualization 根目录校验中使用它，不用于安装、登录或修改用户配置。
+后续请求可以省略初始环境，运行时按线程 ID、当前 turn ID、工作区和权限校验原生记录后恢复；
+不从任意提示词或其他线程借用目录，不放宽沙箱。
+
+Bridge 清理网页模型历史中的本地 reasoning 项时也必须保留消息 ID，避免破坏原生环境来源标记。
+模型目录刷新合并已知原生模型缓存，避免模式切换或一次刷新失败把已发现的 GPT 模型删除。
+
+2026-09-09 本机验收：失败的原生 Codex 会话重启执行器后可恢复历史；独立测试会话连续三轮
+完成 `apply_patch` 创建文件、终端读取、`apply_patch` 修改并再次读取。只读测试会话仍拒绝写入。
+另有 52 项环境/集成测试、28 项 Bridge/模型目录测试和 20 项启动器界面连线测试通过。
+测试没有覆盖所有模型、所有插件或公司设备，不应把该结果视为所有网页异常均已消除。
 - `network.json`：仅本机保存的代理凭据，不能分享或提交 Git。
 - `.codex\browser-ai-bridge-web-models.json`：已配置网页模式的模型缓存；Hybrid 自动更新时保留这些行。
 

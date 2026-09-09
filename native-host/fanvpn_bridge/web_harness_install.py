@@ -9,6 +9,7 @@ import re
 import shutil
 import stat
 import tempfile
+import time
 import zipfile
 
 from .web_harness import WebHarnessController, WebHarnessError, runtime_home
@@ -61,7 +62,17 @@ def install_archive(archive: Path, expected_sha256: str, home: Path | None = Non
         if not (staging / "WebHarness.exe").is_file() or not (staging / "resources" / "app.asar").is_file():
             raise WebHarnessError("Package is not a WebHarness Windows distribution")
         if not destination.exists():
-            staging.rename(destination)
+            # Windows scanners may briefly hold a newly extracted executable.
+            # Keep the previous installation active while retrying that transient lock.
+            deadline = time.monotonic() + 15
+            while True:
+                try:
+                    staging.rename(destination)
+                    break
+                except PermissionError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.25)
         marker = home / "installation.json"
         previous = json.loads(marker.read_text(encoding="utf-8")) if marker.exists() else {}
         value = {"directory": str(destination.relative_to(home)), "sha256": expected_sha256,

@@ -58,7 +58,8 @@ def clean_web_history(payload: dict) -> dict:
             cleaned.append(item)
             continue
         row = dict(item)
-        row.pop("id", None)
+        # Preserve Codex message IDs: WebHarness uses them as environment
+        # provenance even when another history item needs normalization.
         encrypted = row.get("encrypted_content")
         if row.get("type") == "compaction" and isinstance(encrypted, str) and encrypted.startswith("ocx1:"):
             try:

@@ -20,6 +20,20 @@ class WebHarnessTests(unittest.TestCase):
         payload = {"input": [{"type": "reasoning", "encrypted_content": "native-secret", "id": "rs_native"}]}
         self.assertIs(clean_web_history(payload), payload)
 
+    def test_reasoning_cleanup_preserves_message_ids_and_turn_metadata(self):
+        context = {
+            "type": "message", "id": "msg_context", "role": "user",
+            "internal_chat_message_metadata_passthrough": {"turn_id": "turn_two"},
+            "content": [{"type": "input_text", "text": "<environment_context />"}],
+        }
+        payload = {"input": [context, {
+            "type": "reasoning", "id": "rs_" + "a" * 32,
+            "summary": [{"type": "summary_text", "text": "Planning"}],
+        }]}
+        cleaned = clean_web_history(payload)
+        self.assertEqual(cleaned["input"][0], context)
+        self.assertEqual(payload["input"][0], context)
+
     def test_web_checkpoint_is_translated_without_decrypting_native_reasoning(self):
         payload = {"previous_response_id": "web-local", "input": [
             {"type": "compaction", "encrypted_content": "ocx1:" + base64.b64encode(b"next steps").decode()},

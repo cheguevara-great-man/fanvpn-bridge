@@ -430,6 +430,41 @@ class NetworkModeScriptTests(unittest.TestCase):
             self.assertNotIn('model = "chatgpt-web/high"', direct)
             self.assertNotIn("managed Hybrid model restore", direct)
 
+    def test_hybrid_refresh_does_not_erase_models_learned_by_an_existing_catalog(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            codex_home = Path(directory)
+            (codex_home / "config.toml").write_text(
+                'model = "gpt-5.6-sol"\n', encoding="utf-8"
+            )
+            stale = {
+                "slug": "gpt-5.6-sol",
+                "display_name": "GPT-5.6 Sol",
+                "visibility": "list",
+                "model_messages": {"instructions_template": "You are Codex."},
+            }
+            learned = {
+                "slug": "gpt-6-astra",
+                "display_name": "GPT-6 Astra",
+                "visibility": "list",
+                "model_messages": {"instructions_template": "You are Codex."},
+            }
+            (codex_home / "browser-ai-bridge-openai-models.json").write_text(
+                json.dumps({"models": [stale]}), encoding="utf-8"
+            )
+            (codex_home / "browser-ai-bridge-gemini-models.json").write_text(
+                json.dumps({"models": [stale, learned]}), encoding="utf-8"
+            )
+
+            self.run_mode(codex_home, "HybridNative", json.dumps(["gemini-3.7-flash"]))
+
+            catalog = json.loads(
+                (codex_home / "browser-ai-bridge-gemini-models.json").read_text(encoding="utf-8")
+            )
+            slugs = {item["slug"] for item in catalog["models"]}
+            self.assertIn("gpt-5.6-sol", slugs)
+            self.assertIn("gpt-6-astra", slugs)
+            self.assertIn("gemini-3.7-flash", slugs)
+
     def test_direct_repairs_legacy_catalog_blocks_and_stale_web_model(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             codex_home = Path(directory)

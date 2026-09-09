@@ -2,11 +2,11 @@ import { expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { defaultConfig } from "../src/config";
-import { getCodexConfigPath, getCodexModelsCachePath, getCodexHome } from "../src/codex-integration-shared";
+import { getCodexConfigPath, getCodexModelsCachePath, getCodexHome, getCodexAuthorityHome } from "../src/codex-integration-shared";
 import { startServer } from "../src/server";
 
 test("Bridge-managed setup owns only shadow config and preserves real rollout home", () => {
-  const keys = ["BRIDGE_WEB_MANAGED", "CODEX_CHATGPT_WEB_HOME", "CODEX_HOME"] as const;
+  const keys = ["BRIDGE_WEB_MANAGED", "CODEX_CHATGPT_WEB_HOME", "CODEX_HOME", "BRIDGE_WEB_CODEX_AUTHORITY_HOME"] as const;
   const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
   const root = join(process.cwd(), "build", "managed-test");
   try {
@@ -16,6 +16,14 @@ test("Bridge-managed setup owns only shadow config and preserves real rollout ho
     expect(getCodexConfigPath()).toBe(join(root, "web", "integration", "config.toml"));
     expect(getCodexModelsCachePath()).toBe(join(root, "web", "integration", "models_cache.json"));
     expect(getCodexHome()).toBe(join(root, "real-codex"));
+    process.env.BRIDGE_WEB_CODEX_AUTHORITY_HOME = join(root, "real-codex");
+    process.env.CODEX_HOME = join(root, "web", "integration");
+    expect(getCodexAuthorityHome()).toBe(join(root, "real-codex"));
+    expect(getCodexHome()).toBe(join(root, "web", "integration"));
+    expect(getCodexConfigPath()).toBe(join(root, "web", "integration", "config.toml"));
+    process.env.BRIDGE_WEB_MANAGED = "0";
+    expect(getCodexAuthorityHome()).toBe(getCodexHome());
+    process.env.BRIDGE_WEB_MANAGED = "1";
     expect(defaultConfig().subagentProtocol).toBe("native");
   } finally {
     for (const key of keys) {

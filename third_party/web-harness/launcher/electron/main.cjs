@@ -54,6 +54,10 @@ process.env.CODEX_WEB_GPT_LAUNCHER_DATA_DIR ||= path.join(process.env.CODEX_CHAT
 // FanVPN owns the real Codex provider and unified model catalog. Upstream's
 // setup still needs a Codex-shaped target, but it must be a private staging
 // home so a failed WebHarness install can never change login or routing.
+// Keep the native history location before isolating setup writes. Follow-up
+// requests omit the initial envelope and must recover it from the real rollout.
+process.env.BRIDGE_WEB_CODEX_AUTHORITY_HOME ||= process.env.CODEX_HOME?.trim()
+  || path.join(app.getPath("home"), ".codex");
 process.env.CODEX_HOME = path.join(process.env.CODEX_CHATGPT_WEB_HOME, "integration");
 const BRIDGE_NETWORK = prepareBridgeNetwork({ app, coreHome: process.env.CODEX_CHATGPT_WEB_HOME });
 const LAUNCHER_PROFILE = resolveLauncherProfile({ appData: app.getPath("appData") });

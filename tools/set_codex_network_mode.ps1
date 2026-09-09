@@ -192,17 +192,20 @@ function New-GeminiModelCatalog {
     $defaultModel = $rankedModels[0].Id
 
     $models = New-Object System.Collections.Generic.List[object]
-    $officialCatalogPath = if (Test-Path -LiteralPath $openAICachePath) {
-        $openAICachePath
-    } else {
-        $cachePath
-    }
-    if ($IncludeOpenAI -and (Test-Path -LiteralPath $officialCatalogPath)) {
-        try {
-            $officialCache = [System.IO.File]::ReadAllText($officialCatalogPath) | ConvertFrom-Json
-            foreach ($officialModel in @($officialCache.models | Where-Object {
-                $_.slug -is [string] -and $_.slug -notmatch '^gemini-'
-            })) {
+    if ($IncludeOpenAI) {
+        # Merge every trustworthy local source instead of selecting one cache file. A temporary
+        # backend timeout must never let an older cache erase a model already learned earlier
+        # (for example GPT-6) when the user switches modes.
+        $seenOfficialSlugs = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        foreach ($officialCatalogPath in @($openAICachePath, $TargetPath, $cachePath)) {
+            if (-not (Test-Path -LiteralPath $officialCatalogPath)) { continue }
+            try {
+                $officialCache = [System.IO.File]::ReadAllText($officialCatalogPath) | ConvertFrom-Json
+                foreach ($officialModel in @($officialCache.models | Where-Object {
+                    $_.slug -is [string] -and $_.slug -notmatch '^gemini-' -and
+                    $_.slug -notmatch '^chatgpt-web/'
+                })) {
+                    if (-not $seenOfficialSlugs.Add([string]$officialModel.slug)) { continue }
                 $copy = $officialModel | ConvertTo-Json -Depth 100 | ConvertFrom-Json
                 # Newer Codex clients require this capability bit. GPT models
                 # explicitly expose summaries by default in Bridge catalogs;
@@ -216,10 +219,11 @@ function New-GeminiModelCatalog {
                 }
                 Set-ObjectProperty $copy 'priority' ($models.Count + 1)
                 $models.Add($copy)
+                }
+            } catch {
+                # Continue with the other caches. Existing known models are preferable to a
+                # destructive downgrade when one cache is truncated or temporarily unavailable.
             }
-        } catch {
-            # The Gemini entries still make Hybrid usable when Codex has not
-            # populated its official model cache yet.
         }
     }
     foreach ($rankedModel in $rankedModels) {

@@ -1,8 +1,8 @@
-import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isReadableCompactionSummaryText, OPAQUE_COMPACTION_NOTE } from "../../responses/compaction";
 import type { CodexContentPart, CodexParsedRequest, CodexTool } from "../../types";
 import { isAcceptedCompactionContinuation } from "./compaction-continuation";
+import { getCodexAuthorityHome } from "../../codex-integration-shared";
 
 export type ChatGptSandboxPolicy =
   | { type: "dangerFullAccess" }
@@ -390,8 +390,7 @@ function isCurrentThreadVisualizationRoot(path: string, metadata: Record<string,
   // Codex advertises its task-scoped visualization output directory in workspace_roots but omits
   // it from Git-oriented turn metadata. Authenticate that one auxiliary shape by both its private
   // Codex home and current thread id; arbitrary roots and another task's output remain untrusted.
-  const configuredCodexHome = process.env.CODEX_HOME?.trim();
-  const codexHome = resolve(configuredCodexHome || join(homedir(), ".codex"));
+  const codexHome = getCodexAuthorityHome();
   const visualizationBase = pathIdentity(join(codexHome, "visualizations"));
   const rel = relative(visualizationBase, pathIdentity(path));
   if (!rel || rel.startsWith("..") || isAbsolute(rel)) return false;

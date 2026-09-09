@@ -778,6 +778,27 @@ describe("trusted Codex task environment continuity", () => {
     });
   });
 
+  test("Bridge launcher isolation keeps resumed rollout lookup in the real native home", () => {
+    const { codexHome, request } = resumedRootFixture();
+    const keys = ["BRIDGE_WEB_MANAGED", "BRIDGE_WEB_CODEX_AUTHORITY_HOME", "CODEX_HOME"] as const;
+    const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+    try {
+      process.env.BRIDGE_WEB_MANAGED = "1";
+      process.env.CODEX_HOME = join(codexHome, "isolated-integration");
+      delete process.env.BRIDGE_WEB_CODEX_AUTHORITY_HOME;
+      expect(() => new ChatGptThreadEnvironmentStore().resolve(request)).toThrow("missing cwd");
+      process.env.BRIDGE_WEB_CODEX_AUTHORITY_HOME = codexHome;
+      expect(new ChatGptThreadEnvironmentStore().resolve(request).cwd).toBe(root);
+      // A newly constructed store after a launcher restart needs no warm cache.
+      expect(new ChatGptThreadEnvironmentStore().resolve(request).cwd).toBe(root);
+    } finally {
+      for (const key of keys) {
+        if (previous[key] === undefined) delete process.env[key];
+        else process.env[key] = previous[key];
+      }
+    }
+  });
+
   for (const format of ["v1", "v2"]) test(`${format} context-only continuation requires a matching current rollout, not just a checkpoint`, () => {
     const { codexHome, request, rolloutPath } = resumedRootFixture();
     const body = request._rawBody as { input: Array<Record<string, unknown>> };

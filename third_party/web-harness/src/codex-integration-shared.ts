@@ -246,6 +246,13 @@ export function getCodexHome(): string {
   return resolve(expandUserPath(configured || join(homedir(), ".codex")));
 }
 
+/** Read-only provenance lookup; never use this home for integration writes. */
+export function getCodexAuthorityHome(): string {
+  const configured = process.env.BRIDGE_WEB_MANAGED === "1"
+    ? process.env.BRIDGE_WEB_CODEX_AUTHORITY_HOME?.trim() : undefined;
+  return configured ? resolve(expandUserPath(configured)) : getCodexHome();
+}
+
 export function getCodexConfigPath(): string {
   return join(process.env.BRIDGE_WEB_MANAGED === "1"
     ? join(getConfigDir(), "integration") : getCodexHome(), "config.toml");

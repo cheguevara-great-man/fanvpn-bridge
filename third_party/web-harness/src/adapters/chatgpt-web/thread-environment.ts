@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { atomicWriteFile } from "../../config";
-import { getCodexHome } from "../../codex-integration-shared";
+import { getCodexAuthorityHome } from "../../codex-integration-shared";
 import type { CodexParsedRequest } from "../../types";
 import {
   extractChatGptTurnEnvironment,
@@ -141,7 +141,7 @@ export class ChatGptThreadEnvironmentStore {
   constructor(
     private readonly path?: string,
     private readonly now: () => number = Date.now,
-    private readonly codexHome: string = getCodexHome(),
+    private readonly codexHome: string = getCodexAuthorityHome(),
     private readonly sqliteHome?: string,
   ) {}
 
