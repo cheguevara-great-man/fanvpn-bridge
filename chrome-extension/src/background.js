@@ -543,7 +543,7 @@ async function requestSoftwareUpdate(project, installRoot = "") {
 }
 
 async function downloadUpdateArchive(repository) {
-  const metadata = await fetch(`https://api.github.com/repos/${repository}/commits/master`, {
+  const metadata = await fetch(`https://api.github.com/repos/${repository}/commits/codex%2Fweb-response-recovery`, {
     cache: "no-store", headers: { accept: "application/vnd.github+json" },
   });
   if (!metadata.ok) throw new Error(`无法检查更新：GitHub 返回 HTTP ${metadata.status}`);
@@ -557,7 +557,7 @@ async function downloadUpdateArchive(repository) {
 }
 
 async function downloadWebHarnessArchive(repository) {
-  const base = `https://github.com/${repository}/releases/download/web-harness-v5.0.13-bridge.5/`;
+  const base = `https://github.com/${repository}/releases/download/web-harness-v5.0.6-bridge.1/`;
   const metadata = await fetch(base + "web-harness-release.json", { cache: "no-store" });
   if (!metadata.ok) throw new Error(`网页执行器安装包尚不可用（HTTP ${metadata.status}）`);
   const manifest = await metadata.json();
