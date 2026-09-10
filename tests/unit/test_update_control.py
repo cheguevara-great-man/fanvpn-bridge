@@ -45,15 +45,33 @@ def test_gateway_update_replaces_only_project_files_and_remembers_directory(tmp_
     assert controller.status()["gateway_root"] == str(gateway.resolve())
 
 
-def test_update_rejects_a_non_project_parent_directory(tmp_path: Path) -> None:
+def test_update_accepts_a_custom_folder_name(tmp_path: Path) -> None:
     controller = LocalUpdateController(cache_base=tmp_path / "cache", runtime_root=tmp_path / "fanvpn-bridge")
+    custom = tmp_path / "my-ai-tools"
 
-    with pytest.raises(UpdateControlError, match="must end with fanvpn-bridge"):
+    result = controller.apply_archive(
+        project="fanvpn-bridge",
+        archive=_archive(tmp_path / "bridge.zip", "fanvpn-bridge"),
+        commit=COMMIT,
+        install_root=str(custom),
+    )
+
+    assert result["install_root"] == str(custom.resolve())
+    assert (custom / "chrome-extension" / "manifest.json").is_file()
+
+
+def test_update_rejects_an_unrelated_nonempty_directory(tmp_path: Path) -> None:
+    controller = LocalUpdateController(cache_base=tmp_path / "cache", runtime_root=tmp_path / "fanvpn-bridge")
+    unrelated = tmp_path / "other-software"
+    unrelated.mkdir()
+    (unrelated / "unrelated.txt").write_text("keep", encoding="utf-8")
+
+    with pytest.raises(UpdateControlError, match="not empty"):
         controller.apply_archive(
             project="fanvpn-bridge",
             archive=_archive(tmp_path / "bridge.zip", "fanvpn-bridge"),
             commit=COMMIT,
-            install_root=str(tmp_path / "Program Files (x86)"),
+            install_root=str(unrelated),
         )
 
 

@@ -127,8 +127,17 @@ class LocalUpdateController:
             root = Path(requested).expanduser().resolve()
         if root.parent == root or str(root) in {root.anchor, ""}:
             raise UpdateControlError("Installation directory must be a project folder, not a drive root")
-        if root.name.casefold() != project.casefold():
-            raise UpdateControlError(f"Installation directory must end with {project}")
+        configured = state.get(project)
+        already_managed = bool(configured and _same_path(root, Path(configured)))
+        if (
+            root.exists()
+            and any(root.iterdir())
+            and not already_managed
+            and not _looks_like_project_root(root, project)
+        ):
+            raise UpdateControlError(
+                "Existing installation directory is not empty and does not contain the selected project"
+            )
         return root
 
     def _extract_archive(self, project: str, archive: Path, commit: str) -> Path:
@@ -279,6 +288,18 @@ def _zip_entry_is_link(entry: zipfile.ZipInfo) -> bool:
 
 def _same_path(first: Path, second: Path) -> bool:
     return os.path.normcase(str(first.resolve())) == os.path.normcase(str(second.resolve()))
+
+
+def _looks_like_project_root(root: Path, project: str) -> bool:
+    if project == PROJECT_BRIDGE:
+        return (
+            (root / "chrome-extension" / "manifest.json").is_file()
+            and (root / "native-host" / "fanvpn_bridge").is_dir()
+        )
+    return (
+        (root / "extension" / "manifest.json").is_file()
+        and (root / "server").is_dir()
+    )
 
 
 def _friendly_build_failure(output: bytes) -> str:
