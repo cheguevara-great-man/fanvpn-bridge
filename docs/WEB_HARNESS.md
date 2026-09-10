@@ -1,6 +1,6 @@
 # ChatGPT 网页执行器
 
-本功能在 `codex/web-response-recovery` 分支提供预览版。已完成本地代码检查、回归测试、Windows 打包启动检查，以及真实账号的 Tunnel、Connector、流式回答和本机工具调用验收。仍建议先在非关键任务中使用。
+本功能已合入默认分支 `codex/server-executor`。已完成本地代码检查、回归测试、Windows 打包启动检查，以及真实账号的 Tunnel、Connector、流式回答和本机工具调用验收。仍建议先在非关键任务中使用。
 
 网页执行器是第三条模型链路：本机登录 ChatGPT 网页，Codex 继续管理任务、工具与审批。
 原生 GPT 使用既有浏览器或服务器中心链路；Gemini 使用既有账号适配器。
@@ -35,12 +35,12 @@
 
 ### 公司电脑从旧版迁移
 
-旧扩展更新源可能固定为 master，不能靠旧版更新按钮取得本预览分支。
-第一次迁移需取得 `codex/web-response-recovery` 分支源码，在原安装目录更新 Chrome 扩展，
+旧扩展更新源可能固定为 master，不能靠旧版更新按钮取得当前默认分支。
+第一次迁移需取得默认分支源码，在原安装目录更新 Chrome 扩展，
 并在 `chrome://extensions` 点击重新加载（保留原扩展，不要删除其配置）。
 然后在新版扩展的“安装与升级”更新 Native Host，确认扩展和 Host 均为 3.10.4。
 再点击“安装 / 更新 WebHarness”，将下载 `web-harness-v5.0.6-bridge.1` 发布包并校验 SHA-256，
-无需自行编译 WebHarness。后续本预览扩展会从同一分支更新，不会回到 master。
+无需自行编译 WebHarness。后续扩展自动跟随 GitHub 默认分支，不再写死 master 或预览分支。
 新电脑首次安装仍按 [安装与升级](INSTALL_AND_UPDATE.md) 完成一次 Native Host 注册。
 账号登录、Tunnel 与连接器授权需要在公司电脑完成；不要复制别人的 Cookie、API key 或本机私密配置。
 

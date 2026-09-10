@@ -543,11 +543,11 @@ async function requestSoftwareUpdate(project, installRoot = "") {
 }
 
 async function downloadUpdateArchive(repository) {
-  const metadata = await fetch(`https://api.github.com/repos/${repository}/commits/codex%2Fweb-response-recovery`, {
+  const metadata = await fetch(`https://api.github.com/repos/${repository}/commits?per_page=1`, {
     cache: "no-store", headers: { accept: "application/vnd.github+json" },
   });
   if (!metadata.ok) throw new Error(`无法检查更新：GitHub 返回 HTTP ${metadata.status}`);
-  const commit = String((await metadata.json())?.sha || "").toLowerCase();
+  const commit = String((await metadata.json())?.[0]?.sha || "").toLowerCase();
   if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error("GitHub 更新版本无效");
   const response = await fetch(`https://github.com/${repository}/archive/${commit}.zip`, { cache: "no-store" });
   if (!response.ok) throw new Error(`无法下载更新包：GitHub 返回 HTTP ${response.status}`);
