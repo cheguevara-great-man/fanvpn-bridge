@@ -186,8 +186,18 @@ export class ChatGptThreadEnvironmentStore {
       }
       // Only a current native rollout can supersede an unrecognized historical envelope. Without
       // that proof, do not turn arbitrary history or an invalid update into cached authority.
-      if (hasRawChatGptEnvironmentContext(parsed)) throw error;
+      // Codex compaction/retry requests can replay the original environment envelope without
+      // tagging it as the current turn. The same-thread cache is already trusted authority; use it
+      // before rejecting that historical replay. A malformed current update still fails closed.
       const sameThread = this.get(identity.threadId);
+      if (!hasCurrentContext && sameThread) return {
+        cwd: sameThread.cwd,
+        roots: sameThread.roots,
+        writableRoots: sameThread.writableRoots,
+        sandboxPolicy: sameThread.sandboxPolicy,
+        tools: parsed.context.tools ?? [],
+      };
+      if (hasRawChatGptEnvironmentContext(parsed)) throw error;
       if (sameThread) return {
         cwd: sameThread.cwd,
         roots: sameThread.roots,

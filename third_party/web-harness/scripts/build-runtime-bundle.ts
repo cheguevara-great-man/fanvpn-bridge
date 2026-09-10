@@ -48,6 +48,9 @@ const appDir = join(output, "app");
 const runtimeDir = join(output, "runtime");
 const binDir = join(output, "bin");
 
+const TUNNEL_CLIENT_VERSION = "0.0.12";
+const TUNNEL_CLIENT_WINDOWS_SHA256 = "6649169733686805ca16cccd91774594d0c017fd729c37ad4ce1cd18323d9ae8";
+
 rmSync(output, { recursive: true, force: true });
 mkdirSync(appDir, { recursive: true });
 mkdirSync(runtimeDir, { recursive: true });
@@ -94,12 +97,32 @@ const bunName = process.platform === "win32" ? "bun.exe" : "bun";
 cpSync(embeddedBunExecutable(), join(runtimeDir, bunName));
 if (process.platform !== "win32") chmodSync(join(runtimeDir, bunName), 0o755);
 
+if (process.platform === "win32" && process.arch === "x64") {
+  const configuredTunnel = process.env.CODEX_CHATGPT_WEB_EMBEDDED_TUNNEL_CLIENT;
+  if (!configuredTunnel || !isAbsolute(configuredTunnel)) {
+    throw new Error("Windows runtime bundle requires CODEX_CHATGPT_WEB_EMBEDDED_TUNNEL_CLIENT");
+  }
+  const tunnel = realpathSync(configuredTunnel);
+  const tunnelBytes = readFileSync(tunnel);
+  const tunnelSha256 = createHash("sha256").update(tunnelBytes).digest("hex");
+  if (tunnelSha256 !== TUNNEL_CLIENT_WINDOWS_SHA256) {
+    throw new Error(`Embedded tunnel-client checksum mismatch: ${tunnelSha256}`);
+  }
+  const version = Bun.spawnSync([tunnel, "--version"], { stdout: "pipe", stderr: "pipe" });
+  const reported = `${version.stdout.toString()}${version.stderr.toString()}`;
+  if (version.exitCode !== 0 || !reported.includes(TUNNEL_CLIENT_VERSION)) {
+    throw new Error(`Embedded tunnel-client must report ${TUNNEL_CLIENT_VERSION}`);
+  }
+  copyFileSync(tunnel, join(binDir, "tunnel-client.exe"));
+}
+
 const launcherName = process.platform === "win32" ? "codex-chatgpt-web.cmd" : "codex-chatgpt-web";
 const launcher = process.platform === "win32" ? `@echo off
 setlocal
 chcp 65001 >nul
 set "ROOT=%~dp0.."
 set "CODEX_CHATGPT_WEB_LAUNCHER=%~f0"
+set "CODEX_CHATGPT_WEB_BUNDLED_TUNNEL_CLIENT=%ROOT%\bin\tunnel-client.exe"
 "%ROOT%\\runtime\\bun.exe" "%ROOT%\\app\\cli.js" %*
 ` : `#!/bin/sh
 set -eu

@@ -11,6 +11,7 @@ export const TUNNEL_VERSION = "0.0.12";
 const MIGRATABLE_TUNNEL_VERSIONS = new Set(["0.0.10"]);
 const RELEASE_BASE = `https://github.com/openai/tunnel-client/releases/download/v${TUNNEL_VERSION}`;
 const MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024;
+const WINDOWS_AMD64_BINARY_SHA256 = "6649169733686805ca16cccd91774594d0c017fd729c37ad4ce1cd18323d9ae8";
 export const TUNNEL_READY_TIMEOUT_MS = 120_000;
 const TUNNEL_STATUS_POLL_INTERVAL_MS = 1_000;
 
@@ -104,6 +105,31 @@ export async function installTunnelClient(): Promise<string> {
   if (!previousInstallation && (existsSync(executable) || existsSync(manifestFile))) {
     rmSync(executable, { force: true });
     rmSync(manifestFile, { force: true });
+  }
+
+  const bundled = process.env.CODEX_CHATGPT_WEB_BUNDLED_TUNNEL_CLIENT;
+  if (!previousInstallation && bundled && process.platform === "win32" && process.arch === "x64") {
+    if (!existsSync(bundled)) throw new Error(`Bundled tunnel-client is missing: ${bundled}`);
+    const binary = new Uint8Array(readFileSync(bundled));
+    const binaryHash = sha256(binary);
+    if (binaryHash !== WINDOWS_AMD64_BINARY_SHA256) {
+      throw new Error(`Bundled tunnel-client failed integrity validation: ${bundled}`);
+    }
+    const version = runChecked(bundled, ["--version"], { timeout: 10_000 });
+    if (!version.stdout.includes(TUNNEL_VERSION) && !version.stderr.includes(TUNNEL_VERSION)) {
+      throw new Error(`Bundled tunnel-client did not report version ${TUNNEL_VERSION}`);
+    }
+    mkdirSync(dirname(executable), { recursive: true, mode: 0o700 });
+    const manifest: TunnelInstallManifest = {
+      version: 1,
+      tunnelClientVersion: TUNNEL_VERSION,
+      asset: platformAsset(),
+      archiveSha256: "bundled",
+      binarySha256: binaryHash,
+    };
+    atomicWriteFile(executable, binary);
+    atomicWriteFile(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
+    return executable;
   }
 
   const asset = platformAsset();
