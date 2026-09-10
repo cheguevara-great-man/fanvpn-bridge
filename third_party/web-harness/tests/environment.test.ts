@@ -600,6 +600,29 @@ describe("trusted Codex task environment continuity", () => {
     });
   });
 
+  test("reuses trusted same-thread authority when a compaction retry only replays the old envelope", () => {
+    const store = new ChatGptThreadEnvironmentStore();
+    store.resolve(currentWire());
+    const retry = currentWire();
+    retry.context.tools = [{ name: "retry_tool", description: "retry", parameters: { type: "object" } }];
+    retry._rawBody = {
+      client_metadata: { "x-codex-turn-metadata": JSON.stringify({
+        request_kind: "compaction", thread_id: "thread_current", turn_id: "turn_retry",
+      }) },
+      input: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: environmentXml }],
+          internal_chat_message_metadata_passthrough: { turn_id: "turn_old" } },
+        { type: "message", role: "user", content: [{ type: "input_text", text: "Compact the current task" }],
+          internal_chat_message_metadata_passthrough: { turn_id: "turn_retry" } },
+      ],
+    };
+    retry._compactionRequest = true;
+    expect(store.resolve(retry)).toEqual({
+      cwd: root, roots: [root], writableRoots: [root],
+      sandboxPolicy: { type: "dangerFullAccess" }, tools: retry.context.tools,
+    });
+  });
+
   test("does not borrow authority across threads or hide an invalid trusted update", () => {
     const store = new ChatGptThreadEnvironmentStore();
     store.resolve(currentWire());

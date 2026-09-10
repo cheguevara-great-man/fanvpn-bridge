@@ -1,10 +1,15 @@
 [CmdletBinding()]
-param([string]$Bun = 'bun', [string]$OutputDirectory = '', [switch]$PackageMetadataOnly)
+param([string]$Bun = 'bun', [string]$OutputDirectory = '', [string]$TunnelClient = '', [switch]$PackageMetadataOnly)
 $ErrorActionPreference = 'Stop'
 $Bun = (Get-Command $Bun -ErrorAction Stop).Source
 $originalPath = $env:PATH
 $env:PATH = (Split-Path $Bun -Parent) + [IO.Path]::PathSeparator + $env:PATH
 $source = Join-Path (Split-Path $PSScriptRoot -Parent) 'third_party\web-harness'
+if (-not $TunnelClient) { $TunnelClient = Join-Path $env:LOCALAPPDATA 'BrowserAIBridge\WebHarness\bin\tunnel-client.exe' }
+if (-not $PackageMetadataOnly) {
+  if (-not (Test-Path -LiteralPath $TunnelClient -PathType Leaf)) { throw "Pinned tunnel-client not found: $TunnelClient" }
+  $env:CODEX_CHATGPT_WEB_EMBEDDED_TUNNEL_CLIENT = [IO.Path]::GetFullPath($TunnelClient)
+}
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path (Split-Path $PSScriptRoot -Parent) 'dist-web-harness' }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 Push-Location $source
@@ -32,7 +37,7 @@ try {
     $target = Join-Path $OutputDirectory $archives[0].Name
     Copy-Item -LiteralPath $archives[0].FullName -Destination $target
     $manifest = [ordered]@{
-        version = '5.0.6-bridge.1'
+        version = '5.0.6-bridge.2'
         upstream_commit = 'e85e3693fdb4e3e033348c08df0298c20fcdb612'
         filename = $archives[0].Name
         sha256 = [BitConverter]::ToString(
@@ -42,4 +47,4 @@ try {
     }
     [IO.File]::WriteAllText((Join-Path $OutputDirectory 'web-harness-release.json'), ($manifest | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
     Write-Output "WebHarness package: $target"
-} finally { Pop-Location; $env:PATH = $originalPath }
+} finally { Pop-Location; $env:PATH = $originalPath; Remove-Item Env:CODEX_CHATGPT_WEB_EMBEDDED_TUNNEL_CLIENT -ErrorAction SilentlyContinue }

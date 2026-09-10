@@ -557,7 +557,7 @@ async function downloadUpdateArchive(repository) {
 }
 
 async function downloadWebHarnessArchive(repository) {
-  const base = `https://github.com/${repository}/releases/download/web-harness-v5.0.6-bridge.1/`;
+  const base = `https://github.com/${repository}/releases/download/web-harness-v5.0.6-bridge.2/`;
   const metadata = await fetch(base + "web-harness-release.json", { cache: "no-store" });
   if (!metadata.ok) throw new Error(`网页执行器安装包尚不可用（HTTP ${metadata.status}）`);
   const manifest = await metadata.json();
