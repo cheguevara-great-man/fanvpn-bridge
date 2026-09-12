@@ -1014,6 +1014,59 @@ test("retained compaction can close its browser epoch while preserving an ordina
   sessions.clear();
 });
 
+test("a completed native turn survives local Codex compaction without a provider compaction request", async () => {
+  const sessions = new ChatGptTurnSessions();
+  const source = sessions.getOrCreate(
+    "pre-compaction-wire-hash",
+    () => ({
+      mode: "read-only",
+      browser: Promise.resolve("authoritative final answer"),
+      physicalSettlement: Promise.resolve(),
+      trace: new ChatGptTraceFeed(),
+      text: new ChatGptTextFeed(),
+      cancel() {},
+    }),
+    "source-trace",
+    "native-owner",
+    "native-turn",
+    "native-thread",
+    "original-instruction-hash",
+  );
+  await source.browserOutcome;
+  await source.physicalSettlement;
+
+  let replacementStarts = 0;
+  const resumed = await sessions.getOrCreateAfterOwnerRetirement(
+    "post-compaction-wire-hash",
+    "native-owner",
+    () => {
+      replacementStarts += 1;
+      return {
+        mode: "read-only" as const,
+        browser: Promise.resolve("duplicate answer"),
+        physicalSettlement: Promise.resolve(),
+        trace: new ChatGptTraceFeed(),
+        text: new ChatGptTextFeed(),
+        cancel() {},
+      };
+    },
+    "replacement-trace",
+    undefined,
+    "native-turn",
+    "native-thread",
+    {
+      current: "rewritten-compacted-instruction-hash",
+      predecessors: new Set(),
+    },
+  );
+
+  expect(resumed).toBe(source);
+  expect(replacementStarts).toBe(0);
+  expect(sessions.find("pre-compaction-wire-hash")).toBeUndefined();
+  expect(sessions.find("post-compaction-wire-hash")).toBe(source);
+  sessions.clear();
+});
+
 test("adapter compact returns one same-agent handoff and preserves a pre-existing ordinary final", async () => {
   const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-adapter-retained-compact-"));
   const provider: CodexProviderConfig = {

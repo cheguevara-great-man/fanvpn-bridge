@@ -284,7 +284,6 @@ export class ChatGptTurnSession {
   private attachedConversationKey: string | undefined;
   private tail: Promise<void> = Promise.resolve();
   private capabilityRetirementScheduled = false;
-  private preservedCompactionResponse = false;
   private readonly rounds = new Map<string, {
     events: AdapterEvent[];
     reasoning: string[];
@@ -339,14 +338,6 @@ export class ChatGptTurnSession {
 
   settledOutcome(): ChatGptBrowserOutcome | undefined {
     return this.settledBrowserOutcome;
-  }
-
-  markPreservedCompactionResponse(): void {
-    this.preservedCompactionResponse = true;
-  }
-
-  isPreservedCompactionResponse(): boolean {
-    return this.preservedCompactionResponse;
   }
 
   conversationKey(): string | undefined {
@@ -562,22 +553,22 @@ export class ChatGptTurnSessions {
         existing.touch();
         return existing;
       }
-      // Codex may replace the whole visible input history while installing a native compaction
-      // checkpoint. In 0.153.x that can change both the item id and the serialized content used by
-      // the strict execution hash, even though the native thread + turn are unchanged. The native
-      // pair is the stable identity across this boundary. Only a terminal response explicitly
-      // retained by the compaction handoff is eligible; an ordinary old answer can never match.
-      const preserved = [...new Set(this.entries.values())].filter(session => (
-        session.isPreservedCompactionResponse()
-        && session.ownerKey === ownerKey
+      // Codex 0.153.x can install local compacted history without sending a separate provider
+      // compaction request. It then retries the still-active native turn with rewritten input.
+      // A fully settled final response is authoritative for that native thread + turn regardless
+      // of how Codex rewrites its history. Tool/intermediate rounds are still active, failures do
+      // not have a final outcome, and a new user message receives a new native turn id.
+      const completed = [...new Set(this.entries.values())].filter(session => (
+        session.ownerKey === ownerKey
         && session.nativeTurnId === nativeTurnId
         && session.nativeThreadId === nativeThreadId
+        && session.settledOutcome()?.type === "final"
       ));
-      if (preserved.length > 1) {
-        throw new Error("Multiple retained ChatGPT responses match the native compaction continuation");
+      if (completed.length > 1) {
+        throw new Error("Multiple completed ChatGPT responses match one native Codex turn");
       }
-      if (preserved.length === 1) {
-        const adopted = preserved[0]!;
+      if (completed.length === 1) {
+        const adopted = completed[0]!;
         for (const [entryKey, session] of this.entries) {
           if (session === adopted && entryKey !== key) this.entries.delete(entryKey);
         }
@@ -664,7 +655,6 @@ export class ChatGptTurnSessions {
     if (!outcome || outcome.type !== "final") {
       throw new Error("Only a settled final ChatGPT response can survive retained-conversation retirement");
     }
-    preserved.markPreservedCompactionResponse();
     return this.closeConversationAndWait(conversationKey, {
       session: preserved,
       executionKey: preservedExecutionKey,
