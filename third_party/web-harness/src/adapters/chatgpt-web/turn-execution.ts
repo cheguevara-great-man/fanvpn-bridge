@@ -201,14 +201,22 @@ export function chatGptTurnExecutionKey(parsed: CodexParsedRequest): string {
 export interface ChatGptInstructionLineage {
   current: string;
   predecessors: ReadonlySet<string>;
+  currentContent: string;
 }
 
 export function chatGptInstructionLineage(parsed: CodexParsedRequest): ChatGptInstructionLineage {
-  const revisions = chatGptTurnUserRevisionHistory(parsed).map(revision => createHash("sha256")
+  const history = chatGptTurnUserRevisionHistory(parsed);
+  const revisions = history.map(revision => createHash("sha256")
     .update(JSON.stringify([revision.itemId ?? null, revision.content])).digest("hex"));
+  const currentContent = createHash("sha256")
+    .update(JSON.stringify(history.at(-1)?.content)).digest("hex");
   const current = revisions.pop();
   if (!current) throw new Error("ChatGPT web requires a canonical user instruction");
-  return { current, predecessors: new Set(revisions) };
+  return {
+    current,
+    predecessors: new Set(revisions),
+    currentContent,
+  };
 }
 
 /** Exact canonical Responses request identity inside one long-lived browser execution. */
@@ -284,6 +292,7 @@ export class ChatGptTurnSession {
   private attachedConversationKey: string | undefined;
   private tail: Promise<void> = Promise.resolve();
   private capabilityRetirementScheduled = false;
+  private preservedCompactionResponse = false;
   private readonly rounds = new Map<string, {
     events: AdapterEvent[];
     reasoning: string[];
@@ -298,6 +307,7 @@ export class ChatGptTurnSession {
     readonly nativeTurnId?: string,
     readonly nativeThreadId?: string,
     readonly instruction?: string,
+    readonly instructionContent?: string,
   ) {
     this.attachedConversationKey = runtime.conversationKey;
     this.physicalSettlement = runtime.physicalSettlement.then(
@@ -338,6 +348,14 @@ export class ChatGptTurnSession {
 
   settledOutcome(): ChatGptBrowserOutcome | undefined {
     return this.settledBrowserOutcome;
+  }
+
+  markPreservedCompactionResponse(): void {
+    this.preservedCompactionResponse = true;
+  }
+
+  isPreservedCompactionResponse(): boolean {
+    return this.preservedCompactionResponse;
   }
 
   conversationKey(): string | undefined {
@@ -513,6 +531,7 @@ export class ChatGptTurnSessions {
     nativeTurnId?: string,
     nativeThreadId?: string,
     instruction?: string,
+    instructionContent?: string,
   ): ChatGptTurnSession {
     this.prune();
     const existing = this.entries.get(key);
@@ -528,7 +547,9 @@ export class ChatGptTurnSessions {
       );
     }
     if (this.entries.size >= this.maxEntries) throw new Error(`ChatGPT web session registry is full (${this.maxEntries} entries)`);
-    const session = new ChatGptTurnSession(start(), traceId, ownerKey, nativeTurnId, nativeThreadId, instruction);
+    const session = new ChatGptTurnSession(
+      start(), traceId, ownerKey, nativeTurnId, nativeThreadId, instruction, instructionContent,
+    );
     this.entries.set(key, session);
     const conversationKey = session.conversationKey();
     if (conversationKey) this.conversationHeads.set(conversationKey, session);
@@ -552,6 +573,32 @@ export class ChatGptTurnSessions {
         if (existing.supersededError) throw existing.supersededError;
         existing.touch();
         return existing;
+      }
+      // Codex may rewrite the item id/shape of the current user instruction while installing a
+      // native compaction checkpoint. That changes the strict execution hash even though this is
+      // still the same thread, turn and instruction. Only a terminal response explicitly retained
+      // by the compaction handoff is eligible for this compatibility alias; ordinary old answers
+      // can never be adopted by a later request.
+      const preserved = [...new Set(this.entries.values())].filter(session => (
+        session.isPreservedCompactionResponse()
+        && session.ownerKey === ownerKey
+        && session.nativeTurnId === nativeTurnId
+        && session.nativeThreadId === nativeThreadId
+        && session.instructionContent !== undefined
+        && instruction !== undefined
+        && session.instructionContent === instruction.currentContent
+      ));
+      if (preserved.length > 1) {
+        throw new Error("Multiple retained ChatGPT responses match the native compaction continuation");
+      }
+      if (preserved.length === 1) {
+        const adopted = preserved[0]!;
+        for (const [entryKey, session] of this.entries) {
+          if (session === adopted && entryKey !== key) this.entries.delete(entryKey);
+        }
+        this.entries.set(key, adopted);
+        adopted.touch();
+        return adopted;
       }
       const pending = this.retirements.get(key) ?? this.ownerRetirements.get(ownerKey);
       if (pending) {
@@ -582,7 +629,16 @@ export class ChatGptTurnSessions {
         continue;
       }
       if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
-      return this.getOrCreate(key, start, traceId, ownerKey, nativeTurnId, nativeThreadId, instruction?.current);
+      return this.getOrCreate(
+        key,
+        start,
+        traceId,
+        ownerKey,
+        nativeTurnId,
+        nativeThreadId,
+        instruction?.current,
+        instruction?.currentContent,
+      );
     }
   }
 
@@ -624,6 +680,7 @@ export class ChatGptTurnSessions {
     if (!outcome || outcome.type !== "final") {
       throw new Error("Only a settled final ChatGPT response can survive retained-conversation retirement");
     }
+    preserved.markPreservedCompactionResponse();
     return this.closeConversationAndWait(conversationKey, {
       session: preserved,
       executionKey: preservedExecutionKey,

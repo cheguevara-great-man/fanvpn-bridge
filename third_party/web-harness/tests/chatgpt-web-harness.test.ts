@@ -890,7 +890,11 @@ describe("ChatGPT outer-native harness v4", () => {
       undefined,
       "new-native-turn",
       "native-thread",
-      { current: "new-instruction", predecessors: new Set(["old-instruction"]) },
+      {
+        current: "new-instruction",
+        predecessors: new Set(["old-instruction"]),
+        currentContent: "new-instruction-content",
+      },
     );
     await Bun.sleep(0);
 
@@ -2433,6 +2437,12 @@ describe("ChatGPT outer-native harness v4", () => {
         role: "user",
         content: [{ type: "input_text", text: `${SUMMARY_PREFIX}\nThe project was inspected and the pending command completed.` }],
       });
+      // Codex 0.153.x may install the compacted history by assigning a new item id to the
+      // unchanged current-turn instruction. The strict execution hash then differs from the
+      // pre-compaction response even though the native thread, turn and instruction are equal.
+      const rewrittenInput = (secondRequest._rawBody as { input: Array<Record<string, unknown>> }).input;
+      rewrittenInput.find(item => item.role === "user"
+        && JSON.stringify(item.content).includes("Inspect the project"))!.id = "msg_rewritten_after_compaction";
       await adapter.runTurn!(secondRequest, { headers: new Headers() }, event => secondEvents.push(event));
       expect(browserStarts).toBe(2);
       expect(continuationTurnToken).toBe("");

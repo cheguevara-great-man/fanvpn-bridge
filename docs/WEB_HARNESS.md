@@ -10,7 +10,7 @@
 
 - 仓库：https://github.com/miuuyy/codex-chatgpt-web
 - 当前上游基线：v5.0.6（完整合并；最初导入为 v5.0.4）
-- 当前 Bridge 发行版本：v5.0.6-bridge.3。Windows 安装包已内置并校验 OpenAI tunnel-client v0.0.12；并兼容 Codex 0.153+ 在自动压缩后发送的不含 cwd 的当前环境差量。目标电脑配置 MCP 时不再临时访问 GitHub 下载该文件。
+- 当前 Bridge 发行版本：v5.0.6-bridge.4。Windows 安装包已内置并校验 OpenAI tunnel-client v0.0.12；兼容 Codex 0.153+ 在自动压缩后发送的不含 cwd 的当前环境差量，也会在压缩改写当前指令 item ID 时复用已经完成的网页回答，避免重复打开网页执行。目标电脑配置 MCP 时不再临时访问 GitHub 下载该文件。
 - 固定提交：e85e3693fdb4e3e033348c08df0298c20fcdb612
 - 旧版显示的 5.0.13 是本项目自行递增的包版本，并不代表上游版本。
 - 源码：`third_party/web-harness`，通过 Git subtree 导入，保留 MIT 与第三方许可证。
