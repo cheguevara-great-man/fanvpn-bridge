@@ -56,6 +56,9 @@ Chrome 扩展弹窗
 快照 Codex 配置、VS Code 设置、备份文件和端点状态；任何配置步骤或 VS Code
 启动失败时恢复快照，并恢复切换前的 Direct 代理进程状态。
 
+这些层级与 Codex `model_provider` 并非一一对应。常见组合、Provider 分区与聊天历史可见性见
+[Codex 路由与 Provider 速查](ROUTING.md)。
+
 ## 组件
 
 ### Native Host

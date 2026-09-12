@@ -1,7 +1,8 @@
 # Windows 安装
 
-本文只介绍如何在 Windows 上安装 FanVPN Bridge。安装完成后，再按[客户端使用指南](USAGE.md)配置
-Codex、Claude Code 或 CC Switch。
+本文是 **完整安装与排障参考**，保留手动构建、Native Host 注册、A/B 更新、日志和卸载等细节。
+普通用户首次安装或日常升级优先阅读[安装与升级](INSTALL_AND_UPDATE.md)。安装完成后，再按
+[客户端使用指南](USAGE.md)配置 Codex、Claude Code 或 CC Switch。
 
 ## 系统要求
 

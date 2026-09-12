@@ -1,14 +1,14 @@
 # ChatGPT 网页执行器
 
-本功能已合入默认分支 `codex/server-executor`。已完成本地代码检查、回归测试、Windows 打包启动检查，以及真实账号的 Tunnel、Connector、流式回答和本机工具调用验收。仍建议先在非关键任务中使用。
-
 网页执行器是第三条模型链路：本机登录 ChatGPT 网页，Codex 继续管理任务、工具与审批。
 原生 GPT 使用既有浏览器或服务器中心链路；Gemini 使用既有账号适配器。
+
+本文只描述当前安装、使用、文件位置和限制。历史修复与逐版本验收记录统一放在
+[问题与解决记录](PROBLEM_SOLVING.md)。
 
 ## 上游来源
 
 - 仓库：https://github.com/miuuyy/codex-chatgpt-web
-- Bridge 发行版本：v5.0.6-bridge.1
 - 当前上游基线：v5.0.6（完整合并；最初导入为 v5.0.4）
 - 当前 Bridge 发行版本：v5.0.6-bridge.3。Windows 安装包已内置并校验 OpenAI tunnel-client v0.0.12；并兼容 Codex 0.153+ 在自动压缩后发送的不含 cwd 的当前环境差量。目标电脑配置 MCP 时不再临时访问 GitHub 下载该文件。
 - 固定提交：e85e3693fdb4e3e033348c08df0298c20fcdb612
@@ -25,25 +25,13 @@
 - 模型切换必须处理网页压缩检查点、响应 ID 和原生推理数据的边界。
 - Gateway 的 Chrome 代理不会自动作用于 Electron，网页执行器需要显式的网络配置。
 
-## 交付验收
-
-运行时打包、配置隔离、流式传输与取消、模型目录、工具调用、压缩、多任务隔离、
-安装更新与回滚通过之后，才标记为可部署。网页登录及 Connector 授权须由账号持有人完成。
-
-## 使用入口
+## 安装与使用
 
 需要同时更新本分支的 Chrome 扩展和 Native Host（3.10.5）。只替换扩展目录不能更新后端。
 
-### 公司电脑从旧版迁移
-
-旧扩展更新源可能固定为 master，不能靠旧版更新按钮取得当前默认分支。
-第一次迁移需取得默认分支源码，在原安装目录更新 Chrome 扩展，
-并在 `chrome://extensions` 点击重新加载（保留原扩展，不要删除其配置）。
-然后在新版扩展的“安装与升级”更新 Native Host，确认扩展和 Host 均为 3.10.5。
-再点击“安装 / 更新 WebHarness”，将下载 `web-harness-v5.0.6-bridge.1` 发布包并校验 SHA-256，
-无需自行编译 WebHarness。后续扩展自动跟随 GitHub 默认分支，不再写死 master 或预览分支。
-新电脑首次安装仍按 [安装与升级](INSTALL_AND_UPDATE.md) 完成一次 Native Host 注册。
-账号登录、Tunnel 与连接器授权需要在公司电脑完成；不要复制别人的 Cookie、API key 或本机私密配置。
+新电脑先按[安装与升级](INSTALL_AND_UPDATE.md)完成一次 Native Host 注册。旧版迁移也应先更新 Bridge
+扩展和 Native Host，再安装或更新 WebHarness；不要只替换扩展目录或只修改 WebHarness 版本字段。
+账号登录、Tunnel 与 Connector 授权需要在实际使用电脑上完成，不要复制别人的 Cookie、API key 或本机私密配置。
 
 1. 在 Bridge 弹窗的「ChatGPT 网页执行器」中点击「安装 / 更新 WebHarness」。
 2. 选择网络：本机已有可用系统代理时使用系统网络；没有 Clash 时可选择「使用已保存的服务器代理」。后者读取 `%LOCALAPPDATA%\FanVPNBridge\direct-proxy.json`，缺少该文件时必须先配置服务器凭据，不会悄悄使用其他服务器。
@@ -76,24 +64,6 @@
 - `installation.json`：当前版本与上一版本路径。
 - `config.json`、`browser`：执行器配置与独立网页登录状态。
 - `integration`：上游专用 Codex 配置副本，不是用户真实 `.codex\config.toml`。
-
-### 第二轮 `missing cwd` 的目录隔离修复（bridge.5）
-
-安装配置仍写入 `integration`，但线程环境的只读校验必须查询真实 Codex home。
-启动器在隔离 `CODEX_HOME` 前保存 `BRIDGE_WEB_CODEX_AUTHORITY_HOME`；运行时只在
-历史 rollout 与当前任务 visualization 根目录校验中使用它，不用于安装、登录或修改用户配置。
-后续请求可以省略初始环境，运行时按线程 ID、当前 turn ID、工作区和权限校验原生记录后恢复；
-不从任意提示词或其他线程借用目录，不放宽沙箱。
-
-压缩或自动重试请求有时只会重放旧轮次的环境信封，而不重复当前 cwd。此时运行时仅复用已由同一线程验证并持久化的权限环境；若当前轮明确携带了格式错误或冲突的环境更新，仍然拒绝执行。
-
-Bridge 清理网页模型历史中的本地 reasoning 项时也必须保留消息 ID，避免破坏原生环境来源标记。
-模型目录刷新合并已知原生模型缓存，避免模式切换或一次刷新失败把已发现的 GPT 模型删除。
-
-2026-09-09 本机验收：失败的原生 Codex 会话重启执行器后可恢复历史；独立测试会话连续三轮
-完成 `apply_patch` 创建文件、终端读取、`apply_patch` 修改并再次读取。只读测试会话仍拒绝写入。
-另有 52 项环境/集成测试、28 项 Bridge/模型目录测试和 20 项启动器界面连线测试通过。
-测试没有覆盖所有模型、所有插件或公司设备，不应把该结果视为所有网页异常均已消除。
 - `network.json`：仅本机保存的代理凭据，不能分享或提交 Git。
 - `.codex\browser-ai-bridge-web-models.json`：已配置网页模式的模型缓存；Hybrid 自动更新时保留这些行。
 
@@ -112,20 +82,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_web_harness.ps
 需要 Windows、Node.js、Bun；依赖按上游锁文件安装。产物位于 `dist-web-harness`，包含 Windows ZIP 和校验清单。
 扩展安装按钮读取本仓库对应的 WebHarness 发布资产；发布资产不可用时按钮会明确报错，不会覆盖当前可用版本。
 
-## 诊断边界
+## 当前限制与诊断边界
 
-### v5.0.6-bridge.1 本机验收（2026-09-10）
-
-完整合入上游 v5.0.6，保留 Bridge 网络、配置隔离与真实线程目录适配。
-类型检查通过；184 项网页/环境/Bridge 测试与 14 项 Host 测试通过。
-75 项启动器测试中 74 项通过，1 项被 Windows 文件符号链接权限限制，未计为通过。
-本机已安装并运行 Full/automatic 5.0.6，真实同一 Codex 会话连续两轮文本回答及第三轮
-只读 Get-Location 工具调用均完成，没有 DOM 消失或已发送文本冲突。
-这不等于已复现并验收编辑重发，也不代表 GitHub 插件已修复；本次 CLI 的远程插件列表
-请求仍出现连接错误。网页登录检查超时会令升级事务回滚；进入正常聊天页后重新完成
-设置可完成迁移，不能只手工更改 releaseVersion 绕过运行时校验。
-
-本地测试覆盖路径校验、凭据隔离、分流和目录合并，不替代真实账号的工具调用验收。
+本地测试覆盖路径校验、凭据隔离、分流和目录合并，但不能替代真实账号的网页登录、Connector、
+工具调用和公司网络环境验收。
 网络设置为服务器代理时，Electron 页面使用 HTTPS 代理；子进程得到标准代理环境变量。
 Secure MCP Tunnel 已在服务器代理模式下完成真实连接和工具调用验证；公司网络策略或服务器出口变化仍可能影响连接。
 不要把 `config.json`、`network.json`、Cookie 或登录 token 发到日志或问题报告。

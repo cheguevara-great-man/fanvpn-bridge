@@ -1,5 +1,8 @@
 # Codex 服务器执行器总体方案
 
+> **历史设计文档。** 本文保留服务器执行器的设计过程、阶段拆分和当时的实现计划，不作为当前行为规范。
+> 当前实现与操作以 [Codex 服务器中心 API](SERVER_CODEX_EXECUTOR.md)、[架构](ARCHITECTURE.md) 和代码为准。
+>
 > 状态：Server Lite 已完成隔离服务端纵向验证，支持通过旧浏览器链路转运；Chrome 扩展提供两档链路开关。
 > 开发分支：两个仓库均使用 `codex/server-executor`  
 > 目标：账号 B 只在美国服务器保存登录凭据，五台 Windows 电脑通过各自设备身份使用服务器上的 Codex 模型能力；第二阶段再实现 Full 账号产品能力。  
