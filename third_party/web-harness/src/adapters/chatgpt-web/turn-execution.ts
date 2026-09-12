@@ -201,22 +201,14 @@ export function chatGptTurnExecutionKey(parsed: CodexParsedRequest): string {
 export interface ChatGptInstructionLineage {
   current: string;
   predecessors: ReadonlySet<string>;
-  currentContent: string;
 }
 
 export function chatGptInstructionLineage(parsed: CodexParsedRequest): ChatGptInstructionLineage {
-  const history = chatGptTurnUserRevisionHistory(parsed);
-  const revisions = history.map(revision => createHash("sha256")
+  const revisions = chatGptTurnUserRevisionHistory(parsed).map(revision => createHash("sha256")
     .update(JSON.stringify([revision.itemId ?? null, revision.content])).digest("hex"));
-  const currentContent = createHash("sha256")
-    .update(JSON.stringify(history.at(-1)?.content)).digest("hex");
   const current = revisions.pop();
   if (!current) throw new Error("ChatGPT web requires a canonical user instruction");
-  return {
-    current,
-    predecessors: new Set(revisions),
-    currentContent,
-  };
+  return { current, predecessors: new Set(revisions) };
 }
 
 /** Exact canonical Responses request identity inside one long-lived browser execution. */
@@ -307,7 +299,6 @@ export class ChatGptTurnSession {
     readonly nativeTurnId?: string,
     readonly nativeThreadId?: string,
     readonly instruction?: string,
-    readonly instructionContent?: string,
   ) {
     this.attachedConversationKey = runtime.conversationKey;
     this.physicalSettlement = runtime.physicalSettlement.then(
@@ -531,7 +522,6 @@ export class ChatGptTurnSessions {
     nativeTurnId?: string,
     nativeThreadId?: string,
     instruction?: string,
-    instructionContent?: string,
   ): ChatGptTurnSession {
     this.prune();
     const existing = this.entries.get(key);
@@ -547,9 +537,7 @@ export class ChatGptTurnSessions {
       );
     }
     if (this.entries.size >= this.maxEntries) throw new Error(`ChatGPT web session registry is full (${this.maxEntries} entries)`);
-    const session = new ChatGptTurnSession(
-      start(), traceId, ownerKey, nativeTurnId, nativeThreadId, instruction, instructionContent,
-    );
+    const session = new ChatGptTurnSession(start(), traceId, ownerKey, nativeTurnId, nativeThreadId, instruction);
     this.entries.set(key, session);
     const conversationKey = session.conversationKey();
     if (conversationKey) this.conversationHeads.set(conversationKey, session);
@@ -574,19 +562,16 @@ export class ChatGptTurnSessions {
         existing.touch();
         return existing;
       }
-      // Codex may rewrite the item id/shape of the current user instruction while installing a
-      // native compaction checkpoint. That changes the strict execution hash even though this is
-      // still the same thread, turn and instruction. Only a terminal response explicitly retained
-      // by the compaction handoff is eligible for this compatibility alias; ordinary old answers
-      // can never be adopted by a later request.
+      // Codex may replace the whole visible input history while installing a native compaction
+      // checkpoint. In 0.153.x that can change both the item id and the serialized content used by
+      // the strict execution hash, even though the native thread + turn are unchanged. The native
+      // pair is the stable identity across this boundary. Only a terminal response explicitly
+      // retained by the compaction handoff is eligible; an ordinary old answer can never match.
       const preserved = [...new Set(this.entries.values())].filter(session => (
         session.isPreservedCompactionResponse()
         && session.ownerKey === ownerKey
         && session.nativeTurnId === nativeTurnId
         && session.nativeThreadId === nativeThreadId
-        && session.instructionContent !== undefined
-        && instruction !== undefined
-        && session.instructionContent === instruction.currentContent
       ));
       if (preserved.length > 1) {
         throw new Error("Multiple retained ChatGPT responses match the native compaction continuation");
@@ -637,7 +622,6 @@ export class ChatGptTurnSessions {
         nativeTurnId,
         nativeThreadId,
         instruction?.current,
-        instruction?.currentContent,
       );
     }
   }

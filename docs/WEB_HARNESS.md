@@ -10,7 +10,7 @@
 
 - 仓库：https://github.com/miuuyy/codex-chatgpt-web
 - 当前上游基线：v5.0.6（完整合并；最初导入为 v5.0.4）
-- 当前 Bridge 发行版本：v5.0.6-bridge.4。Windows 安装包已内置并校验 OpenAI tunnel-client v0.0.12；兼容 Codex 0.153+ 在自动压缩后发送的不含 cwd 的当前环境差量，也会在压缩改写当前指令 item ID 时复用已经完成的网页回答，避免重复打开网页执行。目标电脑配置 MCP 时不再临时访问 GitHub 下载该文件。
+- 当前 Bridge 发行版本：v5.0.6-bridge.5。Windows 安装包已内置并校验 OpenAI tunnel-client v0.0.12；兼容 Codex 0.153+ 在自动压缩后发送的不含 cwd 的当前环境差量。Codex 安装压缩历史时会同时改写消息 ID 和消息内容，Bridge 以稳定的原生任务 ID + 本轮 ID 复用压缩边界前已经完成的网页回答，避免把同一问题在新网页中重复执行。目标电脑配置 MCP 时不再临时访问 GitHub 下载该文件。
 - 固定提交：e85e3693fdb4e3e033348c08df0298c20fcdb612
 - 旧版显示的 5.0.13 是本项目自行递增的包版本，并不代表上游版本。
 - 源码：`third_party/web-harness`，通过 Git subtree 导入，保留 MIT 与第三方许可证。
@@ -27,7 +27,7 @@
 
 ## 安装与使用
 
-需要同时更新本分支的 Chrome 扩展和 Native Host（3.10.5）。只替换扩展目录不能更新后端。
+需要同时更新本分支的 Chrome 扩展和 Native Host（3.10.6）。只替换扩展目录不能更新后端。
 
 新电脑先按[安装与升级](INSTALL_AND_UPDATE.md)完成一次 Native Host 注册。旧版迁移也应先更新 Bridge
 扩展和 Native Host，再安装或更新 WebHarness；不要只替换扩展目录或只修改 WebHarness 版本字段。
