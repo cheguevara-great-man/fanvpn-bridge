@@ -10,6 +10,8 @@ import {
   extractChatGptTurnIdentity,
   extractChatGptThreadSpawnLineage,
   extractChatGptRootThreadMetadata,
+  extractCurrentChatGptEnvironmentClaim,
+  currentChatGptEnvironmentContextHasCwdElement,
   hasCurrentChatGptEnvironmentContext,
   hasRawChatGptEnvironmentContext,
   unattributedChatGptEnvironmentMessages,
@@ -159,7 +161,34 @@ export class ChatGptThreadEnvironmentStore {
       const currentCompaction = hasCurrentContext && isChatGptCompactionContinuation(parsed);
       const historicalMessages = hasCurrentContext && !currentCompaction && lineage
         ? unattributedChatGptEnvironmentMessages(parsed) : undefined;
-      if (hasCurrentContext && !currentCompaction && !historicalMessages) throw error;
+      const sameThread = this.get(identity.threadId);
+      if (hasCurrentContext && !currentCompaction && !historicalMessages && sameThread) {
+        let displacedClaim: ChatGptTurnEnvironment | undefined;
+        try { displacedClaim = extractCurrentChatGptEnvironmentClaim(parsed); }
+        catch { /* Preserve the normal fail-closed path for malformed envelopes below. */ }
+        if (displacedClaim) {
+          if (!sameAuthority(displacedClaim, { ...sameThread, tools: [] })) {
+            throw new Error("Current Codex environment claim conflicts with its trusted same-thread authority");
+          }
+          return {
+            cwd: sameThread.cwd,
+            roots: sameThread.roots,
+            writableRoots: sameThread.writableRoots,
+            sandboxPolicy: sameThread.sandboxPolicy,
+            tools: parsed.context.tools ?? [],
+          };
+        }
+      }
+      // Codex 0.153+ can emit a current environment delta after automatic compaction. The delta
+      // is current-turn context, but intentionally omits cwd. Let the exact current native rollout
+      // restore authority below. An explicit cwd element (including <cwd/>) remains a malformed
+      // authoritative update and must fail closed rather than being hidden by cached state.
+      const recoverableCurrentDelta = hasCurrentContext
+        && !currentCompaction
+        && !historicalMessages
+        && error.message.endsWith("missing cwd in trusted Codex environment context")
+        && !currentChatGptEnvironmentContextHasCwdElement(parsed);
+      if (hasCurrentContext && !currentCompaction && !historicalMessages && !recoverableCurrentDelta) throw error;
       const currentClaim = currentCompaction ? extractChatGptContinuationEnvironmentClaim(parsed) : undefined;
       const rolloutIdentity = lineage ?? extractChatGptRootThreadMetadata(parsed);
       // Automatic compaction has a current turn_context; standalone compaction has only its
@@ -189,7 +218,6 @@ export class ChatGptThreadEnvironmentStore {
       // Codex compaction/retry requests can replay the original environment envelope without
       // tagging it as the current turn. The same-thread cache is already trusted authority; use it
       // before rejecting that historical replay. A malformed current update still fails closed.
-      const sameThread = this.get(identity.threadId);
       if (!hasCurrentContext && sameThread) return {
         cwd: sameThread.cwd,
         roots: sameThread.roots,

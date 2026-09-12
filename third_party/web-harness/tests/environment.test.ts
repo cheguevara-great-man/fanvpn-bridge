@@ -623,6 +623,29 @@ describe("trusted Codex task environment continuity", () => {
     });
   });
 
+  test("recovers a valid untagged environment displaced by a compacted history item", () => {
+    const store = new ChatGptThreadEnvironmentStore();
+    store.resolve(currentWire());
+    const resumed = currentWire();
+    resumed.context.tools = [{ name: "resumed_tool", description: "resumed", parameters: { type: "object" } }];
+    resumed._rawBody = {
+      client_metadata: { "x-codex-turn-metadata": JSON.stringify({
+        request_kind: "turn", thread_id: "thread_current", turn_id: "turn_after_compaction",
+        sandbox: "none", workspaces: { [root]: {} },
+      }) },
+      input: [
+        { type: "message", id: "displaced_environment", role: "user",
+          content: [{ type: "input_text", text: environmentXml }] },
+        { type: "compaction", encrypted_content: encodeCompactionSummary("Earlier task summary") },
+        { type: "message", id: "current_user", role: "user", content: [{ type: "input_text", text: "Continue" }] },
+      ],
+    };
+    expect(store.resolve(resumed)).toEqual({
+      cwd: root, roots: [root], writableRoots: [root],
+      sandboxPolicy: { type: "dangerFullAccess" }, tools: resumed.context.tools,
+    });
+  });
+
   test("does not borrow authority across threads or hide an invalid trusted update", () => {
     const store = new ChatGptThreadEnvironmentStore();
     store.resolve(currentWire());
@@ -938,6 +961,20 @@ describe("trusted Codex task environment continuity", () => {
       { type: "message", role: "user", id: "old_user", content: [{ type: "input_text", text: "Previous request" }] },
       { type: "message", role: "assistant", id: "old_reply", content: [{ type: "output_text", text: "Completed" }] },
     );
+    expect(new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request).cwd).toBe(root);
+  });
+
+  test("recovers a current post-compaction environment delta without cwd from the exact native rollout", () => {
+    const { codexHome, request } = resumedRootFixture();
+    const body = request._rawBody as { input: Array<Record<string, unknown>> };
+    body.input.unshift({
+      type: "message",
+      role: "user",
+      id: "current_environment_delta",
+      content: [{ type: "input_text", text:
+        "<environment_context><filesystem><permission_profile type=\"disabled\"><file_system type=\"unrestricted\" /></permission_profile></filesystem></environment_context>" }],
+      internal_chat_message_metadata_passthrough: { turn_id: rolloutTurnId },
+    });
     expect(new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request).cwd).toBe(root);
   });
 

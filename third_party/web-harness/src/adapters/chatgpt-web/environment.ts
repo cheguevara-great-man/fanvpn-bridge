@@ -132,6 +132,34 @@ export function hasCurrentChatGptEnvironmentContext(parsed: CodexParsedRequest):
   return false;
 }
 
+/**
+ * True when the current native turn explicitly supplied a cwd element, including an empty or
+ * otherwise malformed one. Newer Codex builds can send a current environment *delta* after
+ * compaction that deliberately omits cwd; callers may recover that omission from the exact
+ * current native rollout, but must not hide an explicit invalid cwd declaration.
+ */
+export function currentChatGptEnvironmentContextHasCwdElement(parsed: CodexParsedRequest): boolean {
+  const turnId = extractChatGptTurnIdentity(parsed).turnId;
+  const body = record(parsed._rawBody);
+  const input = Array.isArray(body?.input) ? body.input : [];
+  let laterAssistantOutput = false;
+  for (let index = input.length - 1; index >= 0; index -= 1) {
+    const item = record(input[index]);
+    if (!item) continue;
+    if ((item.type === "message" && item.role === "assistant")
+      || item.type === "function_call" || item.type === "reasoning" || item.type === "compaction") {
+      laterAssistantOutput = true;
+    }
+    if (item.type !== "message" || !/<\/?environment_context\b/i.test(rawMessageText(item))) continue;
+    const owner = itemTurnId(item);
+    const current = turnId
+      ? owner === turnId || (owner === undefined && !laterAssistantOutput)
+      : owner === undefined && !laterAssistantOutput;
+    if (current && /<cwd\b/i.test(rawMessageText(item))) return true;
+  }
+  return false;
+}
+
 export interface ChatGptUnattributedEnvironmentMessage {
   id: string;
   content: unknown;
@@ -699,6 +727,43 @@ function matchesPath(root: string, path: string): boolean {
 
 export function extractChatGptTurnEnvironment(parsed: CodexParsedRequest): ChatGptTurnEnvironment {
   return parseChatGptEnvironmentText(parsed, trustedEnvironmentText(parsed));
+}
+
+/**
+ * Parse one structurally complete current/untagged environment envelope even when compaction has
+ * moved it away from the active user message. This is only a claim: callers must compare it with
+ * already trusted same-thread authority and may never use it to create or widen authority.
+ */
+export function extractCurrentChatGptEnvironmentClaim(parsed: CodexParsedRequest): ChatGptTurnEnvironment | undefined {
+  const body = record(parsed._rawBody);
+  const input = Array.isArray(body?.input) ? body.input : [];
+  // This compatibility shape is produced only after native compaction. Ordinary current updates
+  // and explicit per-turn claims must continue through the stricter adjacency/rollout paths.
+  const compactedHistory = input.some(value => {
+    const item = record(value);
+    if (item?.type === "compaction" || item?.type === "context_compaction" || item?.type === "compaction_summary") {
+      return true;
+    }
+    if (item?.type !== "message") return false;
+    const text = rawMessageText(item).trim();
+    return isReadableCompactionSummaryText(text) || text === OPAQUE_COMPACTION_NOTE;
+  });
+  if (!compactedHistory) return undefined;
+  const candidates = input.flatMap(value => {
+    const item = record(value);
+    if (item?.type !== "message" || item.role !== "user") return [];
+    const owner = itemTurnId(item);
+    if (owner !== undefined) return [];
+    const parts = typeof item.content === "string" ? [item.content]
+      : Array.isArray(item.content) ? item.content.map(part => record(part)?.text) : [];
+    return parts.flatMap(value => {
+      if (typeof value !== "string") return [];
+      const text = value.trim();
+      return /^<environment_context>[\s\S]*<\/environment_context>$/.test(text) ? [text] : [];
+    });
+  });
+  if (candidates.length !== 1) return undefined;
+  return parseChatGptEnvironmentText(parsed, candidates[0]!);
 }
 
 function parseChatGptEnvironmentText(parsed: CodexParsedRequest, text: string): ChatGptTurnEnvironment {
