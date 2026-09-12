@@ -156,6 +156,8 @@ enabled = false
 模型模式和 Codex `model_provider` 不是一一对应：Hybrid 始终使用 `browser_ai_bridge`；仅原生 GPT 在
 “浏览器完整”时也使用 `browser_ai_bridge`，而“官方直连”使用 `browser_ai_direct`。因此仅在 GPT-only 与
 Hybrid 之间切换不一定改变任务的 Provider 分区，但 Direct 与 Browser Full 属于不同 Provider 分区。
+特别地，`Hybrid + 官方直连` 仍是 `browser_ai_bridge`：只有其中的 GPT 请求出口使用 Direct；它不会变成
+`browser_ai_direct`，因此仍与其他 Hybrid / Browser Full 任务处在同一个 Provider 分区。
 
 Codex CLI 与 VS Code Codex 共用 `~/.codex/config.toml` 和 `~/.codex/auth.json`。CLI 会读取同一模型与
 GPT 路由配置；“VS Code 通用网络”只通过启动进程环境影响 VS Code，不会自动包住从普通 PowerShell
