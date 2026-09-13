@@ -17,6 +17,21 @@
 
 export const BRIDGE_COMPACTION_PREFIX = "ocx1:";
 
+/** Codex local compaction uses /responses and declares its purpose in native metadata. */
+export function isLocalCompactionRequest(body: unknown): boolean {
+  if (!body || typeof body !== "object") return false;
+  const raw = body as Record<string, unknown>;
+  const client = raw.client_metadata;
+  let metadata = client && typeof client === "object"
+    ? (client as Record<string, unknown>)["x-codex-turn-metadata"] : undefined;
+  if (typeof metadata === "string") {
+    try { metadata = JSON.parse(metadata); } catch { return false; }
+  }
+  return !!metadata && typeof metadata === "object"
+    && (metadata as Record<string, unknown>).request_kind === "compaction"
+    && !(Array.isArray(raw.input) && raw.input.some(item => item?.type === "compaction_trigger"));
+}
+
 /** Mirrors codex-rs core/templates/compact/prompt.md (the local-compaction instruction). */
 export const COMPACT_PROMPT = `You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.
 

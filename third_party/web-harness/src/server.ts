@@ -41,6 +41,7 @@ import {
   COMPACT_PROMPT,
   decodeCompactionSummary,
   extractCompactUserMessages,
+  isLocalCompactionRequest,
 } from "./responses/compaction";
 import { parseRequest } from "./responses/parser";
 import { expandPreviousResponseInput, flushResponseState, rememberResponseState } from "./responses/state";
@@ -489,6 +490,9 @@ export async function responseRequest(
   let route: ChatGptWebModelRoute;
   try {
     parsed = parseRequest(expanded);
+    // Local Codex compaction carries a normal user checkpoint instruction, not a v2 trigger.
+    // Activate the existing handoff lifecycle before model routing and execution-key selection.
+    if (isLocalCompactionRequest(expanded)) parsed._compactionRequest = true;
     route = routeChatGptWebRequest(parsed, config);
     const identity = extractChatGptTurnIdentity(parsed);
     if (identity.threadId && identity.turnId) {
@@ -514,6 +518,8 @@ export async function responseRequest(
   }
 
   const compaction = parsed._compactionRequest === true;
+  const localCompaction = compaction && isLocalCompactionRequest(expanded);
+  const remoteCompaction = compaction && !localCompaction;
   const rememberCompletedResponse = (response: Record<string, unknown>): void => {
     if (!compaction) {
       if (options.rememberState !== false) rememberResponseState(parsed._rawBody, response, { force: true });
@@ -521,10 +527,14 @@ export async function responseRequest(
     }
     if (response.status !== "completed") return;
     const identity = extractChatGptTurnIdentity(parsed);
-    if (!identity.threadId || !identity.turnId || !Array.isArray(response.output) || response.output.length !== 1) return;
+    if (!identity.threadId || !identity.turnId || !Array.isArray(response.output)) return;
     const item = response.output[0];
-    if (item?.type !== "compaction" || typeof item.encrypted_content !== "string") return;
-    const summary = decodeCompactionSummary(item.encrypted_content);
+    const summary = localCompaction
+      ? response.output.filter((entry: any) => entry?.type === "message" && entry.role === "assistant")
+        .flatMap((entry: any) => entry.content ?? []).filter((part: any) => part?.type === "output_text")
+        .map((part: any) => part.text).join("")
+      : response.output.length === 1 && item?.type === "compaction" && typeof item.encrypted_content === "string"
+        ? decodeCompactionSummary(item.encrypted_content) : null;
     if (!summary) return;
     const source = extractChatGptCompactionSourceRevision(parsed);
     const body = parsed._rawBody as { input?: unknown[] };
@@ -626,7 +636,7 @@ export async function responseRequest(
         ...(provider.chatgptWeb?.stallTimeoutSec !== undefined
           ? { stallTimeoutSec: provider.chatgptWeb.stallTimeoutSec }
           : {}),
-        ...(compaction ? { compaction: true } : {}),
+        ...(remoteCompaction ? { compaction: true } : {}),
         onCompletedResponse: rememberCompletedResponse,
       },
     );
@@ -647,7 +657,7 @@ export async function responseRequest(
     toolNsMap: maps.toolNsMap,
     freeformToolNames: maps.freeformToolNames,
     toolSearchToolNames: maps.toolSearchToolNames,
-    ...(compaction ? { compaction: true } : {}),
+    ...(remoteCompaction ? { compaction: true } : {}),
   });
   rememberCompletedResponse(json);
   return Response.json(json);

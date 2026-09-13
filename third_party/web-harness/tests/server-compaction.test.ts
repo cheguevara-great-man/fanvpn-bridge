@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { ProviderAdapter } from "../src/adapters/base";
 import { defaultConfig } from "../src/config";
-import { COMPACT_PROMPT, SUMMARY_PREFIX, decodeCompactionSummary, encodeCompactionSummary } from "../src/responses/compaction";
+import { COMPACT_PROMPT, SUMMARY_PREFIX, buildCompactV1Output, decodeCompactionSummary, encodeCompactionSummary, isLocalCompactionRequest } from "../src/responses/compaction";
 import { compactRequest, responseRequest as respond } from "../src/server";
 import type { CodexProviderConfig } from "../src/types";
 import { extractChatGptTurnIdentity, extractChatGptTurnUserRevision } from "../src/adapters/chatgpt-web/environment";
@@ -9,6 +9,33 @@ import { chatGptCompactionSourceExecutionKey, chatGptTurnExecutionKey } from "..
 
 const model = "chatgpt-web/high";
 const summary = "The repository was inspected. Continue by implementing the bounded Web context contract.";
+
+test("local compaction uses native purpose metadata, never user text or a replayed checkpoint", () => {
+  expect(isLocalCompactionRequest({ input: [{ role: "user", content: COMPACT_PROMPT }] })).toBe(false);
+  expect(isLocalCompactionRequest({ client_metadata: { "x-codex-turn-metadata": "invalid" } })).toBe(false);
+  expect(isLocalCompactionRequest({ client_metadata: { "x-codex-turn-metadata": { request_kind: "turn" } },
+    input: [{ type: "context_compaction" }] })).toBe(false);
+  expect(isLocalCompactionRequest({ client_metadata: { "x-codex-turn-metadata": { request_kind: "compaction" } },
+    input: [{ type: "compaction_trigger" }] })).toBe(false);
+});
+
+test("local Codex compaction enters summarization but returns assistant text, not a remote envelope", async () => {
+  for (const stream of [false, true]) {
+    const response = await responseRequest(new Request("http://127.0.0.1/v1/responses", {
+      method: "POST",
+      body: JSON.stringify({ model, stream,
+        client_metadata: { "x-codex-turn-metadata": JSON.stringify({ request_kind: "compaction" }) },
+        input: [{ role: "user", content: "Original task" },
+          { role: "user", content: COMPACT_PROMPT.replaceAll("\n", "\r\n") + "\r\n" }],
+      }),
+    }), defaultConfig("full"), compactionAdapterFactory());
+    const wire = await response.text();
+    expect(wire).toContain(summary);
+    expect(wire).toContain('"type":"message"');
+    expect(wire).not.toContain('"type":"compaction"');
+    expect(wire).not.toContain("ocx1:");
+  }
+});
 
 // These fixtures test checkpoint authorization, not persisted previous_response_id storage.
 const responseRequest: typeof respond = (request, config, factory, options) =>
@@ -160,7 +187,7 @@ test("compaction identity accepts a historical source message from the pre-compa
   expect(response.status).toBe(200);
 });
 
-for (const format of ["v1", "v2"] as const) test(`${format} pre-turn compaction authorizes only its exact native continuation`, async () => {
+for (const format of ["v1", "v2", "local"] as const) test(`${format} pre-turn compaction authorizes only its exact native continuation`, async () => {
   const config = defaultConfig("full");
   const metadata = { thread_id: `thread_preturn_${format}`, turn_id: `turn_preturn_${format}` };
   const source = {
@@ -176,11 +203,15 @@ for (const format of ["v1", "v2"] as const) test(`${format} pre-turn compaction 
       method: "POST", body: JSON.stringify(original),
     }), config, compactionAdapterFactory())
     : await responseRequest(new Request("http://127.0.0.1/v1/responses", {
-      method: "POST", body: JSON.stringify({ ...original, input: [source, { type: "compaction_trigger" }] }),
+      method: "POST", body: JSON.stringify(format === "local" ? { ...original,
+        client_metadata: { "x-codex-turn-metadata": JSON.stringify({ ...metadata, request_kind: "compaction" }) },
+        input: [source, { role: "user", content: [{ type: "input_text", text: COMPACT_PROMPT }] }],
+      } : { ...original, input: [source, { type: "compaction_trigger" }] }),
     }), config, compactionAdapterFactory());
   expect(compact.status).toBe(200);
   const compacted = await compact.json() as { output: unknown[] };
-  const input = format === "v1" ? compacted.output : [source, ...compacted.output];
+  const input = format === "local" ? buildCompactV1Output([source], summary)
+    : format === "v1" ? compacted.output : [source, ...compacted.output];
   const continuation = { ...original, input };
   let starts = 0;
   const factory = (): ProviderAdapter => ({
