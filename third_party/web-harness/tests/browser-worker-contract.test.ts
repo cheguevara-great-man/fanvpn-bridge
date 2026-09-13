@@ -3085,7 +3085,20 @@ test("Bigger Context preflight expands only the total context ceiling and keeps 
   )).toThrow("unavailable for Luna");
 });
 
-test("Bigger Context stages use the lowest account mode that can carry the stage", () => {
+test("Bigger Context staging never downgrades a requested reasoning mode to Instant", () => {
+  const plus = { localToolsEnabled: false, solAvailable: true, proAvailable: false, experimentalBiggerContext: true };
+  const pro = { ...plus, proAvailable: true };
+  // Real failure: ~85k total, ~30k in each part. Both ACK turns must stay High,
+  // including the second turn which also sees the first part and its ACK.
+  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, 30_467, 118_592, "high").effort).toBe("high");
+  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, 60_000, 250_000, "high").effort).toBe("high");
+  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, 30_467, 118_592, "high").effort).toBe("high");
+  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, 100_000, 500_000, "max").effort).toBe("max");
+  // Still enforce real per-message limits; 3x is not permission to oversize a part.
+  expect(() => resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, 90_000, 300_000, "high")).toThrow();
+});
+
+test("Bigger Context stages use the lowest account mode when no final mode is supplied", () => {
   const plus = { localToolsEnabled: false, solAvailable: true, proAvailable: false };
   const pro = { localToolsEnabled: false, solAvailable: true, proAvailable: true };
   expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, 30_000, 200_000).effort).toBe("low");

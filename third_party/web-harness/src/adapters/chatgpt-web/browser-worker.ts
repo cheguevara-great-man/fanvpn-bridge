@@ -960,12 +960,13 @@ export function assertChatGptWebMultipartInputWithinLimits(
   );
 }
 
-/** Select the cheapest account-visible mode that can carry every inert multipart stage. */
+/** Keep staging on the requested model family; a small message is not a small conversation. */
 export function resolveChatGptWebMultipartStagingMode(
   modelId: string,
   capabilities: ChatGptWebCapabilities,
   maxStageMessageTokens: number,
   maxStageChars: number,
+  requestedEffort?: ChatGptWebModelMode["effort"],
 ): ChatGptWebModelMode {
   if (modelId === CHATGPT_WEB_LUNA_MODEL_ID || !capabilities.solAvailable) {
     throw new ChatGptWebAdapterError(
@@ -976,9 +977,19 @@ export function resolveChatGptWebMultipartStagingMode(
   if (modelId !== CHATGPT_WEB_MODEL_ID) {
     throw new Error(`ChatGPT Bigger Context staging mode is not defined for model: ${modelId}`);
   }
-  const efforts: readonly ChatGptWebModelMode["effort"][] = capabilities.proAvailable
+  const available: readonly ChatGptWebModelMode["effort"][] = capabilities.proAvailable
     ? ["low", "medium", "max"]
     : ["low", "medium"];
+  // ACK turns retain all earlier parts. Never silently use Instant just because each
+  // individual part fits it. Prefer the final mode and only promote for transport limits.
+  const requestedWindow = requestedEffort
+    ? resolveChatGptWebContextLimits(modelId, requestedEffort, { ...capabilities, experimentalBiggerContext: false }).contextWindow
+    : 0;
+  const efforts = requestedEffort
+    ? [...new Set([requestedEffort, ...available])].filter(effort =>
+      resolveChatGptWebContextLimits(modelId, effort, { ...capabilities, experimentalBiggerContext: false }).contextWindow >= requestedWindow
+      && !(effort === "low" && requestedEffort !== "low"))
+    : available;
   for (const effort of efforts) {
     const mode = resolveChatGptWebModelMode(modelId, effort, capabilities);
     const limits = resolveChatGptWebTransportLimits(modelId, effort, capabilities);
@@ -4328,6 +4339,7 @@ export class ChatGptBrowserWorker {
           browserCapabilities,
           maxStageMessageTokens!,
           maxStageChars!,
+          requestedMode.effort,
         )
         : requestedMode;
       if (prepared.multipart) {
@@ -4529,8 +4541,16 @@ export class ChatGptBrowserWorker {
 
       let finalPrompt = prepared.text;
       if (prepared.multipart && multipartStages && multipartTransactionId && multipartFinalPrompt) {
+        let cumulativeStageTokens = 0;
         for (let index = 0; index < multipartStages.length; index += 1) {
           const stage = multipartStages[index]!;
+          const stageTokens = estimateTokens(stage.text, turn.modelId);
+          cumulativeStageTokens += stageTokens;
+          console.info(
+            `[chatgpt-web] browser turn ${turn.traceId} multipart part ${index + 1}/${prepared.multipart.parts.length}`
+            + ` effort=${mode.effort} messageTokens=${stageTokens} cumulativeVisibleTokens=${cumulativeStageTokens}`
+            + ` (includes prior ACKs; excludes hidden platform context)`,
+          );
           let stageBaseline = await this.captureSubmissionBaseline(page);
           await this.runStage(
             turn.traceId,
@@ -4610,6 +4630,7 @@ export class ChatGptBrowserWorker {
             chatGptSuspensionClock,
           );
           await diagnostics.capture(page, `multipart-stage-${index + 1}-acknowledged`);
+          cumulativeStageTokens += estimateTokens(stage.acknowledgement, turn.modelId);
           await turn.onMultipartStageAcknowledged?.(index + 1);
         }
         if (mode.effort !== requestedMode.effort) {
