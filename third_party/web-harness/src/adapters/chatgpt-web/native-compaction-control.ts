@@ -36,6 +36,8 @@ export function activeCompactionToolResultInstruction(): string {
     `<${CODEX_ACTIVE_COMPACTION_REQUEST_MARKER}>`,
     "Codex reached its context limit before this newly requested tool could be sent for execution. The tool was not executed.",
     "Stop ordinary task work now, call no more tools, and end this Web response normally.",
+    "Your entire remaining response must be exactly: Paused for context compaction.",
+    "Do not answer the user's question, recap findings, explain the pause, or claim the task is complete. The interrupted task continues after the checkpoint.",
     "Do not create or submit a checkpoint in this response. After it settles, the retained conversation will receive exactly one separate structured compaction handoff request.",
     `</${CODEX_ACTIVE_COMPACTION_REQUEST_MARKER}>`,
   ].join("\n");
@@ -68,6 +70,8 @@ export function structuredCompactionHandoffInstruction(
     "Automatic Codex context compaction has started. Stop ordinary task work and do not call any more work tools.",
     COMPACT_PROMPT,
     ...compactionControlBinding(transaction),
+    "Keep the checkpoint concise (normally at most 1500 words). Preserve verified findings with exact file/line or log references, completed tool effects, unresolved questions, and the single next concrete action. Distinguish evidence from hypotheses.",
+    "Record which files and log ranges were already inspected and the useful conclusions. Tell the continuation to use those findings rather than repeat broad searches or dump the same logs. Do not paste raw logs, long code, previous answers, or obsolete debugging plans into the checkpoint.",
     "After the control call returns submitted=true, call no more tools. The bridge will close this one-purpose Web response after accepting the checkpoint.",
     "The outer bridge accepts compaction only after the structured checkpoint is valid and its owned browser turn has physically settled.",
   ].join("\n");
