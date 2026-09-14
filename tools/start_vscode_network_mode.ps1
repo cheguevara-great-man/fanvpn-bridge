@@ -185,12 +185,16 @@ $snapshots = @(
 $directProxyWasRunning = Test-DirectProxyHealthy
 
 function Get-CodexClientVersion {
+    $versions = New-Object System.Collections.Generic.List[version]
+    # This is the oldest catalog schema this Bridge currently targets. An obsolete
+    # codex.exe earlier on PATH must not make a newer IDE request an old catalog.
+    $versions.Add([version]'0.153.0')
     foreach ($commandName in @('codex.exe', 'codex')) {
         try {
             $command = Get-Command $commandName -ErrorAction Stop
             $versionText = & $command.Source --version 2>$null
             if ([string]$versionText -match '(?<version>\d+\.\d+\.\d+)') {
-                return $Matches['version']
+                $versions.Add([version]$Matches['version'])
             }
         } catch {}
     }
@@ -198,10 +202,12 @@ function Get-CodexClientVersion {
     if (Test-Path -LiteralPath $cachePath -PathType Leaf) {
         try {
             $cachedVersion = ([System.IO.File]::ReadAllText($cachePath) | ConvertFrom-Json).client_version
-            if ([string]$cachedVersion -match '^\d+\.\d+\.\d+$') { return [string]$cachedVersion }
+            if ([string]$cachedVersion -match '^\d+\.\d+\.\d+$') {
+                $versions.Add([version][string]$cachedVersion)
+            }
         } catch {}
     }
-    return '0.153.0'
+    return [string]($versions | Sort-Object -Descending | Select-Object -First 1)
 }
 
 try {
