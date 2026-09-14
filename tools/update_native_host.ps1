@@ -21,12 +21,48 @@ $previousManifestPath = $null
 $registryWasPresent = Test-Path -LiteralPath $registryPath
 
 $directPidPath = Join-Path $env:LOCALAPPDATA 'FanVPNBridge\direct-proxy.pid'
+$directCredentialPath = Join-Path $env:LOCALAPPDATA 'FanVPNBridge\direct-proxy.json'
+$directProxyWasRunning = $false
+
+function Restore-DirectProxy {
+    if (-not $directProxyWasRunning) { return }
+    # Clear this first so a failed restart cannot be retried recursively while
+    # PowerShell is unwinding another update error.
+    $script:directProxyWasRunning = $false
+    try {
+        if (-not (Test-Path -LiteralPath $directCredentialPath -PathType Leaf)) {
+            Write-Warning 'The Native Host was updated, but server-network mode was not restarted because direct-proxy.json is missing.'
+            return
+        }
+        $manifestPath = Get-ItemPropertyValue -LiteralPath $registryPath -Name '(default)'
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if (-not $manifest.path -or -not (Test-Path -LiteralPath $manifest.path -PathType Leaf)) {
+            Write-Warning 'The Native Host was updated, but the registered executable could not be found to restart server-network mode.'
+            return
+        }
+        $arguments = @(
+            '--forward-proxy',
+            '--proxy-config', "`"$directCredentialPath`"",
+            '--proxy-host', '127.0.0.1',
+            '--proxy-port', '18889'
+        )
+        $process = Start-Process -FilePath ([string]$manifest.path) -ArgumentList $arguments -WindowStyle Hidden -PassThru
+        [System.IO.File]::WriteAllText($directPidPath, [string]$process.Id)
+        Write-Host "Server-network proxy restarted with Native Host PID $($process.Id)."
+    } catch {
+        Write-Warning "Native Host update completed, but server-network mode could not be restarted automatically: $($_.Exception.Message)"
+    }
+}
+
 if (Test-Path -LiteralPath $directPidPath) {
     $directPid = 0
     if ([int]::TryParse(([System.IO.File]::ReadAllText($directPidPath).Trim()), [ref]$directPid)) {
         $directProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $directPid" -ErrorAction SilentlyContinue
         if ($directProcess.CommandLine -match '(?i)(^|\s)--forward-proxy(\s|$)') {
-            throw 'VS Code direct mode is running. Close VS Code and start Browser Bridge mode before updating the Native Host.'
+            Stop-Process -Id $directPid -Force -ErrorAction Stop
+            $directProxyWasRunning = $true
+            Remove-Item -LiteralPath $directPidPath -Force -ErrorAction SilentlyContinue
+            Write-Host "Temporarily stopped server-network proxy PID $directPid for the Native Host update."
         }
     }
 }
@@ -45,6 +81,7 @@ if ($registryWasPresent) {
     }
 }
 
+try {
 if ($activeBuild -and $activeBuild.Equals($slotABuild, [System.StringComparison]::OrdinalIgnoreCase)) {
     $targetSlot = 'B'
     $targetRoot = $slotBRoot
@@ -120,7 +157,22 @@ try {
     throw "Native Host registration failed and the previous registration was restored: $($_.Exception.Message)"
 }
 
+# Keep the unified picker current as part of the same one-click operation.  A
+# transient account/network failure is non-fatal: refresh_model_catalog.ps1
+# preserves the last valid GPT and Gemini catalogs independently.
+$catalogRefresh = Join-Path $root 'tools\refresh_model_catalog.ps1'
+if (Test-Path -LiteralPath $catalogRefresh -PathType Leaf) {
+    try {
+        & $catalogRefresh -BridgeBaseUrl 'http://127.0.0.1:18888'
+    } catch {
+        Write-Warning "Native Host updated, but model catalog refresh was deferred: $($_.Exception.Message)"
+    }
+}
+
 $verb = if ($Rollback) { 'rolled back' } else { 'updated' }
 Write-Host "Native Host $verb to slot $targetSlot." -ForegroundColor Green
 Write-Host 'Refresh FanVPN AI Bridge, then close and reopen Chrome to release the previous slot.' -ForegroundColor Yellow
 Write-Host 'After Chrome reconnects, run tools\diagnose.ps1 and verify /ready and /routes.'
+} finally {
+    Restore-DirectProxy
+}
