@@ -304,8 +304,14 @@ def _looks_like_project_root(root: Path, project: str) -> bool:
 
 def _friendly_build_failure(output: bytes) -> str:
     text = output.decode("utf-8", errors="replace").casefold()
+    if "vs code direct mode is running" in text:
+        return "VS Code server-direct mode is still running; fully exit VS Code, switch to Browser Bridge, then retry the Native Host update"
     if "permissionerror" in text or "拒绝访问" in text:
         return "Native Host files are still in use; close Chrome and retry the update"
     if "python 3.12+" in text:
         return "Python 3.12+ is required to update this Bridge"
+    if "native host smoke test failed" in text:
+        return "The newly built Native Host failed its startup check; the previous registered version was kept"
+    if "native host registration failed" in text:
+        return "The newly built Native Host could not be registered; the previous registration was restored"
     return "Native Host build or registration failed; the previous registered version was kept"
