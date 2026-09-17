@@ -52,7 +52,13 @@ from .product_cache import CachedResponse, ProductResponseCache
 from .routing import RouteTable
 from .subagent_policy import SubagentPolicyStore
 from .usage_reporting import RequestUsageMetadata, TokenUsage, UsageExtractor, UsageReporter
-from .web_harness import WebHarnessError, clean_web_history, is_web_model, relay_web_response
+from .web_harness import (
+    WebHarnessController,
+    WebHarnessError,
+    clean_web_history,
+    is_web_model,
+    relay_web_response,
+)
 
 
 _HOP_BY_HOP = {
@@ -245,6 +251,12 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 },
                 head_only=method == "HEAD",
             )
+            return
+        if not server.product_api_alias and self.path == "/__bridge/web-harness/refresh-catalog":
+            if method != "POST":
+                self._send_json(405, {"error": {"code": "METHOD_NOT_ALLOWED"}})
+                return
+            self._handle_web_harness_catalog_refresh()
             return
         if self.path.startswith("/__bridge/probe/"):
             if method != "POST":
@@ -625,6 +637,22 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             error = BridgeError(ErrorCode.INTERNAL_ERROR, str(exc) or type(exc).__name__)
             self._send_bridge_error(error, request_id, head_only=False)
+
+    def _handle_web_harness_catalog_refresh(self) -> None:
+        try:
+            state = WebHarnessController().refresh_catalog()
+        except (WebHarnessError, OSError, ValueError, KeyError, TypeError) as error:
+            self._send_json(
+                503,
+                {
+                    "error": {
+                        "code": "web_harness_catalog_refresh_failed",
+                        "message": str(error),
+                    }
+                },
+            )
+            return
+        self._send_json(200, {"ok": True, **state})
 
     def _request_headers(self, allowlist: frozenset[str] | None = None) -> list[Header]:
         connection_tokens = {

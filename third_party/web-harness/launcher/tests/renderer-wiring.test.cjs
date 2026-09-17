@@ -153,6 +153,22 @@ test("Bigger Context startup recommendation reuses the persisted setting and set
   assert.doesNotMatch(stylesSource, /\.bigger-context-recommendation-backdrop\s*\{[^}]*backdrop-filter:/s);
 });
 
+test("Bridge-managed Bigger Context refreshes the FanVPN catalog before committing launcher state", () => {
+  const handler = electronMain.slice(
+    electronMain.indexOf('handle("launcher:bigger-context"'),
+    electronMain.indexOf('handle("launcher:zero-risk-pro"'),
+  );
+  const runtimeChange = handler.indexOf("await runtimeHost.setBiggerContext(enabled === true)");
+  const catalogRefresh = handler.indexOf("await refreshBridgeManagedCatalog()");
+  const stateCommit = handler.indexOf("stateStore.update({");
+  assert.ok(runtimeChange >= 0 && runtimeChange < catalogRefresh);
+  assert.ok(catalogRefresh < stateCommit);
+  assert.match(
+    electronMain,
+    /path: "\/__bridge\/web-harness\/refresh-catalog"[\s\S]*?method: "POST"/,
+  );
+});
+
 test("Zero Risk setup commits state after the runtime transaction and preserves manual inspection boundaries", () => {
   const modeSwitchHandler = electronMain.slice(
     electronMain.indexOf('handle("launcher:browser-interaction-mode"'),

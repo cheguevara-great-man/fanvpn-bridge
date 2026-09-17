@@ -1,4 +1,5 @@
 const fs = require("node:fs");
+const http = require("node:http");
 const net = require("node:net");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
@@ -131,6 +132,41 @@ function send(channel, value) {
 function publishOperation(operation) {
   lastOperation = operation;
   send("launcher:operation", operation);
+}
+
+function refreshBridgeManagedCatalog() {
+  return new Promise((resolve, reject) => {
+    const request = http.request({
+      hostname: "127.0.0.1",
+      port: 18888,
+      path: "/__bridge/web-harness/refresh-catalog",
+      method: "POST",
+      headers: { "Content-Length": "0" },
+    }, response => {
+      const chunks = [];
+      let size = 0;
+      response.on("data", chunk => {
+        size += chunk.length;
+        if (size <= 64 * 1024) chunks.push(chunk);
+      });
+      response.on("end", () => {
+        const body = Buffer.concat(chunks).toString("utf8");
+        if (response.statusCode >= 200 && response.statusCode < 300) {
+          resolve();
+          return;
+        }
+        let message = `Bridge catalog refresh failed with HTTP ${response.statusCode}`;
+        try {
+          const payload = JSON.parse(body);
+          if (typeof payload?.error?.message === "string") message = payload.error.message;
+        } catch {}
+        reject(new Error(message));
+      });
+    });
+    request.setTimeout(15_000, () => request.destroy(new Error("Bridge catalog refresh timed out")));
+    request.on("error", reject);
+    request.end();
+  });
 }
 
 function stopCatalogVerificationMonitor() {
@@ -775,6 +811,7 @@ function registerIpc({ logger, stateStore }) {
   });
   handle("launcher:bigger-context", async (_event, enabled) => {
     const result = await runtimeHost.setBiggerContext(enabled === true);
+    if (IS_BRIDGE_MANAGED && !IS_DEV_PROFILE) await refreshBridgeManagedCatalog();
     const state = stateStore.update({
       experimentalBiggerContext: result.enabled,
       codexCatalogVerified: IS_DEV_PROFILE || IS_BRIDGE_MANAGED,

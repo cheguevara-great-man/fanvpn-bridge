@@ -214,6 +214,30 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
             ["chatgpt-backend", "chatgpt-codex", "gemini", "openai"],
         )
 
+    def test_bridge_managed_web_harness_catalog_refreshes_immediately(self) -> None:
+        with patch("fanvpn_bridge.http_server.WebHarnessController") as controller_type:
+            controller_type.return_value.refresh_catalog.return_value = {
+                "models": 3,
+                "restart_required": True,
+            }
+            status, _headers, payload = self.request(
+                "POST",
+                "/__bridge/web-harness/refresh-catalog",
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            json.loads(payload),
+            {"ok": True, "models": 3, "restart_required": True},
+        )
+        controller_type.return_value.refresh_catalog.assert_called_once_with()
+
+        status, _headers, payload = self.request(
+            "GET",
+            "/__bridge/web-harness/refresh-catalog",
+        )
+        self.assertEqual(status, 405)
+        self.assertEqual(json.loads(payload)["error"]["code"], "METHOD_NOT_ALLOWED")
+
     def test_web_model_and_compaction_never_reach_official_dispatcher(self) -> None:
         def local_reply(handler, method, suffix, body):
             handler._send_json(200, {"local": True, "suffix": suffix})
