@@ -53,8 +53,21 @@ function toolResult(message: CodexToolResultMessage): BrokerToolResult {
 
 function interruptedByActiveCompaction(): BrokerToolResult {
   return {
-    content: [{ type: "text", text: activeCompactionToolResultInstruction() }],
+    content: [{ type: "text", text: activeCompactionToolResultInstruction(false) }],
     isError: true,
+  };
+}
+
+function withActiveCompactionInstruction(result: BrokerToolResult): BrokerToolResult {
+  return {
+    ...result,
+    content: [
+      ...result.content,
+      {
+        type: "text",
+        text: activeCompactionToolResultInstruction(true),
+      },
+    ],
   };
 }
 
@@ -183,24 +196,31 @@ export async function settleActiveCompactionSource(
     let token: string | undefined;
     try {
       token = await source.runtime.token;
-      broker.requestCompaction(token, interruptedByActiveCompaction());
-      for (const request of outstanding) {
+      const interruptedQueued = broker.requestCompaction(token, interruptedByActiveCompaction());
+      let currentResultInstructionDelivered = false;
+      for (const [index, request] of outstanding.entries()) {
         const result = results.get(request.callId)!;
+        const canonical = toolResult(result);
+        const deliverCompactionInstruction = interruptedQueued === 0 && index === outstanding.length - 1;
         await broker.completeTool(
           token,
           request.callId,
-          toolResult(result),
+          deliverCompactionInstruction
+            ? withActiveCompactionInstruction(canonical)
+            : canonical,
         );
+        if (deliverCompactionInstruction) currentResultInstructionDelivered = true;
         source.runtime.externalProgress.recordToolResult();
         source.markResultDelivered(request.callId);
       }
       const browserOutcome = await withCompactionAbort(source.browserOutcome, signal);
       if (browserOutcome.type === "error") throw browserOutcome.error;
-      const compactionInstructionDelivered = broker.compactionDeliveryCount(token) > 0;
+      const compactionInstructionDelivered = currentResultInstructionDelivered
+        || broker.compactionDeliveryCount(token) > 0;
       // The one structured checkpoint message reuses this exact retained tab. It must not race the
       // helper's /turn/end handshake for the response that consumed the canonical tool results.
-      // `requestCompaction` leaves those results untouched and only intercepts a later tool call, so
-      // a zero delivery count proves that this is an ordinary publishable terminal response.
+      // Compaction control is delivered either through an already queued later tool call or as a
+      // separate block after the last current result, so both paths force a clean terminal boundary.
       await withCompactionAbort(source.physicalSettlement, signal);
       return {
         answer: browserOutcome.answer,

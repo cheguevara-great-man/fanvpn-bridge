@@ -25,17 +25,21 @@ function compactionControlBinding(transaction: CompactionTransactionHandle): str
 }
 
 /**
- * Stop an active browser response only if it asks for another tool after Codex requested
- * compaction. Results for calls already handed to Codex remain byte-for-byte canonical: when they
- * are enough to finish the task, that ordinary final answer remains publishable. A later tool call
- * is intercepted before execution and receives this instruction; the retained conversation then
- * receives the sole structured checkpoint request on a clean message boundary.
+ * Stop an active browser response after Codex requests compaction. If another tool is already
+ * queued, it is intercepted before execution and receives this instruction. Otherwise the last
+ * canonical tool result stays first and this control is appended as a separate text block, so a
+ * model that would otherwise remain generation-running still gets an explicit stop boundary. The
+ * retained conversation then receives the sole structured checkpoint request on a clean message.
  */
-export function activeCompactionToolResultInstruction(): string {
+export function activeCompactionToolResultInstruction(toolExecuted = false): string {
   return [
     `<${CODEX_ACTIVE_COMPACTION_REQUEST_MARKER}>`,
-    "Codex reached its context limit before this newly requested tool could be sent for execution. The tool was not executed.",
-    "Stop ordinary task work now, call no more tools, and end this Web response normally.",
+    toolExecuted
+      ? "Codex reached its context limit while this Web response was waiting for the tool result above."
+      : "Codex reached its context limit before this newly requested tool could be sent for execution. The tool was not executed.",
+    toolExecuted
+      ? "Consume that canonical result, stop ordinary task work now, call no more tools, and end this Web response normally."
+      : "Stop ordinary task work now, call no more tools, and end this Web response normally.",
     "Your entire remaining response must be exactly: Paused for context compaction.",
     "Do not answer the user's question, recap findings, explain the pause, or claim the task is complete. The interrupted task continues after the checkpoint.",
     "Do not create or submit a checkpoint in this response. After it settles, the retained conversation will receive exactly one separate structured compaction handoff request.",

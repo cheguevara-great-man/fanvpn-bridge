@@ -605,7 +605,7 @@ test("structured compaction rejects incomplete native interruption identities", 
   )).toThrow("non-empty native thread and turn ids");
 });
 
-test("active compaction settles canonical tool results before the separate retained handoff", async () => {
+test("active compaction appends the pause control to the last canonical tool result before retained handoff", async () => {
   const completed: Array<{ callId: string; result: BrokerToolResult }> = [];
   const compactionTokens: string[] = [];
   let finishBrowser!: (answer: string) => void;
@@ -616,7 +616,7 @@ test("active compaction settles canonical tool results before the separate retai
     completeTool: async (_token: string, callId: string, result: BrokerToolResult) => {
       completed.push({ callId, result });
       if (callId === "call_two") {
-        finishBrowser("Ordinary final after canonical results.");
+        finishBrowser("Paused for context compaction.");
       }
     },
     revoke() {},
@@ -644,15 +644,16 @@ test("active compaction settles canonical tool results before the separate retai
   );
 
   await expect(settleActiveCompactionSource(parsed, source, broker)).resolves.toEqual({
-    answer: "Ordinary final after canonical results.",
-    compactionInstructionDelivered: false,
+    answer: "Paused for context compaction.",
+    compactionInstructionDelivered: true,
   });
   expect(compactionTokens).toEqual(["turn_active"]);
   expect(completed.map(entry => entry.callId)).toEqual(["call_one", "call_two"]);
   expect(JSON.stringify(completed[0])).not.toContain(CODEX_ACTIVE_COMPACTION_REQUEST_MARKER);
-  expect(JSON.stringify(completed[1])).not.toContain(CODEX_ACTIVE_COMPACTION_REQUEST_MARKER);
+  expect(JSON.stringify(completed[1])).toContain(CODEX_ACTIVE_COMPACTION_REQUEST_MARKER);
   expect(JSON.stringify(completed[1])).not.toContain("codex.control.compaction_handoff");
-  expect(completed[1]!.result.content).toEqual([{ type: "text", text: "two" }]);
+  expect(completed[1]!.result.content[0]).toEqual({ type: "text", text: "two" });
+  expect(JSON.stringify(completed[1]!.result.content[1])).toContain("Consume that canonical result");
 });
 
 test("active compaction distinguishes a later intercepted tool from an ordinary post-result final", async () => {
@@ -660,11 +661,10 @@ test("active compaction distinguishes a later intercepted tool from an ordinary 
   const browser = new Promise<string>(resolve => { finishBrowser = resolve; });
   let compactionDeliveries = 0;
   const broker = {
-    requestCompaction: () => 0,
+    requestCompaction: () => { compactionDeliveries = 1; return 1; },
     compactionDeliveryCount: () => compactionDeliveries,
     completeTool: async (_token: string, _callId: string, result: BrokerToolResult) => {
       expect(result.content).toEqual([{ type: "text", text: "canonical result" }]);
-      compactionDeliveries = 1;
       finishBrowser("Stopped after the bridge rejected a later tool call.");
     },
     revoke() {},
