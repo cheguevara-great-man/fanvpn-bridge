@@ -3784,6 +3784,28 @@ test("embedded chart hydration cannot replace Markdown answer content with rende
     .not.toBe(text("<pre><code>one\ntwo</code></pre>"));
   expect(text("<div>A</div><div>B</div>"))
     .toBe(text("<section><div>A</div><div>B</div></section>"));
+
+  const codeText = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File update_native_host.ps1";
+  const codeBefore = createDocument(
+    '<pre data-start="143" data-end="240">'
+    + '<div class="code-header"><span>PowerShell</span><span>PS1</span><button>Copy</button></div>'
+    + `<div class="code-body"><code class="language-powershell">${codeText}</code></div>`
+    + "</pre>",
+  ).body;
+  const codeAfter = createDocument(
+    '<pre data-start="143" data-end="240">'
+    + '<div class="code-header"><span>PowerShell</span><button>Copy code</button></div>'
+    + `<div class="code-body"><code class="language-powershell">${codeText}</code></div>`
+    + "</pre>",
+  ).body;
+  const projectedCodeBefore = contentFor(codeBefore);
+  const projectedCodeAfter = contentFor(codeAfter);
+  expect(projectedCodeBefore.innerHTML).toBe(projectedCodeAfter.innerHTML);
+  expect(textFor(projectedCodeBefore)).toBe(codeText);
+  expect(textFor(projectedCodeAfter)).toBe(codeText);
+  expect(chatGptHtmlToMarkdown(projectedCodeBefore.innerHTML))
+    .toBe(chatGptHtmlToMarkdown(projectedCodeAfter.innerHTML));
+  expect(projectedCodeBefore.querySelector("pre")?.getAttribute("data-start")).toBe("143");
 });
 
 test("proven MCP progress vetoes completion, not only the health verdicts", () => {

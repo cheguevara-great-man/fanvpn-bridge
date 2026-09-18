@@ -3818,6 +3818,17 @@ export class ChatGptBrowserWorker {
         for (const widget of Array.from(content.querySelectorAll(
           ".chart-widget-container, [data-code-block-preview-pane], button, script, style, svg, img, picture, source",
         ))) widget.remove();
+        // ChatGPT wraps ordinary fenced code in renderer chrome whose language/copy/highlighter
+        // labels can hydrate after the code itself is already complete. Those labels are UI, not
+        // model-authored code, and have caused committed Markdown fingerprints to change late in
+        // a turn. Canonicalize each PRE to its semantic CODE payload while preserving the PRE's
+        // source range and the CODE's language class used by Turndown for fenced Markdown.
+        for (const pre of Array.from(content.querySelectorAll("pre"))) {
+          const code = pre.querySelector("code");
+          if (!code) continue;
+          while (pre.firstChild) pre.removeChild(pre.firstChild);
+          pre.appendChild(code.cloneNode(true));
+        }
         return content;
       };
       // ChatGPT may merge adjacent `.markdown` roots or virtualize an earlier prefix while a streamed
