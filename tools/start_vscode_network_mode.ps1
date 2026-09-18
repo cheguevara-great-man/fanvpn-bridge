@@ -230,13 +230,16 @@ try {
         if (-not $productApiReady.ready -or $productApiReady.mode -ne 'native-host-http-server') {
             throw 'The service on 127.0.0.1:8000 is not a ready Browser AI Bridge product endpoint.'
         }
+        $accountCatalogModels = New-Object System.Collections.Generic.List[object]
+        $geminiRefreshSucceeded = $false
+        $deepSeekRefreshSucceeded = $false
         if ($Mode -eq 'GeminiAccount' -or $Mode -in @('HybridForce', 'HybridConfigured', 'HybridNative')) {
             try {
                 $geminiModels = Invoke-RestMethod 'http://127.0.0.1:18888/gemini-account/v1/models' -Proxy $null -TimeoutSec 15
                 if (-not $geminiModels.data) {
                     throw 'Gemini account provider returned no available models.'
                 }
-                $geminiCatalogModels = @($geminiModels.data | Where-Object {
+                @($geminiModels.data | Where-Object {
                     $_.id -is [string] -and $_.id -match '^gemini-[a-z0-9.-]+$'
                 } | ForEach-Object {
                     [pscustomobject]@{
@@ -245,12 +248,56 @@ try {
                         default_reasoning_level = [string]$_.default_reasoning_level
                         supported_reasoning_levels = @($_.supported_reasoning_levels)
                     }
-                })
-                $geminiModelsJson = ConvertTo-Json -InputObject $geminiCatalogModels -Depth 5 -Compress
+                }) | ForEach-Object { $accountCatalogModels.Add($_) }
+                $geminiRefreshSucceeded = $true
             } catch {
                 Write-Warning 'Gemini model refresh failed; the last valid Gemini catalog will be kept.'
             }
         }
+        if ($Mode -in @('HybridForce', 'HybridConfigured', 'HybridNative')) {
+            try {
+                $deepSeekModels = Invoke-RestMethod 'http://127.0.0.1:18888/deepseek-harness/v1/models' -Proxy $null -TimeoutSec 15
+                if (-not $deepSeekModels.data) {
+                    throw 'DeepSeek Web provider returned no available models.'
+                }
+                @($deepSeekModels.data | Where-Object {
+                    $_.id -is [string] -and $_.id -match '^deepseek-web/(?:chat|reasoner)$'
+                } | ForEach-Object {
+                    [pscustomobject]@{
+                        id = [string]$_.id
+                        display_name = [string]$_.display_name
+                        default_reasoning_level = [string]$_.default_reasoning_level
+                        supported_reasoning_levels = @($_.supported_reasoning_levels)
+                    }
+                }) | ForEach-Object { $accountCatalogModels.Add($_) }
+                $deepSeekRefreshSucceeded = $true
+            } catch {
+                Write-Warning 'DeepSeek Web model refresh failed; the last valid DeepSeek catalog will be kept.'
+            }
+
+            # A restart may happen while only one account-backed provider is reachable.
+            # Preserve the unavailable provider's last known entries instead of replacing
+            # the shared account-model cache with a partial refresh.
+            $availableModelsCachePath = Join-Path ([System.IO.Path]::GetFullPath($CodexHome)) 'browser-ai-bridge-gemini-available-models.json'
+            if ((-not $geminiRefreshSucceeded -or -not $deepSeekRefreshSucceeded) -and
+                (Test-Path -LiteralPath $availableModelsCachePath -PathType Leaf)) {
+                try {
+                    $cachedAccountModels = @([System.IO.File]::ReadAllText($availableModelsCachePath) | ConvertFrom-Json)
+                    foreach ($cachedModel in $cachedAccountModels) {
+                        $cachedId = if ($cachedModel -is [string]) { [string]$cachedModel } else { [string]$cachedModel.id }
+                        if ((-not $geminiRefreshSucceeded -and $cachedId -match '^gemini-[a-z0-9.-]+$') -or
+                            (-not $deepSeekRefreshSucceeded -and $cachedId -match '^deepseek-web/(?:chat|reasoner)$')) {
+                            $accountCatalogModels.Add($cachedModel)
+                        }
+                    }
+                } catch {
+                    Write-Warning 'Existing account-model cache could not be read; continuing with fresh models only.'
+                }
+            }
+        }
+        $geminiModelsJson = if ($accountCatalogModels.Count -gt 0) {
+            ConvertTo-Json -InputObject @($accountCatalogModels.ToArray()) -Depth 5 -Compress
+        } else { $null }
         $openAIModelsJson = $null
         if ($Mode -in @('HybridForce', 'HybridConfigured', 'HybridNative')) {
             try {

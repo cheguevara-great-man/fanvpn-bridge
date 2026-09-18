@@ -15,6 +15,12 @@ SCRIPT = ROOT / "tools" / "set_codex_network_mode.ps1"
 
 @unittest.skipUnless(os.name == "nt", "PowerShell network-mode test is Windows-only")
 class NetworkModeScriptTests(unittest.TestCase):
+    def test_vscode_launcher_refreshes_both_account_model_providers(self) -> None:
+        launcher = (ROOT / "tools" / "start_vscode_network_mode.ps1").read_text(encoding="utf-8")
+        self.assertIn("/gemini-account/v1/models", launcher)
+        self.assertIn("/deepseek-harness/v1/models", launcher)
+        self.assertIn("deepSeekRefreshSucceeded", launcher)
+
     def run_mode(
         self, codex_home: Path, mode: str, gemini_models_json: str | None = None
     ) -> str:
