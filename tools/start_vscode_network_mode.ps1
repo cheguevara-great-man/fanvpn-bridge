@@ -263,6 +263,9 @@ try {
                 Write-Warning 'OpenAI model refresh failed; the last valid GPT catalog will be kept.'
             }
         }
+        if ($effectiveVsCodeNetwork -ne 'Server') {
+            Stop-DirectProxy
+        }
         & (Join-Path $PSScriptRoot 'set_vscode_codex_mode.ps1') -Mode $Mode `
             -CodexHome $CodexHome -SettingsPath $SettingsPath -StatePath $StatePath `
             -GeminiModelsJson $geminiModelsJson -OpenAIModelsJson $openAIModelsJson
