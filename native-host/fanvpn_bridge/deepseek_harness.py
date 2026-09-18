@@ -305,6 +305,8 @@ def _responses_to_deepseek_prompt(payload: Mapping[str, Any]) -> str:
             + "\n\nTOOL PROTOCOL:\n"
             "Codex, not you, executes tools. When a tool is required, output only one or more exact blocks of this form, with no prose outside them:\n"
             '<codex_tool_call>{"name":"tool_name","arguments":{}}</codex_tool_call>\n'
+            "The JSON object must always have exactly the outer fields `name` and `arguments`; "
+            "put tool parameters such as `cmd`, `workdir`, and `max_output_tokens` inside `arguments`, never at the top level. "
             "Use only listed tool names and valid JSON arguments. Never invent a tool result. "
             "After Codex returns TOOL RESULT in a later turn, continue the task normally. "
             "If no tool is required, answer normally and never emit codex_tool_call tags."
@@ -473,6 +475,19 @@ def _parse_tool_calls(text: str, available_tools: set[str]) -> list[dict[str, An
             return None
         name = value.get("name")
         arguments = value.get("arguments")
+        # DeepSeek occasionally emits exec_command's argument object directly,
+        # omitting the required {"name": ..., "arguments": ...} envelope.  This
+        # shape is unambiguous when exec_command is available and `cmd` is a
+        # string, so normalize it instead of leaking the raw protocol tag back
+        # to Codex as assistant text.
+        if (
+            name is None
+            and arguments is None
+            and "exec_command" in available_tools
+            and isinstance(value.get("cmd"), str)
+        ):
+            name = "exec_command"
+            arguments = value
         if not isinstance(name, str) or name not in available_tools or not isinstance(arguments, dict):
             return None
         calls.append({"name": name, "arguments": arguments})

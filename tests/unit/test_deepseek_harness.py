@@ -67,6 +67,26 @@ class DeepSeekHarnessTests(unittest.TestCase):
         )
         self.assertIsNone(_parse_tool_calls(text, {"different_tool"}))
 
+    def test_flat_exec_command_arguments_are_normalized(self) -> None:
+        text = (
+            '<codex_tool_call>{"cmd":"Get-Content a.txt","workdir":"C:\\\\tmp",'
+            '"max_output_tokens":4000}</codex_tool_call>'
+        )
+        self.assertEqual(
+            _parse_tool_calls(text, {"exec_command"}),
+            [
+                {
+                    "name": "exec_command",
+                    "arguments": {
+                        "cmd": "Get-Content a.txt",
+                        "workdir": "C:\\tmp",
+                        "max_output_tokens": 4000,
+                    },
+                }
+            ],
+        )
+        self.assertIsNone(_parse_tool_calls(text, {"read_file"}))
+
     def test_pow_response_matches_deepseek_web_shape(self) -> None:
         encoded = _encode_pow_response(
             {
