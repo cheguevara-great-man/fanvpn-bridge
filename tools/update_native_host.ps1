@@ -94,10 +94,10 @@ if (-not $PSCmdlet.ShouldProcess($targetBuild, $operation)) {
     return
 }
 
-# A direct-proxy process normally runs from the currently registered slot, while
-# this update rebuilds the opposite slot. Leave that proxy alone so an active VS
-# Code session does not lose its network path. Only stop/restart it when it is a
-# stale process that is actually locking the slot we are about to replace.
+# Keep only one Direct Proxy runtime active. If server-network mode is running,
+# stop it before touching either A/B build slot. Restore-DirectProxy will restart
+# it from whichever Native Host executable is registered when this update exits:
+# the new slot after success, or the original slot after a failed update.
 if (Test-Path -LiteralPath $directPidPath) {
     $directPid = 0
     if ([int]::TryParse(([System.IO.File]::ReadAllText($directPidPath).Trim()), [ref]$directPid)) {
@@ -105,21 +105,11 @@ if (Test-Path -LiteralPath $directPidPath) {
         $directProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $directPid" -ErrorAction SilentlyContinue
         if ($directProcessHandle -and $directProcessHandle.ProcessName -eq 'browser-ai-bridge' -and
             $directProcess.CommandLine -match '(?i)(^|\s)--forward-proxy(\s|$)') {
-            $directExecutable = if ($directProcess.ExecutablePath) {
-                [System.IO.Path]::GetFullPath([string]$directProcess.ExecutablePath)
-            } else {
-                [System.IO.Path]::GetFullPath([string]$directProcessHandle.Path)
-            }
-            $directBuild = [System.IO.Path]::GetFullPath((Split-Path -Parent $directExecutable))
-            if ($directBuild.Equals($targetBuild, [System.StringComparison]::OrdinalIgnoreCase)) {
-                Stop-Process -Id $directPid -Force -ErrorAction Stop
-                [void]$directProcessHandle.WaitForExit(5000)
-                $directProxyWasRunning = $true
-                Remove-Item -LiteralPath $directPidPath -Force -ErrorAction SilentlyContinue
-                Write-Host "Temporarily stopped server-network proxy PID $directPid because it locks target slot $targetSlot."
-            } else {
-                Write-Host "Server-network proxy PID $directPid is using the non-target slot; leaving it running during the update."
-            }
+            Stop-Process -Id $directPid -Force -ErrorAction Stop
+            [void]$directProcessHandle.WaitForExit(5000)
+            $directProxyWasRunning = $true
+            Remove-Item -LiteralPath $directPidPath -Force -ErrorAction SilentlyContinue
+            Write-Host "Temporarily stopped server-network proxy PID $directPid before Native Host update."
         } else {
             Remove-Item -LiteralPath $directPidPath -Force -ErrorAction SilentlyContinue
         }
