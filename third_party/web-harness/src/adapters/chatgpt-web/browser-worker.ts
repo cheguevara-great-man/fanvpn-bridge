@@ -1,7 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright-core";
+import {
+  chromium,
+  type Browser,
+  type BrowserContext,
+  type ConsoleMessage,
+  type Locator,
+  type Page,
+  type Request,
+  type Response,
+} from "playwright-core";
 import {
   atomicWriteFile,
   CHATGPT_CONNECTOR_NAME,
@@ -1678,6 +1687,45 @@ export function redactChatGptUiDiagnostic(value: string): string {
     .replace(/\b(turn|binding|call)_[A-Za-z0-9_-]{12,}\b/g, "$1_[redacted]");
 }
 
+const CHATGPT_BROWSER_DIAGNOSTIC_EVENT_LIMIT = 80;
+const CHATGPT_BROWSER_DIAGNOSTIC_TEXT_LIMIT = 1_000;
+
+function boundedChatGptDiagnosticText(value: string): string {
+  return redactChatGptUiDiagnostic(value).replace(/\s+/g, " ").trim().slice(0, CHATGPT_BROWSER_DIAGNOSTIC_TEXT_LIMIT);
+}
+
+export function sanitizeChatGptDiagnosticUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    const path = url.pathname.split("/").map(segment => (
+      segment.length >= 32 || /^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(segment)
+        ? "[redacted]"
+        : segment
+    )).join("/");
+    return `${url.origin}${path}`;
+  } catch {
+    return "[invalid-url]";
+  }
+}
+
+interface ChatGptBrowserDiagnosticEvent {
+  at: string;
+  kind: "http-response" | "request-failed" | "console" | "page-error";
+  url?: string;
+  status?: number;
+  method?: string;
+  resourceType?: string;
+  level?: string;
+  text?: string;
+}
+
+interface ChatGptObservedPageHandlers {
+  response: (response: Response) => void;
+  requestfailed: (request: Request) => void;
+  console: (message: ConsoleMessage) => void;
+  pageerror: (error: Error) => void;
+}
+
 const CHATGPT_DIAGNOSTIC_SAFE_STRING_KEYS = new Set([
   "tag",
   "role",
@@ -1686,6 +1734,7 @@ const CHATGPT_DIAGNOSTIC_SAFE_STRING_KEYS = new Set([
   "dataState",
   "dataHighlighted",
   "origin",
+  "diagnosticText",
 ]);
 
 /** Defense in depth: persisted browser traces contain structure, never rendered UI text. */
@@ -1695,8 +1744,9 @@ export function sanitizeChatGptBrowserDiagnosticState(value: unknown): unknown {
   if (!value || typeof value !== "object") return undefined;
   return Object.fromEntries(Object.entries(value).flatMap(([key, candidate]) => {
     if (typeof candidate === "string") {
-      return CHATGPT_DIAGNOSTIC_SAFE_STRING_KEYS.has(key) && candidate.length <= 200
-        ? [[key, candidate]]
+      return CHATGPT_DIAGNOSTIC_SAFE_STRING_KEYS.has(key)
+        && (key === "diagnosticText" || candidate.length <= 200)
+        ? [[key, key === "diagnosticText" ? boundedChatGptDiagnosticText(candidate) : candidate]]
         : [];
     }
     const sanitized = sanitizeChatGptBrowserDiagnosticState(candidate);
@@ -1733,6 +1783,8 @@ class ChatGptBrowserDiagnostics {
   private readonly directory: string;
   private sequence = 0;
   private initialized = false;
+  private readonly observedPages = new Map<Page, ChatGptObservedPageHandlers>();
+  private readonly events: ChatGptBrowserDiagnosticEvent[] = [];
 
   constructor(
     private readonly traceId: string,
@@ -1743,6 +1795,78 @@ class ChatGptBrowserDiagnostics {
       throw new Error("ChatGPT browser diagnostic trace id is invalid");
     }
     this.directory = join(this.root, `${traceId}-${randomUUID().slice(0, 8)}`);
+  }
+
+  observe(page: Page): void {
+    if (this.observedPages.has(page)) return;
+    const push = (event: ChatGptBrowserDiagnosticEvent): void => {
+      this.events.push(event);
+      if (this.events.length > CHATGPT_BROWSER_DIAGNOSTIC_EVENT_LIMIT) {
+        this.events.splice(0, this.events.length - CHATGPT_BROWSER_DIAGNOSTIC_EVENT_LIMIT);
+      }
+    };
+    const requestSummary = (request: Request) => ({
+      url: sanitizeChatGptDiagnosticUrl(request.url()),
+      method: request.method(),
+      resourceType: request.resourceType(),
+    });
+    const response = (response: Response): void => {
+      if (response.status() < 400) return;
+      push({
+        at: new Date().toISOString(),
+        kind: "http-response",
+        status: response.status(),
+        ...requestSummary(response.request()),
+      });
+    };
+    const requestfailed = (request: Request): void => {
+      push({
+        at: new Date().toISOString(),
+        kind: "request-failed",
+        ...requestSummary(request),
+        text: boundedChatGptDiagnosticText(request.failure()?.errorText ?? "request failed"),
+      });
+    };
+    const consoleMessage = (message: ConsoleMessage): void => {
+      const level = message.type();
+      if (level !== "error" && level !== "warning") return;
+      const location = message.location();
+      push({
+        at: new Date().toISOString(),
+        kind: "console",
+        level,
+        ...(location.url ? { url: sanitizeChatGptDiagnosticUrl(location.url) } : {}),
+        text: boundedChatGptDiagnosticText(message.text()),
+      });
+    };
+    const pageerror = (error: Error): void => {
+      push({
+        at: new Date().toISOString(),
+        kind: "page-error",
+        text: boundedChatGptDiagnosticText(error.message),
+      });
+    };
+    const handlers: ChatGptObservedPageHandlers = {
+      response,
+      requestfailed,
+      console: consoleMessage,
+      pageerror,
+    };
+    this.observedPages.set(page, handlers);
+    page.on("response", handlers.response);
+    page.on("requestfailed", handlers.requestfailed);
+    page.on("console", handlers.console);
+    page.on("pageerror", handlers.pageerror);
+  }
+
+  dispose(): void {
+    for (const [page, handlers] of this.observedPages) {
+      page.off("response", handlers.response);
+      page.off("requestfailed", handlers.requestfailed);
+      page.off("console", handlers.console);
+      page.off("pageerror", handlers.pageerror);
+    }
+    this.observedPages.clear();
   }
 
   async capture(page: Page, checkpoint: string, error?: unknown): Promise<void> {
@@ -1810,6 +1934,16 @@ class ChatGptBrowserDiagnostics {
             .filter(rendered);
           const exactConnectorRows = [...document.querySelectorAll('.__menu-item[tabindex="0"]')]
             .filter(element => rendered(element) && exactText(element, appName));
+          const diagnosticText = (element: Element): string => (
+            (element.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 1_000)
+          );
+          const regenerateActions = [...document.querySelectorAll('[data-testid="regenerate-thread-error-button"]')]
+            .filter(rendered);
+          const terminalErrorOverlays = [...document.querySelectorAll('[role="alert"], [role="status"]')]
+            .filter(rendered)
+            .map(element => ({ role: element.getAttribute("role"), diagnosticText: diagnosticText(element) }))
+            .filter(item => item.diagnosticText.length > 0)
+            .slice(-8);
           const currentUrl = new URL(location.href);
           const integerAttribute = (element: Element, name: string): number | null => {
             const raw = element.getAttribute(name);
@@ -1872,6 +2006,11 @@ class ChatGptBrowserDiagnostics {
               };
             }),
             overlays: rows('[role="dialog"], [role="alert"], [role="status"]', 30),
+            terminalError: {
+              regenerateActionCount: regenerateActions.length,
+              regenerateActions: regenerateActions.slice(-4).map(element => ({ diagnosticText: diagnosticText(element) })),
+              overlays: terminalErrorOverlays,
+            },
             turns: {
               user: document.querySelectorAll(userTurnSelector).length,
               stopButtonCount: [...document.querySelectorAll(stopButtonSelector)].filter(rendered).length,
@@ -1927,6 +2066,7 @@ class ChatGptBrowserDiagnostics {
         ...(stateResult.status === "fulfilled"
           ? { state: sanitizeChatGptBrowserDiagnosticState(stateResult.value) }
           : {}),
+        ...(error !== undefined && this.events.length > 0 ? { runtimeEvents: [...this.events] } : {}),
         ...(Object.keys(captureErrors).length > 0 ? { captureErrors } : {}),
       }, null, 2)}\n`);
       if (Object.keys(captureErrors).length > 0) {
@@ -4413,6 +4553,7 @@ export class ChatGptBrowserWorker {
       });
       if (!maintenancePage && !launcherSurfaceId) managedPage = page;
       diagnosticPage = page;
+      diagnostics.observe(page);
       const rebindLauncherPage = async (
         attempt: number,
         cause: Error,
@@ -4458,6 +4599,7 @@ export class ChatGptBrowserWorker {
                 // the outer diagnostic capture and finally block to release this exact transport.
                 turnConnection = rebound.browser;
                 diagnosticPage = rebound.page;
+                diagnostics.observe(rebound.page);
                 await waitForOperationalChatGptViewport(rebound.page, signal);
                 return rebound;
               },
@@ -4467,6 +4609,7 @@ export class ChatGptBrowserWorker {
         turnConnection = connection.browser;
         page = connection.page;
         diagnosticPage = page;
+        diagnostics.observe(page);
         console.warn(
           `[chatgpt-web] browser turn ${turn.traceId} rebound its existing launcher page after a stalled DOM probe`,
         );
@@ -5075,6 +5218,7 @@ export class ChatGptBrowserWorker {
       throw error;
     } finally {
       prepared.release();
+      diagnostics.dispose();
       if (turnConnection) {
         await turnConnection.close().catch(error => {
           console.error(
