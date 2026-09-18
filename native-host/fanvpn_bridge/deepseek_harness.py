@@ -463,9 +463,6 @@ def _parse_tool_calls(text: str, available_tools: set[str]) -> list[dict[str, An
     matches = list(_TOOL_CALL_RE.finditer(text))
     if not matches:
         return None
-    remainder = _TOOL_CALL_RE.sub("", text).strip()
-    if remainder:
-        return None
     calls: list[dict[str, Any]] = []
     for match in matches:
         try:

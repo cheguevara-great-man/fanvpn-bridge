@@ -57,11 +57,14 @@ class DeepSeekHarnessTests(unittest.TestCase):
         self.assertEqual(text, "hello world")
         self.assertEqual(reasoning, "private")
 
-    def test_only_pure_valid_tool_blocks_become_function_calls(self) -> None:
+    def test_valid_tool_blocks_become_function_calls_even_with_surrounding_prose(self) -> None:
         text = '<codex_tool_call>{"name":"read_file","arguments":{"path":"a.py"}}</codex_tool_call>'
         calls = _parse_tool_calls(text, {"read_file"})
         self.assertEqual(calls, [{"name": "read_file", "arguments": {"path": "a.py"}}])
-        self.assertIsNone(_parse_tool_calls("before " + text, {"read_file"}))
+        self.assertEqual(
+            _parse_tool_calls("I will inspect it first.\n\n" + text, {"read_file"}),
+            [{"name": "read_file", "arguments": {"path": "a.py"}}],
+        )
         self.assertIsNone(_parse_tool_calls(text, {"different_tool"}))
 
     def test_pow_response_matches_deepseek_web_shape(self) -> None:
