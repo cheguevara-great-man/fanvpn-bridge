@@ -1,0 +1,17 @@
+[
+  {
+    "id": 2001,
+    "priority": 2,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        { "header": "origin", "operation": "set", "value": "https://chat.deepseek.com" },
+        { "header": "referer", "operation": "set", "value": "https://chat.deepseek.com/" }
+      ]
+    },
+    "condition": {
+      "urlFilter": "||chat.deepseek.com/api/",
+      "resourceTypes": ["xmlhttprequest", "other"]
+    }
+  }
+]

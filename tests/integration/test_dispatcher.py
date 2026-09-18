@@ -144,6 +144,19 @@ class DispatcherIntegrationTests(unittest.TestCase):
             NativeDispatcher._parse_headers([["x-test", "safe\r\ninjected: true"]])
         self.assertEqual(caught.exception.code, ErrorCode.PROTOCOL_VIOLATION)
 
+    def test_deepseek_pow_round_trip_uses_extension_solver(self) -> None:
+        challenge = {
+            "algorithm": "DeepSeekHashV1",
+            "challenge": "a" * 64,
+            "salt": "salt",
+            "difficulty": 100,
+            "signature": "signature",
+            "expireAt": 12345.0,
+        }
+        self.assertEqual(self.dispatcher.solve_deepseek_pow(challenge), 17)
+        self.assertEqual(len(self.extension.deepseek_pow_requests), 1)
+        self.assertEqual(self.extension.deepseek_pow_requests[0]["challenge"], challenge)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -40,6 +40,8 @@ export const MessageType = Object.freeze({
   CONTROL_SUBAGENTS_RESULT: "control.subagents.result",
   CONTROL_GEMINI_QUOTA_GET: "control.gemini_quota.get",
   CONTROL_GEMINI_QUOTA_RESULT: "control.gemini_quota.result",
+  CONTROL_DEEPSEEK_POW_SOLVE: "control.deepseek_pow.solve",
+  CONTROL_DEEPSEEK_POW_RESULT: "control.deepseek_pow.result",
   CONTROL_UPDATE_STATUS: "control.update.status",
   CONTROL_UPDATE_START: "control.update.start",
   CONTROL_UPDATE_READY: "control.update.ready",

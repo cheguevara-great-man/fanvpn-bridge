@@ -105,6 +105,7 @@ class FakeExtension:
         self.response_next_seq: dict[str, int] = {}
         self.response_acked_seq: dict[str, int] = {}
         self.aborted_ids: set[str] = set()
+        self.deepseek_pow_requests: list[dict[str, object]] = []
         self.thread = threading.Thread(target=self._run, name="fake-extension", daemon=True)
 
     def start(self) -> None:
@@ -158,6 +159,17 @@ class FakeExtension:
                 continue
             if message_type == "request.abort":
                 self.aborted_ids.add(str(message["id"]))
+                continue
+            if message_type == "control.deepseek_pow.solve":
+                self.deepseek_pow_requests.append(dict(message))
+                self.channel.send(
+                    envelope(
+                        "control.deepseek_pow.result",
+                        id=str(message["id"]),
+                        ok=True,
+                        answer=17,
+                    )
+                )
                 continue
             if message_type in {"flow.ack", "pong"}:
                 continue

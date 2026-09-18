@@ -31,6 +31,8 @@
     { "$ref": "#/$defs/controlSubagentsResult" },
     { "$ref": "#/$defs/controlGeminiQuotaGet" },
     { "$ref": "#/$defs/controlGeminiQuotaResult" },
+    { "$ref": "#/$defs/controlDeepSeekPowSolve" },
+    { "$ref": "#/$defs/controlDeepSeekPowResult" },
     { "$ref": "#/$defs/controlUpdateStatus" },
     { "$ref": "#/$defs/controlUpdateStart" },
     { "$ref": "#/$defs/controlUpdateReady" },
@@ -574,6 +576,52 @@
             "id": { "$ref": "#/$defs/requestId" },
             "ok": { "type": "boolean" },
             "state": { "type": "object" },
+            "message": { "type": "string", "maxLength": 512 }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "controlDeepSeekPowSolve": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "id", "challenge"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "control.deepseek_pow.solve" },
+            "id": { "$ref": "#/$defs/requestId" },
+            "challenge": {
+              "type": "object",
+              "required": ["algorithm", "challenge", "salt", "difficulty", "signature", "expireAt"],
+              "properties": {
+                "algorithm": { "type": "string", "minLength": 1, "maxLength": 64 },
+                "challenge": { "type": "string", "pattern": "^[0-9A-Fa-f]{64}$" },
+                "salt": { "type": "string", "maxLength": 1024 },
+                "difficulty": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+                "signature": { "type": "string", "maxLength": 8192 },
+                "expireAt": { "type": "number", "exclusiveMinimum": 0 }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "controlDeepSeekPowResult": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "required": ["type", "id", "ok"],
+          "properties": {
+            "v": { "$ref": "#/$defs/protocolVersion" },
+            "type": { "const": "control.deepseek_pow.result" },
+            "id": { "$ref": "#/$defs/requestId" },
+            "ok": { "type": "boolean" },
+            "answer": { "type": "integer", "minimum": 0 },
             "message": { "type": "string", "maxLength": 512 }
           },
           "additionalProperties": false

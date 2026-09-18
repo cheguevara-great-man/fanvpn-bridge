@@ -74,6 +74,21 @@
         "x-goog-api-key"
       ]
     },
+    "deepseek-web": {
+      "upstream_base_url": "https://chat.deepseek.com",
+      "remove_path_prefix": "",
+      "probe_path": "/",
+      "request_header_allowlist": [
+        "accept",
+        "content-type",
+        "x-app-version",
+        "x-client-platform",
+        "x-client-version",
+        "x-client-locale",
+        "x-client-timezone-offset",
+        "x-ds-pow-response"
+      ]
+    },
     "antigravity": {
       "upstream_base_url": "https://daily-cloudcode-pa.googleapis.com",
       "remove_path_prefix": "",

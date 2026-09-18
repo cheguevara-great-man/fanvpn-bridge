@@ -35,6 +35,19 @@ class _FakeGeminiAccount:
         }
 
 
+class _FakeDeepSeekHarness:
+    def models_response(self):
+        return {"object": "list", "data": [{"id": "deepseek-web/chat"}]}
+
+    def responses(self, payload):
+        return False, {
+            "id": "resp_deepseek_test",
+            "object": "response",
+            "model": payload.get("model"),
+            "output": [],
+        }
+
+
 class HttpGatewayIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -146,6 +159,7 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
             codex_auth_path=self.auth_path,
             product_cache=self.product_cache,
             gemini_account=_FakeGeminiAccount(),
+            deepseek_harness=_FakeDeepSeekHarness(),
             subagent_policy=self.subagent_policy,
             hybrid_route_store=self.hybrid_route,
         )
@@ -162,6 +176,7 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
             product_api_alias=True,
             product_cache=self.product_cache,
             gemini_account=_FakeGeminiAccount(),
+            deepseek_harness=_FakeDeepSeekHarness(),
             subagent_policy=self.subagent_policy,
             hybrid_route_store=self.hybrid_route,
         )
@@ -250,7 +265,7 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
                 self.assertEqual(json.loads(body), {"local": True, "suffix": suffix})
         self.assertEqual(self.upstream_counts, {})
 
-    def test_hybrid_routes_gpt_and_gemini_by_model(self) -> None:
+    def test_hybrid_routes_gpt_gemini_and_deepseek_by_model(self) -> None:
         status, _headers, body = self.request(
             "POST",
             "/hybrid/v1/responses",
@@ -269,6 +284,20 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body)["model"], "gemini-3.7-flash")
+
+        status, _headers, body = self.request(
+            "POST",
+            "/hybrid/v1/responses",
+            json.dumps({"model": "deepseek-web/chat", "input": "hello"}).encode(),
+            {"content-type": "application/json"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["model"], "deepseek-web/chat")
+
+        status, _headers, body = self.request("GET", "/hybrid/v1/models")
+        self.assertEqual(status, 200)
+        ids = [item["id"] for item in json.loads(body)["data"]]
+        self.assertEqual(ids, ["gemini-3.7-flash", "deepseek-web/chat"])
 
     def test_hybrid_direct_reuses_the_single_managed_proxy(self) -> None:
         calls = {}

@@ -14,6 +14,7 @@ import { resilientFetch } from "./resilient_fetch.js";
 
 const requests = new Map();
 const METHODS_WITHOUT_BODY = new Set(["GET", "HEAD"]);
+const DEEPSEEK_ORIGIN = "https://chat.deepseek.com";
 const ANTIGRAVITY_HOST = "daily-cloudcode-pa.googleapis.com";
 const ANTIGRAVITY_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo";
 const ANTIGRAVITY_AVATAR_HOST = "lh3.googleusercontent.com";
@@ -171,6 +172,16 @@ async function executeRequest(id, state) {
       redirect: "error",
       cache: "no-store",
     };
+    try {
+      const requestUrl = new URL(state.head.url);
+      if (requestUrl.origin === DEEPSEEK_ORIGIN && requestUrl.pathname.startsWith("/api/")) {
+        // DeepSeek Web uses the signed-in browser session in addition to the
+        // localStorage bearer token supplied by the content script.
+        options.credentials = "include";
+      }
+    } catch (_error) {
+      // Request URLs are validated by the Native Host before reaching here.
+    }
     if (!METHODS_WITHOUT_BODY.has(state.head.method)) {
       options.body = new Blob(state.requestChunks);
     }

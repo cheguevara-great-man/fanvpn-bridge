@@ -142,7 +142,10 @@ function New-GeminiModelCatalog {
     $modelMetadata = @{}
     $availableModelIds = @($AvailableModels | ForEach-Object {
         $modelId = if ($_ -is [string]) { [string]$_ } else { [string]$_.id }
-        if ($modelId -match '^gemini-[a-z0-9.-]+$' -and
+        if ((
+                $modelId -match '^gemini-[a-z0-9.-]+$' -or
+                $modelId -match '^deepseek-web/(?:chat|reasoner)$'
+            ) -and
             $modelId -notmatch '(?:^|-)image(?:-|$)' -and
             $modelId -notmatch '(?:^|-)agent(?:-|$)') {
             if ($_ -isnot [string]) { $modelMetadata[$modelId] = $_ }
@@ -203,6 +206,7 @@ function New-GeminiModelCatalog {
                 $officialCache = [System.IO.File]::ReadAllText($officialCatalogPath) | ConvertFrom-Json
                 foreach ($officialModel in @($officialCache.models | Where-Object {
                     $_.slug -is [string] -and $_.slug -notmatch '^gemini-' -and
+                    $_.slug -notmatch '^deepseek-web/' -and
                     $_.slug -notmatch '^chatgpt-web/'
                 })) {
                     if (-not $seenOfficialSlugs.Add([string]$officialModel.slug)) { continue }
@@ -229,6 +233,7 @@ function New-GeminiModelCatalog {
     foreach ($rankedModel in $rankedModels) {
         $modelId = $rankedModel.Id
         $metadata = $rankedModel.Metadata
+        $isDeepSeekModel = $modelId.StartsWith('deepseek-web/')
         $displayName = if ($metadata -and $metadata.display_name) {
             [string]$metadata.display_name
         } else {
@@ -243,7 +248,11 @@ function New-GeminiModelCatalog {
         $model = ($template | ConvertTo-Json -Depth 100 | ConvertFrom-Json)
         Set-ObjectProperty $model 'slug' $modelId
         Set-ObjectProperty $model 'display_name' $displayName
-        Set-ObjectProperty $model 'description' 'Google account model through Browser AI Bridge'
+        Set-ObjectProperty $model 'description' $(if ($isDeepSeekModel) {
+            'DeepSeek Web model through Browser AI Bridge'
+        } else {
+            'Google account model through Browser AI Bridge'
+        })
         Set-ObjectProperty $model 'priority' ($models.Count + 1)
         Set-ObjectProperty $model 'visibility' 'list'
         Set-ObjectProperty $model 'supported_in_api' $true
@@ -253,8 +262,9 @@ function New-GeminiModelCatalog {
         Set-ObjectProperty $model 'default_reasoning_summary' 'none'
         Set-ObjectProperty $model 'prefer_websockets' $false
         Set-ObjectProperty $model 'use_responses_lite' $false
-        Set-ObjectProperty $model 'context_window' 1000000
-        Set-ObjectProperty $model 'max_context_window' 1000000
+        $contextWindow = if ($isDeepSeekModel) { 128000 } else { 1000000 }
+        Set-ObjectProperty $model 'context_window' $contextWindow
+        Set-ObjectProperty $model 'max_context_window' $contextWindow
         $metadataEfforts = @()
         if ($metadata) {
             $metadataEfforts = @($metadata.supported_reasoning_levels | Where-Object {
@@ -303,11 +313,12 @@ function New-GeminiModelCatalog {
         }
         if ($model.model_messages.instructions_template) {
             $instructions = [string]$model.model_messages.instructions_template
-            $instructions = [regex]::Replace(
-                $instructions,
-                '^You are Codex, an agent based on GPT-5\.',
+            $replacement = if ($isDeepSeekModel) {
+                'You are Codex, an agent powered by DeepSeek Web. You remain the coding agent and use the tools supplied by Codex.'
+            } else {
                 'You are Codex, an agent powered by Gemini. You remain the coding agent and use the tools supplied by Codex.'
-            )
+            }
+            $instructions = [regex]::Replace($instructions, '^You are Codex, an agent based on GPT-5\.', $replacement)
             $model.model_messages.instructions_template = $instructions
         }
         $models.Add($model)
@@ -397,9 +408,15 @@ if (($effectiveMode -eq 'GeminiAccount' -or $isHybrid) -and $GeminiModelsJson) {
     try {
         $parsedGeminiModels = $GeminiModelsJson | ConvertFrom-Json
         $availableGeminiModels = @(@($parsedGeminiModels) | ForEach-Object {
-            if ($_ -is [string] -and $_ -match '^gemini-[a-z0-9.-]+$') {
+            if ($_ -is [string] -and (
+                $_ -match '^gemini-[a-z0-9.-]+$' -or
+                ($isHybrid -and $_ -match '^deepseek-web/(?:chat|reasoner)$')
+            )) {
                 $_
-            } elseif ($_.id -is [string] -and $_.id -match '^gemini-[a-z0-9.-]+$') {
+            } elseif ($_.id -is [string] -and (
+                $_.id -match '^gemini-[a-z0-9.-]+$' -or
+                ($isHybrid -and $_.id -match '^deepseek-web/(?:chat|reasoner)$')
+            )) {
                 $efforts = @($_.supported_reasoning_levels | Where-Object {
                     $_ -in @('low', 'medium', 'high')
                 } | Select-Object -Unique)
@@ -414,10 +431,10 @@ if (($effectiveMode -eq 'GeminiAccount' -or $isHybrid) -and $GeminiModelsJson) {
             }
         } | Select-Object -First 100)
     } catch {
-        throw 'Gemini model list is invalid.'
+        throw 'Account model list is invalid.'
     }
     if ($availableGeminiModels.Count -eq 0) {
-        throw 'Gemini model list contains no valid models.'
+        throw 'Account model list contains no valid models.'
     }
     $cacheJson = ConvertTo-Json -InputObject @($availableGeminiModels) -Compress
     [System.IO.File]::WriteAllText(

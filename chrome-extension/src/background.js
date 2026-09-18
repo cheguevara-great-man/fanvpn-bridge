@@ -8,6 +8,7 @@ import {
   envelope,
   isProtocolEnvelope,
 } from "./protocol.js";
+import { solveDeepSeekPowChallenge } from "./deepseek_pow.js";
 
 const NATIVE_HOST_NAME = "com.fanvpn.bridge";
 const RECONNECT_MIN_MS = 1000;
@@ -16,6 +17,7 @@ const OFFSCREEN_PATH = "offscreen.html";
 const BROWSER_GATEWAY_EXTENSION_ID = "gjhcbooefgfcjbcdkjbbaljkoceghnkg";
 const ANTIGRAVITY_HOST = "daily-cloudcode-pa.googleapis.com";
 const ANTIGRAVITY_USER_AGENT_RULE_ID = 1001;
+const DEEPSEEK_ORIGIN = "https://chat.deepseek.com";
 const CONTROL_HANDSHAKE_TIMEOUT_MS = 5000;
 const CONTROL_TIMEOUT_MS = 60000;
 const SERVER_EXECUTOR_CONTROL_TIMEOUT_MS = 8000;
@@ -35,6 +37,7 @@ let offscreenReady = false;
 let lastError = null;
 let handshakeComplete = false;
 let negotiatedLimits = null;
+let deepSeekClientHeaders = null;
 const pendingControls = new Map();
 const pendingUpdates = new Map();
 
@@ -189,6 +192,29 @@ async function handleNativeMessage(message, port) {
     postNative(envelope(MessageType.PONG, { nonce: message.nonce }), port);
     return;
   }
+  if (message.type === MessageType.CONTROL_DEEPSEEK_POW_SOLVE) {
+    try {
+      const answer = await solveDeepSeekPowChallenge(message.challenge);
+      postNative(
+        envelope(MessageType.CONTROL_DEEPSEEK_POW_RESULT, {
+          id: message.id,
+          ok: true,
+          answer,
+        }),
+        port,
+      );
+    } catch (error) {
+      postNative(
+        envelope(MessageType.CONTROL_DEEPSEEK_POW_RESULT, {
+          id: message.id,
+          ok: false,
+          message: error?.message || String(error),
+        }),
+        port,
+      );
+    }
+    return;
+  }
   if (
     message.type === MessageType.CONTROL_MODE_RESULT ||
     message.type === MessageType.CONTROL_WEB_HARNESS_RESULT ||
@@ -255,7 +281,10 @@ async function handleNativeMessage(message, port) {
     return;
   }
   try {
-    await sendOffscreenMessage({ target: "offscreen", envelope: message });
+    const outbound = message.type === MessageType.REQUEST_HEAD
+      ? await decorateDeepSeekRequestHead(message)
+      : message;
+    await sendOffscreenMessage({ target: "offscreen", envelope: outbound });
   } catch (error) {
     setError(ErrorCode.EGRESS_UNAVAILABLE, error.message || String(error));
     postNative(
@@ -268,6 +297,73 @@ async function handleNativeMessage(message, port) {
       port,
     );
   }
+}
+
+function isDeepSeekApiUrl(rawUrl) {
+  try {
+    const url = new URL(rawUrl);
+    return url.origin === DEEPSEEK_ORIGIN && url.pathname.startsWith("/api/");
+  } catch (_error) {
+    return false;
+  }
+}
+
+function normalizedDeepSeekHeaders(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  const rawToken = typeof payload.token === "string" ? payload.token.trim() : "";
+  if (!rawToken || rawToken.length > 16384) return null;
+  const token = /^Bearer\s+/i.test(rawToken) ? rawToken : `Bearer ${rawToken}`;
+  const locale = typeof payload.locale === "string" && payload.locale.trim()
+    ? payload.locale.trim().slice(0, 64)
+    : "en-US";
+  const timezoneOffset = Number.isFinite(Number(payload.timezoneOffset))
+    ? String(Math.trunc(Number(payload.timezoneOffset)))
+    : "0";
+  return {
+    authorization: token,
+    "x-app-version": "2.0.0",
+    "x-client-platform": "web",
+    "x-client-version": "2.0.0",
+    "x-client-locale": locale,
+    "x-client-timezone-offset": timezoneOffset,
+  };
+}
+
+function rememberDeepSeekAuth(payload) {
+  const headers = normalizedDeepSeekHeaders(payload);
+  if (!headers) return false;
+  deepSeekClientHeaders = headers;
+  return true;
+}
+
+async function refreshDeepSeekAuthFromTabs() {
+  try {
+    const tabs = await chrome.tabs.query({ url: [`${DEEPSEEK_ORIGIN}/*`] });
+    for (const tab of tabs) {
+      if (!Number.isInteger(tab.id)) continue;
+      try {
+        const response = await chrome.tabs.sendMessage(tab.id, { kind: "deepseek-auth:get" });
+        if (response?.ok === true && rememberDeepSeekAuth(response.auth)) return true;
+      } catch (_error) {
+        // The tab may be navigating or may predate the current extension reload.
+      }
+    }
+  } catch (_error) {
+    return false;
+  }
+  return false;
+}
+
+async function decorateDeepSeekRequestHead(message) {
+  if (!isDeepSeekApiUrl(message.url)) return message;
+  if (!deepSeekClientHeaders) await refreshDeepSeekAuthFromTabs();
+  if (!deepSeekClientHeaders) return message;
+  const protectedNames = new Set(Object.keys(deepSeekClientHeaders));
+  const headers = (message.headers || []).filter(
+    (pair) => Array.isArray(pair) && pair.length === 2 && !protectedNames.has(String(pair[0]).toLowerCase()),
+  );
+  for (const [name, value] of Object.entries(deepSeekClientHeaders)) headers.push([name, value]);
+  return { ...message, headers };
 }
 
 async function ensureOffscreenDocument() {
@@ -655,6 +751,18 @@ async function setAntigravityUserAgentRule(userAgent) {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.kind === "deepseek-auth:update") {
+    const senderUrl = _sender?.url || _sender?.tab?.url || "";
+    let trusted = false;
+    try {
+      trusted = new URL(senderUrl).origin === DEEPSEEK_ORIGIN;
+    } catch (_error) {
+      trusted = false;
+    }
+    const ok = trusted && rememberDeepSeekAuth(message.auth);
+    sendResponse({ ok });
+    return false;
+  }
   if (message?.target === "background" && isProtocolEnvelope(message.envelope)) {
     postNative(message.envelope);
     sendResponse({ ok: true });

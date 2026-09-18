@@ -177,6 +177,12 @@ class NetworkModeScriptTests(unittest.TestCase):
                         "default_reasoning_level": "medium",
                         "supported_reasoning_levels": ["low", "medium", "high"],
                     },
+                    {
+                        "id": "deepseek-web/chat",
+                        "display_name": "DeepSeek Web Chat",
+                        "default_reasoning_level": "medium",
+                        "supported_reasoning_levels": ["low", "medium", "high"],
+                    },
                 ]
             )
 
@@ -193,6 +199,7 @@ class NetworkModeScriptTests(unittest.TestCase):
             self.assertIn('model = "gemini-3.8-flash"', gemini)
             self.assertIn("gemini-3.8-flash", models)
             self.assertIn("gemini-3.7-flash", models)
+            self.assertNotIn("deepseek-web/chat", models)
             self.assertEqual(
                 models["gemini-3.8-flash"]["display_name"],
                 "Gemini 3.8 Flash",
@@ -363,12 +370,20 @@ class NetworkModeScriptTests(unittest.TestCase):
                 }),
                 encoding="utf-8",
             )
-            models = json.dumps([{
-                "id": "gemini-3.7-flash",
-                "display_name": "Gemini 3.7 Flash",
-                "default_reasoning_level": "medium",
-                "supported_reasoning_levels": ["low", "medium", "high"],
-            }])
+            models = json.dumps([
+                {
+                    "id": "gemini-3.7-flash",
+                    "display_name": "Gemini 3.7 Flash",
+                    "default_reasoning_level": "medium",
+                    "supported_reasoning_levels": ["low", "medium", "high"],
+                },
+                {
+                    "id": "deepseek-web/chat",
+                    "display_name": "DeepSeek Web Chat",
+                    "default_reasoning_level": "medium",
+                    "supported_reasoning_levels": ["low", "medium", "high"],
+                },
+            ])
 
             configured = self.run_mode(codex_home, "HybridConfigured", models)
             self.assertIn('base_url = "http://127.0.0.1:18888/hybrid/v1"', configured)
@@ -378,11 +393,14 @@ class NetworkModeScriptTests(unittest.TestCase):
             slugs = {item["slug"] for item in catalog["models"]}
             self.assertIn("gpt-5.6-sol", slugs)
             self.assertIn("gemini-3.7-flash", slugs)
+            self.assertIn("deepseek-web/chat", slugs)
             by_slug = {item["slug"]: item for item in catalog["models"]}
             self.assertTrue(by_slug["gpt-5.6-sol"]["supports_reasoning_summaries"])
             self.assertEqual(by_slug["gpt-5.6-sol"]["default_reasoning_summary"], "auto")
             self.assertFalse(by_slug["gemini-3.7-flash"]["supports_reasoning_summaries"])
             self.assertEqual(by_slug["gemini-3.7-flash"]["default_reasoning_summary"], "none")
+            self.assertEqual(by_slug["deepseek-web/chat"]["context_window"], 128000)
+            self.assertIn("DeepSeek Web", by_slug["deepseek-web/chat"]["description"])
 
             native = self.run_mode(codex_home, "HybridNative", models)
             self.assertIn('default_subagent_model = "gpt-user-choice"', native)

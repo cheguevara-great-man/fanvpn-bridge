@@ -7,6 +7,7 @@ import threading
 import time
 import logging
 import tempfile
+import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -44,7 +45,7 @@ from .protocol import (
 )
 
 
-HOST_VERSION = "3.10.4"
+HOST_VERSION = "3.11.0"
 _LOG = logging.getLogger("fanvpn_bridge.dispatcher")
 _LOG.addHandler(logging.NullHandler())
 
@@ -70,6 +71,13 @@ class _PendingUpdate:
     archive_handle: object
     next_sequence: int = 0
     bytes_written: int = 0
+
+
+@dataclass(slots=True)
+class _PendingDeepSeekPow:
+    event: threading.Event
+    answer: int | None = None
+    error: str | None = None
 
 
 class NativeDispatcher:
@@ -105,6 +113,8 @@ class NativeDispatcher:
         self._update_controller = update_controller
         self._control_lock = threading.Lock()
         self._pending_updates: dict[str, _PendingUpdate] = {}
+        self._deepseek_pow_lock = threading.Lock()
+        self._pending_deepseek_pow: dict[str, _PendingDeepSeekPow] = {}
         self._pending: dict[str, _PendingRequest] = {}
         self._pending_lock = threading.Lock()
         self._ready = threading.Event()
@@ -217,6 +227,47 @@ class NativeDispatcher:
         finally:
             pending.sink.fail(error)
 
+    def solve_deepseek_pow(
+        self,
+        challenge: Mapping[str, object],
+        *,
+        timeout: float | None = None,
+    ) -> int:
+        """Solve DeepSeekHashV1 in Chrome using the bundled web-compatible WASM."""
+        if not self._ready.is_set() or self._closed.is_set():
+            raise BridgeError(
+                ErrorCode.NATIVE_CHANNEL_UNAVAILABLE,
+                "Chrome extension is not connected for DeepSeek PoW",
+                retryable=True,
+            )
+        request_id = "deepseekpow_" + uuid.uuid4().hex
+        pending = _PendingDeepSeekPow(event=threading.Event())
+        with self._deepseek_pow_lock:
+            self._pending_deepseek_pow[request_id] = pending
+        try:
+            self._channel.send(
+                envelope(
+                    "control.deepseek_pow.solve",
+                    id=request_id,
+                    challenge=dict(challenge),
+                )
+            )
+            wait_seconds = min(self._request_timeout, 60.0) if timeout is None else timeout
+            if not pending.event.wait(wait_seconds):
+                raise BridgeError(
+                    ErrorCode.REQUEST_TIMEOUT,
+                    "Timed out solving DeepSeek proof of work",
+                    retryable=True,
+                )
+            if pending.error is not None:
+                raise BridgeError(ErrorCode.UPSTREAM_CONNECTION_FAILED, pending.error, retryable=True)
+            if pending.answer is None:
+                raise BridgeError(ErrorCode.PROTOCOL_VIOLATION, "DeepSeek PoW result omitted its answer")
+            return pending.answer
+        finally:
+            with self._deepseek_pow_lock:
+                self._pending_deepseek_pow.pop(request_id, None)
+
     def snapshot(self) -> HealthSnapshot:
         with self._pending_lock:
             active_requests = len(self._pending)
@@ -250,6 +301,12 @@ class NativeDispatcher:
         for item in pending:
             item.request_window.close(failure)
             item.sink.fail(failure)
+        with self._deepseek_pow_lock:
+            pow_pending = list(self._pending_deepseek_pow.values())
+            self._pending_deepseek_pow.clear()
+        for item in pow_pending:
+            item.error = str(failure)
+            item.event.set()
         self._channel.close()
 
     def _reader_loop(self) -> None:
@@ -292,6 +349,25 @@ class NativeDispatcher:
             self._channel.send(envelope("pong", nonce=nonce))
             return
         if message_type == "pong":
+            return
+        if message_type == "control.deepseek_pow.result":
+            request_id = message.get("id")
+            if not isinstance(request_id, str):
+                raise BridgeError(ErrorCode.PROTOCOL_VIOLATION, "DeepSeek PoW result id is invalid")
+            with self._deepseek_pow_lock:
+                pending_pow = self._pending_deepseek_pow.get(request_id)
+            if pending_pow is None:
+                return
+            if message.get("ok") is True:
+                answer = message.get("answer")
+                if not isinstance(answer, int) or isinstance(answer, bool) or answer < 0:
+                    pending_pow.error = "DeepSeek PoW result answer is invalid"
+                else:
+                    pending_pow.answer = answer
+            else:
+                detail = message.get("message")
+                pending_pow.error = detail if isinstance(detail, str) and detail else "DeepSeek PoW solver failed"
+            pending_pow.event.set()
             return
         if message_type == "error" and not self._ready.is_set() and message.get("id") is None:
             code_value = message.get("code")

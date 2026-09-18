@@ -14,6 +14,7 @@ if ($config -notmatch '(?m)^\s*model_catalog_json\s*=\s*"[^"]*browser-ai-bridge-
 
 $geminiJson = $null
 $openAIJson = $null
+$accountModels = New-Object System.Collections.Generic.List[object]
 
 function Get-CodexClientVersion {
     $versions = New-Object System.Collections.Generic.List[version]
@@ -43,10 +44,21 @@ function Get-CodexClientVersion {
 try {
     $gemini = Invoke-RestMethod "$BridgeBaseUrl/gemini-account/v1/models" -Proxy $null -TimeoutSec 20
     if ($gemini.data) {
-        $geminiJson = ConvertTo-Json -InputObject @($gemini.data) -Depth 8 -Compress
+        @($gemini.data) | ForEach-Object { $accountModels.Add($_) }
     }
 } catch {
     Write-Warning "Gemini model refresh failed; keeping the last valid Gemini catalog. $($_.Exception.Message)"
+}
+try {
+    $deepseek = Invoke-RestMethod "$BridgeBaseUrl/deepseek-harness/v1/models" -Proxy $null -TimeoutSec 20
+    if ($deepseek.data) {
+        @($deepseek.data) | ForEach-Object { $accountModels.Add($_) }
+    }
+} catch {
+    Write-Warning "DeepSeek Web model refresh failed; keeping the last valid account-model catalog. $($_.Exception.Message)"
+}
+if ($accountModels.Count -gt 0) {
+    $geminiJson = ConvertTo-Json -InputObject @($accountModels.ToArray()) -Depth 8 -Compress
 }
 try {
     $clientVersion = [Uri]::EscapeDataString((Get-CodexClientVersion))

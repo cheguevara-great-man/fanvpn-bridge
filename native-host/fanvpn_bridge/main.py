@@ -14,6 +14,7 @@ from .antigravity_setup import AntigravitySetupController
 from .codex_login import CodexLoginError, run_codex_login
 from .dispatcher import NativeDispatcher
 from .device_config import DeviceConfigController
+from .deepseek_harness import DeepSeekHarnessProvider
 from .errors import BridgeError
 from .framing import FramedMessageChannel
 from .forward_proxy import ForwardProxyError, run_forward_proxy
@@ -68,6 +69,11 @@ def run(config_path: Path) -> int:
         gemini_account_provider=gemini_account,
         update_controller=LocalUpdateController(cache_base=cache_base),
     )
+    deepseek_harness = DeepSeekHarnessProvider(
+        bridge_url=f"http://{config.listen_host}:{config.listen_port}",
+        pow_solver=dispatcher.solve_deepseek_pow,
+        timeout_seconds=config.protocol.request_timeout_seconds,
+    )
     dispatcher.start()
     routes = RouteTable(config.routes)
     product_cache = ProductResponseCache(
@@ -86,6 +92,7 @@ def run(config_path: Path) -> int:
         product_cache=product_cache,
         usage_reporter=usage_reporter,
         gemini_account=gemini_account,
+        deepseek_harness=deepseek_harness,
         subagent_policy=subagent_policy,
         hybrid_route_store=hybrid_route_store,
     )
@@ -107,6 +114,7 @@ def run(config_path: Path) -> int:
             product_cache=product_cache,
             usage_reporter=usage_reporter,
             gemini_account=gemini_account,
+            deepseek_harness=deepseek_harness,
             subagent_policy=subagent_policy,
             hybrid_route_store=hybrid_route_store,
         )
