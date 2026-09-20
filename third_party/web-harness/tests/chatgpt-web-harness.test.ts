@@ -12,7 +12,7 @@ import { ChatGptBrowserWorker, type BrowserTurn } from "../src/adapters/chatgpt-
 import { chatGptConversationKey } from "../src/adapters/chatgpt-web/conversation-key";
 import { CHATGPT_TURN_REVISION_CONFLICT_MESSAGE, extractChatGptTurnEnvironment, extractChatGptTurnIdentity, extractChatGptTurnUserRevision, priorChatGptAbortedTurnIds } from "../src/adapters/chatgpt-web/environment";
 import { CHATGPT_WEB_ADAPTER_HEARTBEAT_MS, chatGptWebExecutionNamespace, chatGptWebTraceId, createChatGptWebAdapter } from "../src/adapters/chatgpt-web/index";
-import { chatGptHtmlToMarkdown, ChatGptMarkdownBuffer } from "../src/adapters/chatgpt-web/markdown";
+import { chatGptHtmlToMarkdown, ChatGptMarkdownBuffer, chatGptMarkdownDifference, ChatGptMarkdownConsistencyError } from "../src/adapters/chatgpt-web/markdown";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import {
   CODEX_ACTIVE_COMPACTION_REQUEST_MARKER,
@@ -1809,6 +1809,37 @@ describe("ChatGPT outer-native harness v4", () => {
     expect(rewritten.observe(different, 700)).toBe("");
   });
 
+  test("Markdown conflict diagnostics identify equal-length whitespace rewrites after live emission", () => {
+    const buffer = new ChatGptMarkdownBuffer(undefined, 0);
+    const segment = { key: "343:p", tag: "p", sourceStart: 343, sourceEnd: 456,
+      html: "<p>A B</p>", text: "A B", streamable: true };
+    expect(buffer.observe([segment])).toBe("A B");
+    buffer.observe([{ ...segment, html: "<p>A&nbsp;B</p>", text: "A\u00a0B" }]);
+    let error: unknown;
+    try { buffer.finish(); } catch (caught) { error = caught; }
+    expect(error).toBeInstanceOf(ChatGptMarkdownConsistencyError);
+    const diagnostic = (error as ChatGptMarkdownConsistencyError).diagnostic!;
+    expect(diagnostic.textDifference?.redactedOffset).toBe(1);
+    expect(diagnostic.textDifference?.beforeCodePoints[0]).toBe("U+0020");
+    expect(diagnostic.textDifference?.afterCodePoints[0]).toBe("U+00A0");
+    expect(diagnostic.htmlDifference?.after).toContain("&nbsp;");
+    expect(diagnostic.committedStart).toBe(343);
+  });
+
+  test("Markdown conflict excerpts are bounded and redact credentials before slicing", () => {
+    const secret = "turn_abcdefghijklmnopqrstuvwxyz123456";
+    const before = `${"x ".repeat(100)}${secret} password=hunter2 https://example.com/private?key=abc old`;
+    const after = before.replace("old", "new");
+    const difference = chatGptMarkdownDifference(before, after);
+    const serialized = JSON.stringify(difference);
+    expect(serialized).not.toContain(secret);
+    expect(serialized).not.toContain("hunter2");
+    expect(serialized).not.toContain("example.com");
+    expect(difference.before.length).toBeLessThanOrEqual(72);
+    expect(difference.after.length).toBeLessThanOrEqual(72);
+    expect(chatGptMarkdownDifference(secret, secret + "X").equalAfterRedaction).toBe(true);
+  });
+
   test("recovers from a transient React frame that omits already-streamed Markdown blocks", () => {
     const buffer = new ChatGptMarkdownBuffer(markdown => markdown, 100);
     const first = { key: "first", html: "<p>First</p>", text: "First", streamable: true };
@@ -1897,11 +1928,13 @@ describe("ChatGPT outer-native harness v4", () => {
       buffer.finish();
     } catch (error) {
       const diagnostic = (error as { diagnostic: unknown }).diagnostic;
-      expect(diagnostic).toEqual({
+      expect(diagnostic).toMatchObject({
         reason: "text_changed", observedStart: 0, observedEnd: 6,
         committedStart: 0, committedEnd: 6, observedTextChars: 7, committedTextChars: 6,
       });
-      expect(JSON.stringify(diagnostic)).not.toMatch(/Stable|Changed|<p/);
+      expect(diagnostic).toMatchObject({
+        textDifference: { before: "Stable", after: "Changed" },
+      });
     }
   });
 

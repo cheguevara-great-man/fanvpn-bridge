@@ -153,6 +153,7 @@ interface ChatGptMarkdownCandidate extends ChatGptMarkdownSegment {
 interface CommittedChatGptMarkdownSegment {
   key: string;
   tag?: string;
+  html: string;
   text: string;
   sourceStart?: number;
   sourceEnd?: number;
@@ -167,10 +168,45 @@ export class ChatGptMarkdownConsistencyError extends Error {
     committedEnd?: number;
     observedTextChars: number;
     committedTextChars: number;
+    textDifference?: ReturnType<typeof chatGptMarkdownDifference>;
+    htmlDifference?: ReturnType<typeof chatGptMarkdownDifference>;
   }) {
     super(message);
     this.name = "ChatGptMarkdownConsistencyError";
   }
+}
+
+// Redact whole values before taking excerpts so a window cannot expose the tail
+// of a capability or credential. Keep whitespace intact for renderer diagnosis.
+function redactMarkdownDiagnostic(value: string): string {
+  return value
+    .replace(/<codex_context_json>[\s\S]*?<\/codex_context_json>/gi, "[redacted context]")
+    .replace(/\b(?:turn|binding|call|sk)_[A-Za-z0-9_-]+\b/g, "[redacted token]")
+    .replace(/\bsk-[A-Za-z0-9_-]+\b/g, "[redacted token]")
+    .replace(/\bBearer\s+[^\s<"']+/gi, "Bearer [redacted]")
+    .replace(/\b(?:api[_-]?key|access[_-]?token|password|secret|controlToken)\b["']?\s*[:=]\s*["']?[^\s<>"']+/gi, "[redacted credential]")
+    .replace(/https?:\/\/[^\s<>"']+/gi, "[redacted URL]")
+    .replace(/\b[A-Za-z0-9_-]{32,}\b/g, "[redacted identifier]");
+}
+
+export function chatGptMarkdownDifference(before: string, after: string) {
+  const oldValue = redactMarkdownDiagnostic(before);
+  const newValue = redactMarkdownDiagnostic(after);
+  let offset = 0;
+  while (offset < Math.min(oldValue.length, newValue.length)
+    && oldValue[offset] === newValue[offset]) offset += 1;
+  const start = Math.max(0, offset - 24);
+  const codePoints = (value: string) => Array.from(value.slice(offset, offset + 12))
+    .map(char => `U+${char.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`);
+  return {
+    // Offsets refer to redacted strings; original source ranges are logged separately.
+    redactedOffset: offset,
+    equalAfterRedaction: oldValue === newValue,
+    before: oldValue.slice(start, offset + 48),
+    after: newValue.slice(start, offset + 48),
+    beforeCodePoints: codePoints(oldValue),
+    afterCodePoints: codePoints(newValue),
+  };
 }
 
 /**
@@ -391,6 +427,7 @@ export class ChatGptMarkdownBuffer {
   private committedSegment(segment: ChatGptMarkdownSegment): CommittedChatGptMarkdownSegment {
     return {
       key: segment.key,
+      html: segment.html,
       ...(segment.tag ? { tag: segment.tag } : {}),
       text: segment.text,
       ...(segment.sourceStart !== undefined ? { sourceStart: segment.sourceStart } : {}),
@@ -413,6 +450,8 @@ export class ChatGptMarkdownBuffer {
         committedEnd: committed.sourceEnd,
         observedTextChars: observed.text.length,
         committedTextChars: committed.text.length,
+        textDifference: chatGptMarkdownDifference(committed.text, observed.text),
+        htmlDifference: chatGptMarkdownDifference(committed.html, observed.html),
       },
     );
   }
