@@ -6,6 +6,7 @@ import unittest
 
 from fanvpn_bridge.deepseek_harness import (
     DeepSeekHarnessProvider,
+    _deepseek_response_message_id,
     _encode_pow_response,
     _parse_deepseek_stream,
     _parse_tool_calls,
@@ -61,6 +62,13 @@ class DeepSeekHarnessTests(unittest.TestCase):
         text, reasoning = _parse_deepseek_stream(raw)
         self.assertEqual(text, "hello world")
         self.assertEqual(reasoning, "private")
+
+    def test_deepseek_stream_exposes_parent_message_id_for_continuation(self) -> None:
+        raw = (
+            'data: {"p":"response/message_id","v":"message-123"}\n\n'
+            'data: {"p":"response/status","v":"FINISHED"}\n\n'
+        ).encode()
+        self.assertEqual(_deepseek_response_message_id(raw), "message-123")
 
     def test_valid_tool_blocks_become_function_calls_even_with_surrounding_prose(self) -> None:
         text = '<codex_tool_call>{"name":"read_file","arguments":{"path":"a.py"}}</codex_tool_call>'
@@ -220,6 +228,130 @@ class DeepSeekHarnessTests(unittest.TestCase):
         self.assertEqual(completion["model_type"], "default")
         pow_value = json.loads(base64.b64decode(provider.requests[-1][3]["x-ds-pow-response"]))
         self.assertEqual(pow_value["answer"], 23)
+
+    def test_provider_reuses_same_deepseek_session_and_sends_only_new_turn(self) -> None:
+        class FakeProvider(DeepSeekHarnessProvider):
+            def __init__(self):
+                super().__init__(pow_solver=lambda _challenge: 1)
+                self.requests = []
+                self.session_count = 0
+                self.completion_count = 0
+
+            def _request(self, method, upstream_path, body, headers):
+                self.requests.append((method, upstream_path, body, dict(headers)))
+                if upstream_path.endswith("chat_session/create"):
+                    self.session_count += 1
+                    return 200, {}, json.dumps({
+                        "data": {
+                            "biz_code": 0,
+                            "biz_data": {"chat_session": {"id": f"session-{self.session_count}"}},
+                        }
+                    }).encode()
+                if upstream_path.endswith("create_pow_challenge"):
+                    return 200, {}, json.dumps({
+                        "data": {
+                            "biz_code": 0,
+                            "biz_data": {
+                                "challenge": {
+                                    "algorithm": "DeepSeekHashV1",
+                                    "challenge": "a" * 64,
+                                    "salt": "salt",
+                                    "difficulty": 1,
+                                    "signature": "signature",
+                                    "expire_at": 12345,
+                                }
+                            },
+                        }
+                    }).encode()
+                self.completion_count += 1
+                answers = {1: "first answer", 2: "second answer", 3: "third answer"}
+                answer = answers[self.completion_count]
+                message_id = f"message-{self.completion_count}"
+                return 200, {"content-type": "text/event-stream"}, (
+                    f'data: {{"p":"response/message_id","v":"{message_id}"}}\n\n'
+                    f'data: {{"p":"response/fragments","o":"APPEND","v":'
+                    f'[{{"type":"RESPONSE","content":"{answer}"}}]}}\n\n'
+                    'data: {"p":"response/status","v":"FINISHED"}\n\n'
+                ).encode()
+
+        provider = FakeProvider()
+        common = {
+            "model": "deepseek-web/chat",
+            "instructions": "Follow repo rules.",
+            "tools": [{
+                "type": "function",
+                "name": "read_file",
+                "description": "Read one file",
+                "parameters": {"type": "object"},
+            }],
+            "prompt_cache_key": "thread-1",
+            "client_metadata": {
+                "x-codex-turn-metadata": json.dumps({
+                    "thread_id": "thread-1",
+                    "turn_id": "turn-1",
+                })
+            },
+        }
+        _streaming, first = provider.responses({
+            **common,
+            "input": [{"type": "message", "role": "user", "content": "first question"}],
+        })
+        _streaming, second = provider.responses({
+            **common,
+            "client_metadata": {
+                "x-codex-turn-metadata": json.dumps({
+                    "thread_id": "thread-1",
+                    "turn_id": "turn-2",
+                })
+            },
+            "input": [
+                {"type": "message", "role": "user", "content": "first question"},
+                {"type": "message", "role": "assistant", "content": "first answer"},
+                {"type": "message", "role": "user", "content": "second question"},
+            ],
+        })
+
+        self.assertEqual(first["output"][0]["content"][0]["text"], "first answer")
+        self.assertEqual(second["output"][0]["content"][0]["text"], "second answer")
+        self.assertEqual(provider.session_count, 1)
+        completions = [
+            json.loads(body)
+            for _method, path, body, _headers in provider.requests
+            if path.endswith("/chat/completion")
+        ]
+        self.assertEqual(completions[0]["chat_session_id"], "session-1")
+        self.assertIsNone(completions[0]["parent_message_id"])
+        self.assertEqual(completions[1]["chat_session_id"], "session-1")
+        self.assertEqual(completions[1]["parent_message_id"], "message-1")
+        self.assertIn("second question", completions[1]["prompt"])
+        self.assertNotIn("first question", completions[1]["prompt"])
+        self.assertNotIn("first answer", completions[1]["prompt"])
+        self.assertNotIn("Follow repo rules.", completions[1]["prompt"])
+        self.assertNotIn("CODEX TOOLS AVAILABLE", completions[1]["prompt"])
+
+        _streaming, third = provider.responses({
+            **common,
+            "client_metadata": {
+                "x-codex-turn-metadata": json.dumps({
+                    "thread_id": "thread-1",
+                    "turn_id": "turn-3",
+                })
+            },
+            "previous_response_id": second["id"],
+            "input": [{"type": "message", "role": "user", "content": "third question"}],
+        })
+        self.assertEqual(third["output"][0]["content"][0]["text"], "third answer")
+        self.assertEqual(provider.session_count, 1)
+        completions = [
+            json.loads(body)
+            for _method, path, body, _headers in provider.requests
+            if path.endswith("/chat/completion")
+        ]
+        self.assertEqual(completions[2]["chat_session_id"], "session-1")
+        self.assertEqual(completions[2]["parent_message_id"], "message-2")
+        self.assertIn("third question", completions[2]["prompt"])
+        self.assertNotIn("second question", completions[2]["prompt"])
+        self.assertNotIn("CODEX TOOLS AVAILABLE", completions[2]["prompt"])
 
 
 if __name__ == "__main__":

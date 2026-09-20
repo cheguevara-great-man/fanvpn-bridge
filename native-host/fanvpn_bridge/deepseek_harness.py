@@ -6,10 +6,12 @@ import html
 import http.client
 import json
 import re
+import threading
 import time
 import urllib.parse
 import uuid
 from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -42,6 +44,16 @@ class DeepSeekHarnessError(RuntimeError):
         self.code = code
 
 
+@dataclass
+class _DeepSeekConversationState:
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    session_id: str | None = None
+    parent_message_id: str | int | None = None
+    represented_items: tuple[str, ...] = ()
+    control_signature: str | None = None
+    last_response_id: str | None = None
+
+
 def is_deepseek_model(value: object) -> bool:
     return isinstance(value, str) and value.startswith(DEEPSEEK_PREFIX)
 
@@ -68,6 +80,8 @@ class DeepSeekHarnessProvider:
         self._port = parsed.port or 80
         self._pow_solver = pow_solver
         self._timeout = timeout_seconds
+        self._conversation_states: dict[str, _DeepSeekConversationState] = {}
+        self._conversation_states_lock = threading.Lock()
 
     def models_response(self) -> dict[str, object]:
         now = int(time.time())
@@ -103,58 +117,108 @@ class DeepSeekHarnessProvider:
                 status=400,
                 code="deepseek_model_unsupported",
             )
-        prompt = _responses_to_deepseek_prompt(payload)
-        session_id = self._create_session()
-        challenge = self._create_pow_challenge()
-        try:
-            answer = self._pow_solver(challenge)
-        except Exception as exc:
-            raise DeepSeekHarnessError(
-                f"DeepSeek proof of work failed: {exc}",
-                code="deepseek_pow_failed",
-            ) from exc
-        pow_header = _encode_pow_response(challenge, answer)
-        reasoning = payload.get("reasoning")
-        effort = str(reasoning.get("effort") or "").lower() if isinstance(reasoning, dict) else ""
-        reasoner = model.endswith("/reasoner")
-        completion = {
-            "chat_session_id": session_id,
-            "parent_message_id": None,
-            "model_type": "expert" if reasoner else "default",
-            "prompt": prompt,
-            "ref_file_ids": [],
-            "thinking_enabled": reasoner or effort in {"low", "medium", "high"},
-            "search_enabled": False,
-            "action": None,
-            "preempt": False,
-        }
-        status, _headers, raw = self._request(
-            "POST",
-            _COMPLETION_PATH,
-            json.dumps(completion, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
-            {
-                "accept": "text/event-stream",
-                "content-type": "application/json",
-                "x-ds-pow-response": pow_header,
-            },
-        )
-        self._raise_for_status(status, raw, "completion")
-        answer_text, _reasoning_text = _parse_deepseek_stream(raw)
-        if not answer_text.strip():
-            raise DeepSeekHarnessError(
-                "DeepSeek Web completed without an answer. Its web stream format may have changed.",
-                code="deepseek_empty_response",
+        conversation_key = _deepseek_conversation_key(payload)
+        state = self._conversation_state(conversation_key) if conversation_key else _DeepSeekConversationState()
+        with state.lock:
+            input_items = _prompt_input_items(payload)
+            input_fingerprints = tuple(_history_item_fingerprint(item) for item in input_items)
+            control_signature = _deepseek_control_signature(payload)
+            previous_response_id = payload.get("previous_response_id")
+
+            can_reuse = (
+                state.session_id is not None
+                and state.parent_message_id is not None
+                and state.control_signature == control_signature
             )
-        available_tools = {
-            str(item.get("name"))
-            for item in payload.get("tools") or []
-            if isinstance(item, dict) and item.get("type") == "function" and item.get("name")
-        }
-        tool_calls = _parse_tool_calls(answer_text, available_tools)
-        events = list(_responses_events(model, answer_text if tool_calls is None else "", tool_calls or []))
-        if bool(payload.get("stream", False)):
-            return True, iter(events)
-        return False, _last_completed_response(events)
+            delta_items: list[dict[str, Any]] | None = None
+            represented_after_input = input_fingerprints
+            if can_reuse and _starts_with(input_fingerprints, state.represented_items):
+                delta_items = input_items[len(state.represented_items):]
+            elif (
+                can_reuse
+                and isinstance(previous_response_id, str)
+                and previous_response_id == state.last_response_id
+            ):
+                delta_items = input_items
+                represented_after_input = state.represented_items + input_fingerprints
+
+            if not can_reuse or not delta_items:
+                state.session_id = self._create_session()
+                state.parent_message_id = None
+                state.represented_items = ()
+                state.control_signature = control_signature
+                state.last_response_id = None
+                prompt = _responses_to_deepseek_prompt(payload, input_items=input_items, include_control=True)
+            else:
+                prompt = _responses_to_deepseek_prompt(payload, input_items=delta_items, include_control=False)
+
+            challenge = self._create_pow_challenge()
+            try:
+                answer = self._pow_solver(challenge)
+            except Exception as exc:
+                raise DeepSeekHarnessError(
+                    f"DeepSeek proof of work failed: {exc}",
+                    code="deepseek_pow_failed",
+                ) from exc
+            pow_header = _encode_pow_response(challenge, answer)
+            reasoning = payload.get("reasoning")
+            effort = str(reasoning.get("effort") or "").lower() if isinstance(reasoning, dict) else ""
+            reasoner = model.endswith("/reasoner")
+            completion = {
+                "chat_session_id": state.session_id,
+                "parent_message_id": state.parent_message_id,
+                "model_type": "expert" if reasoner else "default",
+                "prompt": prompt,
+                "ref_file_ids": [],
+                "thinking_enabled": reasoner or effort in {"low", "medium", "high"},
+                "search_enabled": False,
+                "action": None,
+                "preempt": False,
+            }
+            status, _headers, raw = self._request(
+                "POST",
+                _COMPLETION_PATH,
+                json.dumps(completion, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+                {
+                    "accept": "text/event-stream",
+                    "content-type": "application/json",
+                    "x-ds-pow-response": pow_header,
+                },
+            )
+            self._raise_for_status(status, raw, "completion")
+            answer_text, _reasoning_text = _parse_deepseek_stream(raw)
+            if not answer_text.strip():
+                raise DeepSeekHarnessError(
+                    "DeepSeek Web completed without an answer. Its web stream format may have changed.",
+                    code="deepseek_empty_response",
+                )
+            available_tools = {
+                str(item.get("name"))
+                for item in payload.get("tools") or []
+                if isinstance(item, dict) and item.get("type") == "function" and item.get("name")
+            }
+            tool_calls = _parse_tool_calls(answer_text, available_tools)
+            events = list(_responses_events(model, answer_text if tool_calls is None else "", tool_calls or []))
+            completed = _last_completed_response(events)
+
+            state.parent_message_id = _deepseek_response_message_id(raw)
+            state.control_signature = control_signature
+            state.last_response_id = str(completed.get("id") or "") or None
+            state.represented_items = (
+                represented_after_input + _response_history_fingerprints(answer_text, tool_calls)
+            )
+
+            if bool(payload.get("stream", False)):
+                return True, iter(events)
+            return False, completed
+
+    def _conversation_state(self, key: str) -> _DeepSeekConversationState:
+        with self._conversation_states_lock:
+            state = self._conversation_states.get(key)
+            if state is None:
+                state = _DeepSeekConversationState()
+                self._conversation_states[key] = state
+            return state
 
     def _create_session(self) -> str:
         status, _headers, raw = self._request(
@@ -253,16 +317,169 @@ class DeepSeekHarnessProvider:
         )
 
 
-def _responses_to_deepseek_prompt(payload: Mapping[str, Any]) -> str:
+def _prompt_input_items(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    input_value = payload.get("input")
+    if isinstance(input_value, list):
+        return [item for item in input_value if isinstance(item, dict)]
+    return [{"type": "message", "role": "user", "content": input_value}]
+
+
+def _canonical_json(value: object) -> str:
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return value
+        return json.dumps(parsed, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _history_item_fingerprint(item: Mapping[str, Any]) -> str:
+    item_type = str(item.get("type") or ("message" if item.get("role") else ""))
+    if item_type == "message":
+        return _canonical_json({
+            "type": "message",
+            "role": str(item.get("role") or "user"),
+            "content": _content_text(item.get("content")),
+        })
+    if item_type == "function_call":
+        return _canonical_json({
+            "type": "function_call",
+            "name": str(item.get("name") or "tool"),
+            "arguments": _canonical_json(item.get("arguments")),
+        })
+    if item_type == "function_call_output":
+        return _canonical_json({
+            "type": "function_call_output",
+            "call_id": str(item.get("call_id") or ""),
+            "output": _function_output_text(item.get("output")),
+        })
+    return _canonical_json(dict(item))
+
+
+def _response_history_fingerprints(
+    answer_text: str,
+    tool_calls: list[dict[str, Any]] | None,
+) -> tuple[str, ...]:
+    if tool_calls:
+        return tuple(
+            _history_item_fingerprint({
+                "type": "function_call",
+                "name": call.get("name"),
+                "arguments": call.get("arguments"),
+            })
+            for call in tool_calls
+        )
+    if answer_text:
+        return (_history_item_fingerprint({
+            "type": "message",
+            "role": "assistant",
+            "content": answer_text,
+        }),)
+    return ()
+
+
+def _deepseek_control_signature(payload: Mapping[str, Any]) -> str:
+    tools = [
+        tool
+        for tool in payload.get("tools") or []
+        if isinstance(tool, dict) and tool.get("type") == "function"
+    ]
+    return _canonical_json({
+        "model": payload.get("model"),
+        "instructions": payload.get("instructions"),
+        "tools": tools,
+    })
+
+
+def _starts_with(values: tuple[str, ...], prefix: tuple[str, ...]) -> bool:
+    return len(values) >= len(prefix) and values[:len(prefix)] == prefix
+
+
+def _deepseek_conversation_key(payload: Mapping[str, Any]) -> str | None:
+    metadata = payload.get("client_metadata")
+    if isinstance(metadata, Mapping):
+        raw = metadata.get("x-codex-turn-metadata")
+        turn_metadata: object = raw
+        if isinstance(raw, str):
+            try:
+                turn_metadata = json.loads(raw)
+            except json.JSONDecodeError:
+                turn_metadata = None
+        if isinstance(turn_metadata, Mapping):
+            thread_id = turn_metadata.get("thread_id")
+            if isinstance(thread_id, str) and thread_id.strip():
+                return "thread:" + thread_id.strip()
+    prompt_cache_key = payload.get("prompt_cache_key")
+    if isinstance(prompt_cache_key, str) and prompt_cache_key.strip():
+        return "cache:" + prompt_cache_key.strip()
+    return None
+
+
+def _deepseek_response_message_id(raw: bytes) -> str | int | None:
+    def from_event(value: object) -> str | int | None:
+        if isinstance(value, list):
+            for item in reversed(value):
+                found = from_event(item)
+                if found is not None:
+                    return found
+            return None
+        if not isinstance(value, dict):
+            return None
+
+        path = value.get("p")
+        event_value = value.get("v")
+        if path in {"response/message_id", "response/response_message_id", "response/id"}:
+            if isinstance(event_value, (str, int)):
+                return event_value
+
+        direct = value.get("response_message_id")
+        if isinstance(direct, (str, int)):
+            return direct
+
+        response = value.get("response")
+        if isinstance(response, dict):
+            for key in ("message_id", "response_message_id", "id"):
+                candidate = response.get(key)
+                if isinstance(candidate, (str, int)):
+                    return candidate
+
+        if value.get("o") == "BATCH" and isinstance(event_value, list):
+            return from_event(event_value)
+        if isinstance(event_value, dict):
+            return from_event(event_value)
+        return None
+
+    text = raw.decode("utf-8", errors="replace")
+    for block in reversed(re.split(r"\r?\n\r?\n", text)):
+        data_lines = [line[5:].strip() for line in block.splitlines() if line.startswith("data:")]
+        if not data_lines:
+            continue
+        data = "\n".join(data_lines)
+        if data == "[DONE]":
+            continue
+        try:
+            parsed = json.loads(data)
+        except json.JSONDecodeError:
+            continue
+        found = from_event(parsed)
+        if found is not None:
+            return found
+    return None
+
+
+def _responses_to_deepseek_prompt(
+    payload: Mapping[str, Any],
+    *,
+    input_items: list[dict[str, Any]] | None = None,
+    include_control: bool = True,
+) -> str:
     sections: list[str] = []
     instructions = payload.get("instructions")
-    if isinstance(instructions, str) and instructions.strip():
+    if include_control and isinstance(instructions, str) and instructions.strip():
         sections.append("SYSTEM / DEVELOPER INSTRUCTIONS:\n" + instructions.strip())
 
-    input_value = payload.get("input")
-    items = input_value if isinstance(input_value, list) else [
-        {"type": "message", "role": "user", "content": input_value}
-    ]
+    items = input_items if input_items is not None else _prompt_input_items(payload)
     conversation: list[str] = []
     for item in items:
         if not isinstance(item, dict):
@@ -294,7 +511,7 @@ def _responses_to_deepseek_prompt(payload: Mapping[str, Any]) -> str:
         sections.append("CONVERSATION:\n" + "\n\n".join(conversation))
 
     tools: list[dict[str, object]] = []
-    for tool in payload.get("tools") or []:
+    for tool in (payload.get("tools") or []) if include_control else []:
         if not isinstance(tool, dict) or tool.get("type") != "function":
             continue
         tools.append(
