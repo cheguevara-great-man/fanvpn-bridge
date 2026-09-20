@@ -24,6 +24,47 @@ $directPidPath = Join-Path $env:LOCALAPPDATA 'FanVPNBridge\direct-proxy.pid'
 $directCredentialPath = Join-Path $env:LOCALAPPDATA 'FanVPNBridge\direct-proxy.json'
 $directProxyWasRunning = $false
 
+function Get-SlotProcesses {
+    Get-CimInstance Win32_Process -Filter "Name = 'browser-ai-bridge.exe'" -ErrorAction Stop |
+        Where-Object {
+            $_.ExecutablePath -and (
+                [string]$_.ExecutablePath -ieq (Join-Path $slotABuild 'browser-ai-bridge.exe') -or
+                [string]$_.ExecutablePath -ieq (Join-Path $slotBBuild 'browser-ai-bridge.exe')
+            )
+        }
+}
+
+function Stop-BridgeProcess {
+    param($ProcessInfo)
+    $handle = Get-Process -Id $ProcessInfo.ProcessId -ErrorAction SilentlyContinue
+    if (-not $handle) { return }
+    Stop-Process -Id $ProcessInfo.ProcessId -Force -ErrorAction Stop
+    if (-not $handle.WaitForExit(5000)) {
+        throw "Bridge PID $($ProcessInfo.ProcessId) did not exit."
+    }
+}
+
+function Get-PortOwner {
+    param([int]$Port)
+    @(Get-NetTCPConnection -State Listen -ErrorAction Stop |
+        Where-Object { $_.LocalPort -eq $Port } |
+        Select-Object -ExpandProperty OwningProcess -Unique)
+}
+
+function Stop-OldSlotProcesses {
+    param([string]$TargetExecutable)
+    $oldProcesses = @(Get-SlotProcesses | Where-Object { $_.ExecutablePath -ine $TargetExecutable })
+    foreach ($oldProcess in $oldProcesses) {
+        if ($oldProcess.CommandLine -match '(?i)(^|\s)--forward-proxy(\s|$)') {
+            $script:directProxyWasRunning = $true
+        }
+        Stop-BridgeProcess $oldProcess
+    }
+    if (@(Get-SlotProcesses | Where-Object { $_.ExecutablePath -ine $TargetExecutable }).Count -gt 0) {
+        throw 'Old-slot processes remain; slot handover is incomplete.'
+    }
+}
+
 function Restore-DirectProxy {
     if (-not $directProxyWasRunning) { return }
     # Clear this first so a failed restart cannot be retried recursively while
@@ -31,14 +72,12 @@ function Restore-DirectProxy {
     $script:directProxyWasRunning = $false
     try {
         if (-not (Test-Path -LiteralPath $directCredentialPath -PathType Leaf)) {
-            Write-Warning 'The Native Host was updated, but server-network mode was not restarted because direct-proxy.json is missing.'
-            return
+            throw 'Cannot restore server-network mode: direct-proxy.json is missing.'
         }
         $manifestPath = Get-ItemPropertyValue -LiteralPath $registryPath -Name '(default)'
         $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
         if (-not $manifest.path -or -not (Test-Path -LiteralPath $manifest.path -PathType Leaf)) {
-            Write-Warning 'The Native Host was updated, but the registered executable could not be found to restart server-network mode.'
-            return
+            throw 'Cannot restore server-network mode: registered executable is missing.'
         }
         $arguments = @(
             '--forward-proxy',
@@ -46,11 +85,39 @@ function Restore-DirectProxy {
             '--proxy-host', '127.0.0.1',
             '--proxy-port', '18889'
         )
-        $process = Start-Process -FilePath ([string]$manifest.path) -ArgumentList $arguments -WindowStyle Hidden -PassThru
-        [System.IO.File]::WriteAllText($directPidPath, [string]$process.Id)
-        Write-Host "Server-network proxy restarted with Native Host PID $($process.Id)."
+        # Chrome may have reconnected and started a proxy while we switched.
+        $owners = @(Get-PortOwner 18889)
+        $matching = @(Get-SlotProcesses | Where-Object {
+            $_.ProcessId -in $owners -and $_.ExecutablePath -ieq [string]$manifest.path -and
+            $_.CommandLine -match '(?i)(^|\s)--forward-proxy(\s|$)'
+        })
+        if ($owners.Count -eq 1 -and $matching.Count -eq 1) {
+            $process = Get-Process -Id $matching[0].ProcessId -ErrorAction Stop
+        } elseif ($owners.Count -gt 0) {
+            throw 'Port 18889 is still owned by another process; refusing to start a duplicate proxy.'
+        } else {
+            $process = Start-Process -FilePath ([string]$manifest.path) -ArgumentList $arguments -WindowStyle Hidden -PassThru
+        }
+        $deadline = [DateTime]::UtcNow.AddSeconds(15)
+        do {
+            $process.Refresh()
+            if ($process.HasExited) { throw 'The new proxy exited before becoming ready.' }
+            $owners = @(Get-PortOwner 18889)
+            if ($owners.Count -eq 1 -and $owners[0] -eq $process.Id) {
+                try {
+                    $ready = Invoke-RestMethod 'http://browser-ai-bridge.local/ready' -Proxy 'http://127.0.0.1:18889' -TimeoutSec 1
+                    if ($ready.mode -eq 'vscode-direct-proxy') {
+                        [System.IO.File]::WriteAllText($directPidPath, [string]$process.Id)
+                        Write-Host "Server-network proxy verified with Native Host PID $($process.Id)."
+                        return
+                    }
+                } catch { }
+            }
+            Start-Sleep -Milliseconds 200
+        } while ([DateTime]::UtcNow -lt $deadline)
+        throw 'The proxy did not pass port ownership and health checks.'
     } catch {
-        Write-Warning "Native Host update completed, but server-network mode could not be restarted automatically: $($_.Exception.Message)"
+        throw "Server-network proxy handover failed: $($_.Exception.Message)"
     }
 }
 
@@ -75,8 +142,7 @@ function Stop-StaleTargetSlotProcesses {
         $processHandle = Get-Process -Id $processId -ErrorAction SilentlyContinue
         if (-not $processHandle) { continue }
 
-        Stop-Process -Id $processId -Force -ErrorAction Stop
-        [void]$processHandle.WaitForExit(5000)
+        Stop-BridgeProcess $staleProcess
         Write-Host "Stopped stale Native Host PID $processId from target slot before rebuild."
     }
 }
@@ -121,29 +187,12 @@ if (-not $PSCmdlet.ShouldProcess($targetBuild, $operation)) {
     return
 }
 
-# Keep only one Direct Proxy runtime active. If server-network mode is running,
-# stop it before touching either A/B build slot. Restore-DirectProxy will restart
-# it from whichever Native Host executable is registered when this update exits:
-# the new slot after success, or the original slot after a failed update.
-if (Test-Path -LiteralPath $directPidPath) {
-    $directPid = 0
-    if ([int]::TryParse(([System.IO.File]::ReadAllText($directPidPath).Trim()), [ref]$directPid)) {
-        $directProcessHandle = Get-Process -Id $directPid -ErrorAction SilentlyContinue
-        $directProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $directPid" -ErrorAction SilentlyContinue
-        if ($directProcessHandle -and $directProcessHandle.ProcessName -eq 'browser-ai-bridge' -and
-            $directProcess.CommandLine -match '(?i)(^|\s)--forward-proxy(\s|$)') {
-            Stop-Process -Id $directPid -Force -ErrorAction Stop
-            [void]$directProcessHandle.WaitForExit(5000)
-            $directProxyWasRunning = $true
-            Remove-Item -LiteralPath $directPidPath -Force -ErrorAction SilentlyContinue
-            Write-Host "Temporarily stopped server-network proxy PID $directPid before Native Host update."
-        } else {
-            Remove-Item -LiteralPath $directPidPath -Force -ErrorAction SilentlyContinue
-        }
-    } else {
-        Remove-Item -LiteralPath $directPidPath -Force -ErrorAction SilentlyContinue
-    }
-}
+# Discover actual processes, including proxies missing from the PID file.
+# Keep the active slot available during the build; only release the target slot.
+$slotProcesses = @(Get-SlotProcesses)
+$directProxyWasRunning = @($slotProcesses | Where-Object {
+    $_.CommandLine -match '(?i)(^|\s)--forward-proxy(\s|$)'
+}).Count -gt 0
 
 if (-not $Python) {
     $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
@@ -203,6 +252,31 @@ try {
     throw "Native Host registration failed and the previous registration was restored: $($_.Exception.Message)"
 }
 
+# Registration now points at the verified target. Disconnect every old-slot
+# process so Chrome's existing reconnect handler launches the new Native Host.
+Stop-OldSlotProcesses -TargetExecutable $targetExe
+Restore-DirectProxy
+
+$bridgeReady = $false
+$deadline = [DateTime]::UtcNow.AddSeconds(30)
+do {
+    $owners = @(Get-PortOwner 18888)
+    $newHosts = @(Get-SlotProcesses | Where-Object {
+        $_.ExecutablePath -ieq $targetExe -and $_.ProcessId -in $owners
+    })
+    if ($owners.Count -eq 1 -and $newHosts.Count -eq 1) {
+        try {
+            $null = Invoke-RestMethod 'http://127.0.0.1:18888/ready' -TimeoutSec 1
+            $bridgeReady = $true
+            break
+        } catch { }
+    }
+    Start-Sleep -Milliseconds 250
+} while ([DateTime]::UtcNow -lt $deadline)
+if (-not $bridgeReady) {
+    throw 'New slot registered and old slot stopped, but Chrome has not connected the new Bridge. Refresh FanVPN AI Bridge in chrome://extensions.'
+}
+
 # Keep the unified picker current as part of the same one-click operation.  A
 # transient account/network failure is non-fatal: refresh_model_catalog.ps1
 # preserves the last valid GPT and Gemini catalogs independently.
@@ -217,8 +291,7 @@ if (Test-Path -LiteralPath $catalogRefresh -PathType Leaf) {
 
 $verb = if ($Rollback) { 'rolled back' } else { 'updated' }
 Write-Host "Native Host $verb to slot $targetSlot." -ForegroundColor Green
-Write-Host 'Refresh FanVPN AI Bridge, then close and reopen Chrome to release the previous slot.' -ForegroundColor Yellow
-Write-Host 'After Chrome reconnects, run tools\diagnose.ps1 and verify /ready and /routes.'
+Write-Host 'Old slot stopped; new Native Host verified on port 18888.'
 } finally {
     Restore-DirectProxy
 }

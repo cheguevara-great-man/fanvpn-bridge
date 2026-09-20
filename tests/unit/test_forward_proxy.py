@@ -71,6 +71,18 @@ class ForwardProxyConfigTests(unittest.TestCase):
 
 
 class ForwardProxyHealthTests(unittest.TestCase):
+    def test_second_live_proxy_cannot_bind_same_port(self) -> None:
+        config = UpstreamProxyConfig("unused.invalid", 443, "u", "p")
+        with ForwardProxyServer(("127.0.0.1", 0), config) as first:
+            with self.assertRaises(OSError):
+                with ForwardProxyServer(first.server_address, config):
+                    pass
+            # Even a legacy instance requesting address reuse must be rejected.
+            with socket.socket() as legacy:
+                legacy.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                with self.assertRaises(OSError):
+                    legacy.bind(first.server_address)
+
     def test_loopback_health_response_does_not_contact_upstream(self) -> None:
         server = ForwardProxyServer(
             ("127.0.0.1", 0),

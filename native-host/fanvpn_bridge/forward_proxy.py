@@ -249,8 +249,14 @@ def _format_authority(host: str, port: int) -> str:
 
 
 class ForwardProxyServer(socketserver.ThreadingTCPServer):
-    allow_reuse_address = True
+    allow_reuse_address = False
     daemon_threads = True
+
+    def server_bind(self) -> None:
+        # Windows SO_REUSEADDR permits another live proxy to bind this port.
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
     def __init__(
         self,
