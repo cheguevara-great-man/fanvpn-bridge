@@ -95,7 +95,6 @@ import {
   ChatGptLunaCheckpointStream,
   type CapturedChatGptLunaCheckpoint,
 } from "./rolling-checkpoint";
-import { ChatGptToolProtocolGuard } from "./tool-protocol-guard";
 import {
   chatGptExternalProgressIsLive,
   chatGptExternalToolCallsAreInFlight,
@@ -4923,13 +4922,9 @@ export class ChatGptBrowserWorker {
       const checkpointStream = turn.captureLunaCheckpoint
         ? new ChatGptLunaCheckpointStream()
         : undefined;
-      const toolProtocolGuard = turn.externalProgress
-        ? new ChatGptToolProtocolGuard()
-        : undefined;
       const emitMarkdownDelta = (delta: string): void => {
         const visible = checkpointStream ? checkpointStream.push(delta) : delta;
-        const safeVisible = toolProtocolGuard ? toolProtocolGuard.push(visible) : visible;
-        if (safeVisible) turn.onTextDelta(safeVisible);
+        if (visible) turn.onTextDelta(visible);
       };
       const throwMarkdownConsistencyError = (error: unknown): never => {
         if (!(error instanceof ChatGptMarkdownConsistencyError)) throw error;
@@ -5139,20 +5134,13 @@ export class ChatGptBrowserWorker {
             if (final.delta) emitMarkdownDelta(final.delta);
             if (checkpointStream) {
               const completed = checkpointStream.finishOptional(snapshot.visibleText);
-              if (completed.visibleRemainder) {
-                const safeRemainder = toolProtocolGuard
-                  ? toolProtocolGuard.push(completed.visibleRemainder)
-                  : completed.visibleRemainder;
-                if (safeRemainder) turn.onTextDelta(safeRemainder);
-              }
+              if (completed.visibleRemainder) turn.onTextDelta(completed.visibleRemainder);
               if (completed.captured) turn.onLunaCheckpoint!(completed.captured);
               else console.warn(`[chatgpt-web] browser turn ${turn.traceId} completed without a Luna rolling checkpoint; preserving full native history`);
               finalText = completed.answer;
             } else {
               finalText = final.markdown;
             }
-            const protocolRemainder = toolProtocolGuard?.finish(finalText) ?? "";
-            if (protocolRemainder) turn.onTextDelta(protocolRemainder);
             break;
           }
           if (!loggedCompletionWait && Date.now() - sentAt >= 60_000) {

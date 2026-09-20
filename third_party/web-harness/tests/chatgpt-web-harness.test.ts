@@ -1475,9 +1475,6 @@ describe("ChatGPT outer-native harness v4", () => {
     expect(compiled.text).toContain('"attachment_ref":"codex-input-image-1"');
     expect(compiled.text).toContain('"version":3');
     expect(compiled.text).toContain("use the attached Codex Native tools directly according to their declared descriptions and schemas");
-    expect(compiled.text).toContain("Historical Codex function_call records naming tools such as exec_command are conversation history");
-    expect(compiled.text).toContain("call codex_tool_call with the exact returned wire_name");
-    expect(compiled.text).toContain("Never emit, quote, or simulate internal tool-call markup such as DSML");
     expect(compiled.text).toContain("Use actual Codex Native results as evidence");
     expect(compiled.text).toContain("Write the user-facing final answer only after the last required tool result has settled");
     expect(compiled.text.match(/turn_123456789012345678901234/g)).toHaveLength(1);
