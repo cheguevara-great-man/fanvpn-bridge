@@ -47,6 +47,16 @@ class _FakeDeepSeekHarness:
             "output": [],
         }
 
+    def compact(self, payload):
+        return {
+            "output": [{
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "deepseek checkpoint"}],
+            }],
+            "model": payload.get("model"),
+        }
+
 
 class HttpGatewayIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -293,6 +303,17 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body)["model"], "deepseek-web/chat")
+
+        status, _headers, body = self.request(
+            "POST",
+            "/hybrid/v1/responses/compact",
+            json.dumps({"model": "deepseek-web/chat", "input": "long history"}).encode(),
+            {"content-type": "application/json"},
+        )
+        self.assertEqual(status, 200)
+        compacted = json.loads(body)
+        self.assertEqual(compacted["model"], "deepseek-web/chat")
+        self.assertEqual(compacted["output"][0]["content"][0]["text"], "deepseek checkpoint")
 
         status, _headers, body = self.request("GET", "/hybrid/v1/models")
         self.assertEqual(status, 200)

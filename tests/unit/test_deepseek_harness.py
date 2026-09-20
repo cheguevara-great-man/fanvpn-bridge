@@ -19,8 +19,11 @@ from fanvpn_bridge.deepseek_harness import (
 class DeepSeekHarnessTests(unittest.TestCase):
     def test_models_are_exposed_under_a_separate_prefix(self) -> None:
         provider = DeepSeekHarnessProvider(pow_solver=lambda _challenge: 0)
-        ids = [item["id"] for item in provider.models_response()["data"]]
+        models = provider.models_response()["data"]
+        ids = [item["id"] for item in models]
         self.assertEqual(ids, ["deepseek-web/chat", "deepseek-web/reasoner"])
+        self.assertEqual(models[0]["context_window"], 1_000_000)
+        self.assertEqual(models[0]["auto_compact_token_limit"], 900_000)
 
     def test_responses_prompt_keeps_codex_as_tool_executor(self) -> None:
         prompt = _responses_to_deepseek_prompt(
@@ -97,6 +100,46 @@ class DeepSeekHarnessTests(unittest.TestCase):
         self.assertIn("<write_stdin>...</write_stdin>", prompt)
         self.assertNotIn("Parameters JSON Schema", prompt)
         self.assertNotIn("Follow the repository rules.", prompt)
+
+    def test_prompt_omits_image_base64_from_tool_results(self) -> None:
+        payload = "data:image/png;base64," + ("A" * 100_000)
+        prompt = _responses_to_deepseek_prompt({
+            "input": [
+                {"type": "message", "role": "user", "content": "inspect image"},
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_image",
+                    "output": [{"type": "input_image", "image_url": payload}],
+                },
+            ]
+        })
+        self.assertIn("[Image payload omitted: input_image]", prompt)
+        self.assertNotIn("data:image/png;base64", prompt)
+        self.assertNotIn("A" * 1000, prompt)
+
+    def test_prompt_redacts_embedded_data_uri_inside_plain_tool_text(self) -> None:
+        payload = "data:image/jpeg;base64," + ("B" * 20_000)
+        prompt = _responses_to_deepseek_prompt({
+            "input": [{
+                "type": "function_call_output",
+                "call_id": "call_image_text",
+                "output": f'preview={{"image_url":"{payload}"}}',
+            }]
+        })
+        self.assertIn("[Binary data URI omitted: image/jpeg]", prompt)
+        self.assertNotIn("data:image/jpeg;base64", prompt)
+        self.assertNotIn("B" * 1000, prompt)
+
+    def test_prompt_keeps_large_text_tool_result_intact(self) -> None:
+        output = "HEAD:" + ("x" * 40_000) + ":TAIL"
+        prompt = _responses_to_deepseek_prompt({
+            "input": [
+                {"type": "message", "role": "user", "content": "continue"},
+                {"type": "function_call_output", "call_id": "call_big", "output": output},
+            ]
+        })
+        self.assertIn(output, prompt)
+        self.assertNotIn("chars omitted", prompt)
 
     def test_deepseek_stream_separates_thinking_from_answer(self) -> None:
         raw = (
@@ -529,11 +572,8 @@ class DeepSeekHarnessTests(unittest.TestCase):
                     "turn_id": "turn-2",
                 })
             },
-            "input": [
-                {"type": "message", "role": "user", "content": "first question"},
-                {"type": "message", "role": "assistant", "content": "first answer"},
-                {"type": "message", "role": "user", "content": "second question"},
-            ],
+            "previous_response_id": first["id"],
+            "input": [{"type": "message", "role": "user", "content": "second question"}],
         })
 
         self.assertEqual(first["output"][0]["content"][0]["text"], "first answer")
@@ -577,6 +617,103 @@ class DeepSeekHarnessTests(unittest.TestCase):
         self.assertIn("third question", completions[2]["prompt"])
         self.assertNotIn("second question", completions[2]["prompt"])
         self.assertNotIn("CODEX TOOLS AVAILABLE", completions[2]["prompt"])
+
+    def test_compaction_uses_dedicated_summary_turn_and_returns_checkpoint(self) -> None:
+        class FakeProvider(DeepSeekHarnessProvider):
+            def __init__(self):
+                super().__init__(pow_solver=lambda _challenge: 1)
+                self.requests = []
+
+            def _request(self, method, upstream_path, body, headers):
+                self.requests.append((method, upstream_path, body, dict(headers)))
+                if upstream_path.endswith("chat_session/create"):
+                    return 200, {}, json.dumps({
+                        "data": {"biz_code": 0, "biz_data": {"chat_session": {"id": "compact-session"}}}
+                    }).encode()
+                if upstream_path.endswith("create_pow_challenge"):
+                    return 200, {}, json.dumps({
+                        "data": {
+                            "biz_code": 0,
+                            "biz_data": {
+                                "challenge": {
+                                    "algorithm": "DeepSeekHashV1",
+                                    "challenge": "a" * 64,
+                                    "salt": "salt",
+                                    "difficulty": 1,
+                                    "signature": "signature",
+                                    "expire_at": 12345,
+                                }
+                            },
+                        }
+                    }).encode()
+                return 200, {"content-type": "text/event-stream"}, (
+                    'data: {"p":"response/message_id","v":"compact-message"}\n\n'
+                    'data: {"p":"response/fragments","o":"APPEND","v":'
+                    '[{"type":"RESPONSE","content":"checkpoint summary"}]}\n\n'
+                    'data: {"p":"response/status","v":"FINISHED"}\n\n'
+                ).encode()
+
+        provider = FakeProvider()
+        image = "data:image/png;base64," + ("A" * 1000)
+        result = provider.compact({
+            "model": "deepseek-web/chat",
+            "input": [
+                {"type": "message", "role": "user", "content": "old question"},
+                {"type": "message", "role": "assistant", "content": "old answer"},
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "latest question"},
+                        {"type": "input_image", "image_url": image},
+                    ],
+                },
+            ],
+            "tools": [{
+                "type": "function",
+                "name": "exec_command",
+                "description": "Run a command",
+                "parameters": {"type": "object"},
+            }],
+        })
+        self.assertEqual(result["output"][-1]["role"], "user")
+        self.assertIn("checkpoint summary", result["output"][-1]["content"][0]["text"])
+        self.assertIn("Another language model started", result["output"][-1]["content"][0]["text"])
+        retained_images = [
+            block
+            for message in result["output"][:-1]
+            for block in message.get("content", [])
+            if block.get("type") == "input_image"
+        ]
+        self.assertEqual(retained_images[0]["image_url"], image)
+        completion = next(
+            json.loads(body)
+            for _method, path, body, _headers in provider.requests
+            if path.endswith("/chat/completion")
+        )
+        self.assertIn("COMPACTION TASK", completion["prompt"])
+        self.assertNotIn("CODEX TOOL PROTOCOL", completion["prompt"])
+        self.assertNotIn("data:image/png;base64", completion["prompt"])
+
+    def test_local_compaction_metadata_returns_summary_as_normal_response(self) -> None:
+        class FakeProvider(DeepSeekHarnessProvider):
+            def __init__(self):
+                super().__init__(pow_solver=lambda _challenge: 1)
+
+            def _compaction_summary(self, payload):
+                return "local summary"
+
+        provider = FakeProvider()
+        streaming, response = provider.responses({
+            "model": "deepseek-web/chat",
+            "stream": False,
+            "input": [{"type": "message", "role": "user", "content": "long history"}],
+            "client_metadata": {
+                "x-codex-turn-metadata": json.dumps({"request_kind": "compaction"})
+            },
+        })
+        self.assertFalse(streaming)
+        self.assertEqual(response["output"][0]["content"][0]["text"], "local summary")
 
 
 if __name__ == "__main__":

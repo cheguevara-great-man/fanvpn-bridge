@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import http.client
 import json
 import re
@@ -21,6 +22,23 @@ _CREATE_SESSION_PATH = "/api/v0/chat_session/create"
 _POW_PATH = "/api/v0/chat/create_pow_challenge"
 _MAX_UPSTREAM_BODY = 8 * 1024 * 1024
 _DIRECT_TOOL_TAG_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.:-]*$")
+_DATA_URI_RE = re.compile(
+    r"data:([^;,\s]+)(?:;[^,\s]*)?;base64,[A-Za-z0-9+/=_-]+",
+    re.IGNORECASE,
+)
+_DEEPSEEK_CONTEXT_WINDOW = 1_000_000
+_DEEPSEEK_AUTO_COMPACT_TOKEN_LIMIT = 900_000
+_COMPACT_RETAINED_USER_CHAR_BUDGET = 20_000 * 4
+_COMPACT_PROMPT = """You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.
+
+Include:
+- Current progress and key decisions made
+- Important context, constraints, or user preferences
+- What remains to be done (clear next steps)
+- Any critical data, examples, or references needed to continue
+
+Be concise, structured, and focused on helping the next LLM seamlessly continue the work."""
+_SUMMARY_PREFIX = "Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:"
 
 
 class DeepSeekHarnessError(RuntimeError):
@@ -41,7 +59,6 @@ class _DeepSeekConversationState:
     lock: threading.Lock = field(default_factory=threading.Lock)
     session_id: str | None = None
     parent_message_id: str | int | None = None
-    represented_items: tuple[str, ...] = ()
     control_signature: str | None = None
     last_response_id: str | None = None
 
@@ -88,6 +105,10 @@ class DeepSeekHarnessProvider:
                     "display_name": "DeepSeek Web Chat",
                     "default_reasoning_level": "medium",
                     "supported_reasoning_levels": ["low", "medium", "high"],
+                    "context_window": _DEEPSEEK_CONTEXT_WINDOW,
+                    "max_context_window": _DEEPSEEK_CONTEXT_WINDOW,
+                    "effective_context_window_percent": 90,
+                    "auto_compact_token_limit": _DEEPSEEK_AUTO_COMPACT_TOKEN_LIMIT,
                 },
                 {
                     "id": "deepseek-web/reasoner",
@@ -97,6 +118,10 @@ class DeepSeekHarnessProvider:
                     "display_name": "DeepSeek Web Reasoner",
                     "default_reasoning_level": "high",
                     "supported_reasoning_levels": ["low", "medium", "high"],
+                    "context_window": _DEEPSEEK_CONTEXT_WINDOW,
+                    "max_context_window": _DEEPSEEK_CONTEXT_WINDOW,
+                    "effective_context_window_percent": 90,
+                    "auto_compact_token_limit": _DEEPSEEK_AUTO_COMPACT_TOKEN_LIMIT,
                 },
             ],
         }
@@ -109,11 +134,19 @@ class DeepSeekHarnessProvider:
                 status=400,
                 code="deepseek_model_unsupported",
             )
+        if _is_local_compaction_request(payload):
+            summary = self._compaction_summary(payload)
+            self._forget_conversation_state(_deepseek_conversation_key(payload))
+            events = list(_responses_events(model, summary, []))
+            completed = _last_completed_response(events)
+            if bool(payload.get("stream", False)):
+                return True, iter(events)
+            return False, completed
+
         conversation_key = _deepseek_conversation_key(payload)
         state = self._conversation_state(conversation_key) if conversation_key else _DeepSeekConversationState()
         with state.lock:
             input_items = _prompt_input_items(payload)
-            input_fingerprints = tuple(_history_item_fingerprint(item) for item in input_items)
             control_signature = _deepseek_control_signature(payload)
             previous_response_id = payload.get("previous_response_id")
 
@@ -121,28 +154,17 @@ class DeepSeekHarnessProvider:
                 state.session_id is not None
                 and state.parent_message_id is not None
                 and state.control_signature == control_signature
-            )
-            delta_items: list[dict[str, Any]] | None = None
-            represented_after_input = input_fingerprints
-            if can_reuse and _starts_with(input_fingerprints, state.represented_items):
-                delta_items = input_items[len(state.represented_items):]
-            elif (
-                can_reuse
                 and isinstance(previous_response_id, str)
                 and previous_response_id == state.last_response_id
-            ):
-                delta_items = input_items
-                represented_after_input = state.represented_items + input_fingerprints
-
-            if not can_reuse or not delta_items:
+            )
+            if not can_reuse:
                 state.session_id = self._create_session()
                 state.parent_message_id = None
-                state.represented_items = ()
                 state.control_signature = control_signature
                 state.last_response_id = None
                 prompt = _responses_to_deepseek_prompt(payload, input_items=input_items, include_control=True)
             else:
-                prompt = _responses_to_deepseek_prompt(payload, input_items=delta_items, include_control=False)
+                prompt = _responses_to_deepseek_prompt(payload, input_items=input_items, include_control=False)
 
             reasoning = payload.get("reasoning")
             effort = str(reasoning.get("effort") or "").lower() if isinstance(reasoning, dict) else ""
@@ -196,14 +218,6 @@ class DeepSeekHarnessProvider:
                     history_turn = self._history_turn(state.session_id, response_message_id)
                     if history_turn is not None and history_turn[1].strip():
                         response_message_id, answer_text, _reasoning_text = history_turn
-                    elif not answer_text.strip():
-                        deadline = time.monotonic() + 30.0
-                        while time.monotonic() < deadline:
-                            time.sleep(0.25)
-                            history_turn = self._history_turn(state.session_id, response_message_id)
-                            if history_turn is not None and history_turn[1].strip():
-                                response_message_id, answer_text, _reasoning_text = history_turn
-                                break
                 if not answer_text.strip():
                     raise DeepSeekHarnessError(
                         "DeepSeek Web completed without an answer. Its web stream format may have changed.",
@@ -235,13 +249,89 @@ class DeepSeekHarnessProvider:
             state.parent_message_id = response_message_id
             state.control_signature = control_signature
             state.last_response_id = str(completed.get("id") or "") or None
-            state.represented_items = (
-                represented_after_input + _response_history_fingerprints(answer_text, tool_calls)
-            )
 
             if bool(payload.get("stream", False)):
                 return True, iter(events)
             return False, completed
+
+    def compact(self, payload: dict[str, Any]) -> dict[str, Any]:
+        model = str(payload.get("model") or "deepseek-web/chat").strip()
+        if not is_deepseek_model(model):
+            raise DeepSeekHarnessError(
+                f"Unsupported DeepSeek Web model: {model}",
+                status=400,
+                code="deepseek_model_unsupported",
+            )
+        summary = self._compaction_summary(payload)
+        self._forget_conversation_state(_deepseek_conversation_key(payload))
+        return {
+            "output": _build_compact_v1_output(
+                _extract_compact_user_messages(payload.get("input")),
+                summary,
+            )
+        }
+
+    def _compaction_summary(self, payload: Mapping[str, Any]) -> str:
+        model = str(payload.get("model") or "deepseek-web/chat").strip()
+        reasoner = model.endswith("/reasoner")
+        reasoning = payload.get("reasoning")
+        effort = str(reasoning.get("effort") or "").lower() if isinstance(reasoning, dict) else ""
+        thinking_enabled = reasoner or effort in {"low", "medium", "high"}
+        compact_payload = dict(payload)
+        compact_payload["tools"] = []
+        input_items = [
+            item for item in _prompt_input_items(compact_payload)
+            if str(item.get("type") or "") != "compaction_trigger"
+        ]
+        prompt = _responses_to_deepseek_prompt(
+            compact_payload,
+            input_items=input_items,
+            include_control=True,
+        )
+        prompt = (prompt + "\n\nCOMPACTION TASK:\n" + _COMPACT_PROMPT).strip()
+        session_id = self._create_session()
+        challenge = self._create_pow_challenge()
+        try:
+            answer = self._pow_solver(challenge)
+        except Exception as exc:
+            raise DeepSeekHarnessError(
+                f"DeepSeek proof of work failed: {exc}",
+                code="deepseek_pow_failed",
+            ) from exc
+        completion = {
+            "chat_session_id": session_id,
+            "parent_message_id": None,
+            "model_type": "expert" if reasoner else "default",
+            "prompt": prompt,
+            "ref_file_ids": [],
+            "thinking_enabled": thinking_enabled,
+            "search_enabled": False,
+            "action": None,
+            "preempt": False,
+        }
+        status, _headers, raw = self._request(
+            "POST",
+            _COMPLETION_PATH,
+            json.dumps(completion, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+            {
+                "accept": "text/event-stream",
+                "content-type": "application/json",
+                "x-ds-pow-response": _encode_pow_response(challenge, answer),
+            },
+        )
+        self._raise_for_status(status, raw, "compaction")
+        summary, _reasoning_text = _parse_deepseek_stream(raw)
+        response_message_id = _deepseek_response_message_id(raw)
+        if thinking_enabled and response_message_id is not None:
+            history_turn = self._history_turn(session_id, response_message_id)
+            if history_turn is not None and history_turn[1].strip():
+                summary = history_turn[1]
+        if not summary.strip():
+            raise DeepSeekHarnessError(
+                "DeepSeek Web compaction completed without a summary",
+                code="deepseek_compaction_empty",
+            )
+        return summary.strip()
 
     def _conversation_state(self, key: str) -> _DeepSeekConversationState:
         with self._conversation_states_lock:
@@ -250,6 +340,12 @@ class DeepSeekHarnessProvider:
                 state = _DeepSeekConversationState()
                 self._conversation_states[key] = state
             return state
+
+    def _forget_conversation_state(self, key: str | None) -> None:
+        if not key:
+            return
+        with self._conversation_states_lock:
+            self._conversation_states.pop(key, None)
 
     def _history_turn(
         self,
@@ -454,51 +550,6 @@ def _canonical_json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
 
 
-def _history_item_fingerprint(item: Mapping[str, Any]) -> str:
-    item_type = str(item.get("type") or ("message" if item.get("role") else ""))
-    if item_type == "message":
-        return _canonical_json({
-            "type": "message",
-            "role": str(item.get("role") or "user"),
-            "content": _content_text(item.get("content")),
-        })
-    if item_type == "function_call":
-        return _canonical_json({
-            "type": "function_call",
-            "name": str(item.get("name") or "tool"),
-            "arguments": _canonical_json(item.get("arguments")),
-        })
-    if item_type == "function_call_output":
-        return _canonical_json({
-            "type": "function_call_output",
-            "call_id": str(item.get("call_id") or ""),
-            "output": _function_output_text(item.get("output")),
-        })
-    return _canonical_json(dict(item))
-
-
-def _response_history_fingerprints(
-    answer_text: str,
-    tool_calls: list[dict[str, Any]] | None,
-) -> tuple[str, ...]:
-    if tool_calls:
-        return tuple(
-            _history_item_fingerprint({
-                "type": "function_call",
-                "name": call.get("name"),
-                "arguments": call.get("arguments"),
-            })
-            for call in tool_calls
-        )
-    if answer_text:
-        return (_history_item_fingerprint({
-            "type": "message",
-            "role": "assistant",
-            "content": answer_text,
-        }),)
-    return ()
-
-
 def _deepseek_control_signature(payload: Mapping[str, Any]) -> str:
     tools = [
         tool
@@ -510,10 +561,6 @@ def _deepseek_control_signature(payload: Mapping[str, Any]) -> str:
         "instructions": payload.get("instructions"),
         "tools": tools,
     })
-
-
-def _starts_with(values: tuple[str, ...], prefix: tuple[str, ...]) -> bool:
-    return len(values) >= len(prefix) and values[:len(prefix)] == prefix
 
 
 def _deepseek_conversation_key(payload: Mapping[str, Any]) -> str | None:
@@ -534,6 +581,20 @@ def _deepseek_conversation_key(payload: Mapping[str, Any]) -> str | None:
     if isinstance(prompt_cache_key, str) and prompt_cache_key.strip():
         return "cache:" + prompt_cache_key.strip()
     return None
+
+
+def _is_local_compaction_request(payload: Mapping[str, Any]) -> bool:
+    metadata = payload.get("client_metadata")
+    if not isinstance(metadata, Mapping):
+        return False
+    raw = metadata.get("x-codex-turn-metadata")
+    turn_metadata: object = raw
+    if isinstance(raw, str):
+        try:
+            turn_metadata = json.loads(raw)
+        except json.JSONDecodeError:
+            return False
+    return isinstance(turn_metadata, Mapping) and turn_metadata.get("request_kind") == "compaction"
 
 
 def _deepseek_response_message_id(raw: bytes) -> str | int | None:
@@ -612,26 +673,26 @@ def _responses_to_deepseek_prompt(
         item_type = str(item.get("type") or ("message" if item.get("role") else ""))
         if item_type == "message":
             role = str(item.get("role") or "user").upper()
-            text = _content_text(item.get("content"))
+            text = _redact_data_uris(_content_text(item.get("content")))
             if text:
                 conversation.append(f"{role}:\n{text}")
         elif item_type == "function_call":
             name = str(item.get("name") or "tool")
             call_id = str(item.get("call_id") or item.get("id") or "")
             arguments = item.get("arguments")
-            conversation.append(
-                "ASSISTANT TOOL CALL:\n"
-                + json.dumps(
+            rendered = (
+                "ASSISTANT TOOL CALL:\n" + json.dumps(
                     {"call_id": call_id, "name": name, "arguments": arguments},
                     ensure_ascii=False,
                     separators=(",", ":"),
                 )
             )
+            rendered = _redact_data_uris(rendered)
+            conversation.append(rendered)
         elif item_type == "function_call_output":
             call_id = str(item.get("call_id") or "")
-            conversation.append(
-                f"TOOL RESULT ({call_id}):\n{_function_output_text(item.get('output'))}"
-            )
+            rendered = f"TOOL RESULT ({call_id}):\n{_function_output_text(item.get('output'))}"
+            conversation.append(rendered)
     if conversation:
         sections.append("CONVERSATION:\n" + "\n\n".join(conversation))
 
@@ -689,11 +750,122 @@ def _content_text(content: object) -> str:
 
 
 def _function_output_text(output: object) -> str:
-    if isinstance(output, str):
-        return output
-    if isinstance(output, (dict, list)):
-        return json.dumps(output, ensure_ascii=False, separators=(",", ":"))
-    return "" if output is None else str(output)
+    sanitized = _sanitize_context_value(output)
+    if isinstance(sanitized, str):
+        rendered = sanitized
+    elif isinstance(sanitized, (dict, list)):
+        rendered = json.dumps(sanitized, ensure_ascii=False, separators=(",", ":"))
+    else:
+        rendered = "" if sanitized is None else str(sanitized)
+    return rendered
+
+
+def _sanitize_context_value(value: object) -> object:
+    """Remove binary/image payloads before rendering Codex history as text."""
+    if isinstance(value, str):
+        return _redact_data_uris(value)
+    if isinstance(value, list):
+        return [_sanitize_context_value(item) for item in value]
+    if isinstance(value, dict):
+        part_type = str(value.get("type") or "").lower()
+        if part_type in {"input_image", "image", "output_image"}:
+            return f"[Image payload omitted: {part_type}]"
+        return {str(key): _sanitize_context_value(item) for key, item in value.items()}
+    return value
+
+
+def _redact_data_uris(text: str) -> str:
+    return _DATA_URI_RE.sub(lambda match: f"[Binary data URI omitted: {match.group(1)}]", text)
+
+
+def _extract_compact_user_messages(input_value: object) -> list[dict[str, Any]]:
+    """Mirror Codex/WebGPT compaction: retain only genuine user messages as checkpoint anchors."""
+    if not isinstance(input_value, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in input_value:
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("type")
+        if item_type not in {None, "message"} or item.get("role") != "user":
+            continue
+        blocks = _compact_content_blocks(item)
+        text = "".join(
+            str(block.get("text") or "")
+            for block in blocks
+            if _is_compact_text_block(block)
+        ).strip()
+        if re.fullmatch(r'<codex_internal_context source="[a-z][a-z0-9_]*">[\s\S]*</codex_internal_context>', text):
+            continue
+        if re.fullmatch(r"<goal_context>[\s\S]*</goal_context>", text):
+            continue
+        if text.startswith(_SUMMARY_PREFIX + "\n"):
+            continue
+        result.append(copy.deepcopy(item))
+    return result
+
+
+def _compact_content_blocks(item: Mapping[str, Any]) -> list[dict[str, Any]]:
+    content = item.get("content")
+    if isinstance(content, str):
+        return [{"type": "input_text", "text": content}]
+    if not isinstance(content, list):
+        return []
+    return [copy.deepcopy(block) for block in content if isinstance(block, dict)]
+
+
+def _is_compact_text_block(block: Mapping[str, Any]) -> bool:
+    return block.get("type") in {"input_text", "text"} and isinstance(block.get("text"), str)
+
+
+def _is_compact_image_block(block: Mapping[str, Any]) -> bool:
+    return block.get("type") == "input_image" and isinstance(block.get("image_url"), str)
+
+
+def _build_compact_v1_output(
+    user_messages: list[dict[str, Any]],
+    summary: str,
+    *,
+    max_images: int = 10,
+) -> list[dict[str, Any]]:
+    """Build the same replacement-history shape used by WebGPT/Codex v1 compaction."""
+    selected: list[dict[str, Any]] = []
+    remaining = _COMPACT_RETAINED_USER_CHAR_BUDGET
+    retained_images = 0
+    for source in reversed(user_messages):
+        if remaining <= 0 and retained_images >= max_images:
+            break
+        message = copy.deepcopy(source)
+        kept_reversed: list[dict[str, Any]] = []
+        for block in reversed(_compact_content_blocks(message)):
+            if _is_compact_image_block(block):
+                if retained_images < max_images:
+                    retained_images += 1
+                    kept_reversed.append(block)
+                continue
+            if not _is_compact_text_block(block) or remaining <= 0:
+                continue
+            text = str(block["text"])
+            if len(text) <= remaining:
+                remaining -= len(text)
+                kept_reversed.append({**block, "type": "input_text", "text": text})
+            else:
+                kept_reversed.append({**block, "type": "input_text", "text": text[-remaining:]})
+                remaining = 0
+        content = list(reversed(kept_reversed))
+        if content:
+            message["type"] = "message"
+            message["role"] = "user"
+            message["content"] = content
+            selected.append(message)
+    selected.reverse()
+    summary_text = f"{_SUMMARY_PREFIX}\n{summary}" if summary.strip() else "(no summary available)"
+    selected.append({
+        "type": "message",
+        "role": "user",
+        "content": [{"type": "input_text", "text": summary_text}],
+    })
+    return selected
 
 
 def _tool_tag_map(tool_names: Iterator[str] | list[str] | set[str] | tuple[str, ...]) -> dict[str, str]:

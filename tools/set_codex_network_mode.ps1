@@ -262,9 +262,29 @@ function New-GeminiModelCatalog {
         Set-ObjectProperty $model 'default_reasoning_summary' 'none'
         Set-ObjectProperty $model 'prefer_websockets' $false
         Set-ObjectProperty $model 'use_responses_lite' $false
-        $contextWindow = if ($isDeepSeekModel) { 128000 } else { 1000000 }
+        $contextWindow = if ($isDeepSeekModel -and $metadata -and $metadata.context_window) {
+            [int64]$metadata.context_window
+        } elseif ($isDeepSeekModel) {
+            1000000
+        } else {
+            1000000
+        }
         Set-ObjectProperty $model 'context_window' $contextWindow
         Set-ObjectProperty $model 'max_context_window' $contextWindow
+        if ($isDeepSeekModel) {
+            $autoCompactTokenLimit = if ($metadata -and $metadata.auto_compact_token_limit) {
+                [int64]$metadata.auto_compact_token_limit
+            } else {
+                [int64][math]::Floor($contextWindow * 0.9)
+            }
+            $effectiveContextWindowPercent = if ($metadata -and $metadata.effective_context_window_percent) {
+                [int]$metadata.effective_context_window_percent
+            } else {
+                [int][math]::Round(($autoCompactTokenLimit / $contextWindow) * 100)
+            }
+            Set-ObjectProperty $model 'auto_compact_token_limit' $autoCompactTokenLimit
+            Set-ObjectProperty $model 'effective_context_window_percent' $effectiveContextWindowPercent
+        }
         $metadataEfforts = @()
         if ($metadata) {
             $metadataEfforts = @($metadata.supported_reasoning_levels | Where-Object {

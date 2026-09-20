@@ -405,7 +405,9 @@ class NetworkModeScriptTests(unittest.TestCase):
             self.assertEqual(by_slug["gpt-5.6-sol"]["default_reasoning_summary"], "auto")
             self.assertFalse(by_slug["gemini-3.7-flash"]["supports_reasoning_summaries"])
             self.assertEqual(by_slug["gemini-3.7-flash"]["default_reasoning_summary"], "none")
-            self.assertEqual(by_slug["deepseek-web/chat"]["context_window"], 128000)
+            self.assertEqual(by_slug["deepseek-web/chat"]["context_window"], 1000000)
+            self.assertEqual(by_slug["deepseek-web/chat"]["auto_compact_token_limit"], 900000)
+            self.assertEqual(by_slug["deepseek-web/chat"]["effective_context_window_percent"], 90)
             self.assertIn("DeepSeek Web", by_slug["deepseek-web/chat"]["description"])
 
             native = self.run_mode(codex_home, "HybridNative", models)

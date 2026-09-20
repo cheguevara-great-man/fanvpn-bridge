@@ -312,7 +312,12 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                         relay_web_response(self, method, hybrid_path[len("/hybrid/v1"):], preloaded_body)
                         return
                     if is_deepseek_model(hybrid_payload.get("model")):
-                        self._handle_deepseek_payload(server, hybrid_payload, request_id)
+                        self._handle_deepseek_payload(
+                            server,
+                            hybrid_payload,
+                            request_id,
+                            compact=hybrid_path.endswith("/responses/compact"),
+                        )
                         return
                     try:
                         hybrid_payload = clean_web_history(hybrid_payload)
@@ -1234,7 +1239,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             if path.endswith("/v1/models") and method == "GET":
                 self._send_json(200, provider.models_response())
                 return
-            if not path.endswith("/v1/responses"):
+            if not (path.endswith("/v1/responses") or path.endswith("/v1/responses/compact")):
                 self._discard_small_rejected_body()
                 self._send_json(404, {"error": {"code": "not_found"}})
                 return
@@ -1350,7 +1355,12 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 raise DeepSeekHarnessError("Responses request must be valid JSON", status=400) from exc
             if not isinstance(payload, dict):
                 raise DeepSeekHarnessError("Responses request must be a JSON object", status=400)
-            self._handle_deepseek_payload(server, payload, request_id)
+            self._handle_deepseek_payload(
+                server,
+                payload,
+                request_id,
+                compact=path.endswith("/v1/responses/compact"),
+            )
         except DeepSeekHarnessError as error:
             self._send_json(
                 error.status,
@@ -1362,6 +1372,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         server: BridgeHTTPServer,
         payload: dict[str, object],
         request_id: str,
+        *,
+        compact: bool = False,
     ) -> None:
         provider = server.deepseek_harness
         if provider is None:
@@ -1369,6 +1381,9 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             return
         headers_sent = False
         try:
+            if compact:
+                self._send_json(200, provider.compact(payload))
+                return
             streaming, result = provider.responses(payload)
             if not streaming:
                 self._send_json(200, result)
