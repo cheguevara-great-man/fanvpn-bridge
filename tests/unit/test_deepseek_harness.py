@@ -45,6 +45,7 @@ class DeepSeekHarnessTests(unittest.TestCase):
         self.assertIn('"name":"read_file"', prompt)
         self.assertIn("Codex, not you, executes tools", prompt)
         self.assertIn("<codex_tool_call>", prompt)
+        self.assertIn("Do not use DSML", prompt)
 
     def test_deepseek_stream_separates_thinking_from_answer(self) -> None:
         raw = (
@@ -86,6 +87,42 @@ class DeepSeekHarnessTests(unittest.TestCase):
             ],
         )
         self.assertIsNone(_parse_tool_calls(text, {"read_file"}))
+
+    def test_dsml_exec_command_is_normalized_instead_of_leaking_as_text(self) -> None:
+        text = (
+            '<锝滐綔DSML锝滐綔 calls>\n'
+            '<锝滐綔DSML锝滐綔 invoke name="exec_command">\n'
+            '<锝滐綔DSML锝滐綔 parameter name="cmd" string="true">Get-Content a.txt</锝滐綔DSML锝滐綔 parameter>\n'
+            '<锝滐綔DSML锝滐綔 parameter name="workdir" string="true">C:\\tmp</锝滐綔DSML锝滐綔 parameter>\n'
+            '<锝滐綔DSML锝滐綔 parameter name="max_output_tokens" string="false">3000</锝滐綔DSML锝滐綔 parameter>\n'
+            '</锝滐綔DSML锝滐綔 invoke>\n'
+            '</锝滐綔DSML锝滐綔 calls>'
+        )
+        self.assertEqual(
+            _parse_tool_calls(text, {"exec_command"}),
+            [
+                {
+                    "name": "exec_command",
+                    "arguments": {
+                        "cmd": "Get-Content a.txt",
+                        "workdir": "C:\\tmp",
+                        "max_output_tokens": 3000,
+                    },
+                }
+            ],
+        )
+        self.assertIsNone(_parse_tool_calls(text, {"read_file"}))
+
+    def test_ascii_dsml_tool_call_is_also_normalized(self) -> None:
+        text = (
+            '<|DSML| invoke name="read_file">'
+            '<|DSML| parameter name="path" string="true">a&amp;b.py</|DSML| parameter>'
+            '</|DSML| invoke>'
+        )
+        self.assertEqual(
+            _parse_tool_calls(text, {"read_file"}),
+            [{"name": "read_file", "arguments": {"path": "a&b.py"}}],
+        )
 
     def test_pow_response_matches_deepseek_web_shape(self) -> None:
         encoded = _encode_pow_response(

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import html
 import http.client
 import json
 import re
@@ -19,6 +20,11 @@ _POW_PATH = "/api/v0/chat/create_pow_challenge"
 _MAX_UPSTREAM_BODY = 8 * 1024 * 1024
 _TOOL_CALL_RE = re.compile(
     r"<codex_tool_call>\s*(\{.*?\})\s*</codex_tool_call>",
+    re.DOTALL | re.IGNORECASE,
+)
+_DSML_INVOKE_RE = re.compile(
+    r'<(?P<marker>[^<>\s]*DSML[^<>\s]*)\s+invoke\s+name=(?P<quote>["\'])(?P<name>.*?)(?P=quote)\s*>'
+    r'(?P<body>.*?)</(?P=marker)\s+invoke\s*>',
     re.DOTALL | re.IGNORECASE,
 )
 
@@ -308,6 +314,7 @@ def _responses_to_deepseek_prompt(payload: Mapping[str, Any]) -> str:
             "The JSON object must always have exactly the outer fields `name` and `arguments`; "
             "put tool parameters such as `cmd`, `workdir`, and `max_output_tokens` inside `arguments`, never at the top level. "
             "Use only listed tool names and valid JSON arguments. Never invent a tool result. "
+            "Do not use DSML, function-call XML, or any other internal tool syntax; only use codex_tool_call blocks. "
             "After Codex returns TOOL RESULT in a later turn, continue the task normally. "
             "If no tool is required, answer normally and never emit codex_tool_call tags."
         )
@@ -464,7 +471,7 @@ def _route_fragment_text(value: str, fragment_type: str) -> tuple[str, str]:
 def _parse_tool_calls(text: str, available_tools: set[str]) -> list[dict[str, Any]] | None:
     matches = list(_TOOL_CALL_RE.finditer(text))
     if not matches:
-        return None
+        return _parse_dsml_tool_calls(text, available_tools)
     calls: list[dict[str, Any]] = []
     for match in matches:
         try:
@@ -490,6 +497,43 @@ def _parse_tool_calls(text: str, available_tools: set[str]) -> list[dict[str, An
             arguments = value
         if not isinstance(name, str) or name not in available_tools or not isinstance(arguments, dict):
             return None
+        calls.append({"name": name, "arguments": arguments})
+    return calls or None
+
+
+def _parse_dsml_tool_calls(text: str, available_tools: set[str]) -> list[dict[str, Any]] | None:
+    """Normalize DeepSeek's occasional internal DSML tool syntax into Codex calls."""
+    matches = list(_DSML_INVOKE_RE.finditer(text))
+    if not matches:
+        return None
+    calls: list[dict[str, Any]] = []
+    for match in matches:
+        name = html.unescape(match.group("name"))
+        if name not in available_tools:
+            return None
+        marker = re.escape(match.group("marker"))
+        parameter_re = re.compile(
+            rf'<{marker}\s+parameter\s+name=(?P<quote>["\'])(?P<name>.*?)(?P=quote)'
+            rf'(?:\s+string=(?P<string_quote>["\'])(?P<string>true|false)(?P=string_quote))?\s*>'
+            rf'(?P<value>.*?)</{marker}\s+parameter\s*>',
+            re.DOTALL | re.IGNORECASE,
+        )
+        arguments: dict[str, Any] = {}
+        body = match.group("body")
+        parameter_matches = list(parameter_re.finditer(body))
+        if not parameter_matches:
+            return None
+        for parameter in parameter_matches:
+            key = html.unescape(parameter.group("name"))
+            raw_value = html.unescape(parameter.group("value"))
+            if parameter.group("string") is None or parameter.group("string").lower() == "true":
+                value: Any = raw_value
+            else:
+                try:
+                    value = json.loads(raw_value)
+                except json.JSONDecodeError:
+                    return None
+            arguments[key] = value
         calls.append({"name": name, "arguments": arguments})
     return calls or None
 
