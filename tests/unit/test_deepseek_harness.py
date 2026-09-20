@@ -10,6 +10,7 @@ from fanvpn_bridge.deepseek_harness import (
     _encode_pow_response,
     _parse_deepseek_stream,
     _parse_tool_calls,
+    _tool_call_protocol_error,
     _responses_events,
     _responses_to_deepseek_prompt,
 )
@@ -111,6 +112,22 @@ class DeepSeekHarnessTests(unittest.TestCase):
     def test_direct_tool_tag_requires_valid_json_object(self) -> None:
         self.assertIsNone(_parse_tool_calls('<exec_command>{"cmd":BROKEN}</exec_command>', {"exec_command"}))
         self.assertIsNone(_parse_tool_calls('<exec_command>["not-an-object"]</exec_command>', {"exec_command"}))
+        self.assertIn(
+            "invalid JSON arguments",
+            _tool_call_protocol_error('<exec_command>{"cmd":"say "hello""}</exec_command>', {"exec_command"}) or "",
+        )
+        self.assertIn(
+            "one JSON object",
+            _tool_call_protocol_error('<exec_command>["not-an-object"]</exec_command>', {"exec_command"}) or "",
+        )
+        self.assertIn(
+            "invalid JSON arguments",
+            _tool_call_protocol_error(
+                '<exec_command>{"cmd":"ok"}</exec_command>\n'
+                '<exec_command>{"cmd":"say "broken""}</exec_command>',
+                {"exec_command"},
+            ) or "",
+        )
 
     def test_legacy_codex_tool_call_remains_backward_compatible(self) -> None:
         text = '<codex_tool_call>{"name":"read_file","arguments":{"path":"a.py"}}</codex_tool_call>'
@@ -290,6 +307,75 @@ class DeepSeekHarnessTests(unittest.TestCase):
         self.assertEqual(completion["model_type"], "default")
         pow_value = json.loads(base64.b64decode(provider.requests[-1][3]["x-ds-pow-response"]))
         self.assertEqual(pow_value["answer"], 23)
+
+    def test_provider_recovers_invalid_direct_tool_json_with_continuation(self) -> None:
+        class FakeProvider(DeepSeekHarnessProvider):
+            def __init__(self):
+                super().__init__(pow_solver=lambda _challenge: 1)
+                self.requests = []
+                self.completion_count = 0
+
+            def _request(self, method, upstream_path, body, headers):
+                self.requests.append((method, upstream_path, body, dict(headers)))
+                if upstream_path.endswith("chat_session/create"):
+                    return 200, {}, json.dumps({
+                        "data": {"biz_code": 0, "biz_data": {"chat_session": {"id": "session-1"}}}
+                    }).encode()
+                if upstream_path.endswith("create_pow_challenge"):
+                    return 200, {}, json.dumps({
+                        "data": {
+                            "biz_code": 0,
+                            "biz_data": {
+                                "challenge": {
+                                    "algorithm": "DeepSeekHashV1",
+                                    "challenge": "a" * 64,
+                                    "salt": "salt",
+                                    "difficulty": 1,
+                                    "signature": "signature",
+                                    "expire_at": 12345,
+                                }
+                            },
+                        }
+                    }).encode()
+                self.completion_count += 1
+                if self.completion_count == 1:
+                    message_id = "message-bad"
+                    answer = '<exec_command>{"cmd":"echo "hello""}</exec_command>'
+                else:
+                    message_id = "message-good"
+                    answer = '<exec_command>{"cmd":"echo \\"hello\\""}</exec_command>'
+                escaped = json.dumps(answer)
+                return 200, {"content-type": "text/event-stream"}, (
+                    f'data: {{"p":"response/message_id","v":"{message_id}"}}\n\n'
+                    f'data: {{"p":"response/fragments","o":"APPEND","v":'
+                    f'[{{"type":"RESPONSE","content":{escaped}}}]}}\n\n'
+                    'data: {"p":"response/status","v":"FINISHED"}\n\n'
+                ).encode()
+
+        provider = FakeProvider()
+        _streaming, response = provider.responses({
+            "model": "deepseek-web/chat",
+            "input": "run it",
+            "tools": [{
+                "type": "function",
+                "name": "exec_command",
+                "description": "Run a command",
+                "parameters": {"type": "object", "properties": {"cmd": {"type": "string"}}},
+            }],
+        })
+        self.assertEqual(response["output"][0]["type"], "function_call")
+        self.assertEqual(response["output"][0]["name"], "exec_command")
+        self.assertEqual(json.loads(response["output"][0]["arguments"]), {"cmd": 'echo "hello"'})
+        completions = [
+            json.loads(body)
+            for _method, path, body, _headers in provider.requests
+            if path.endswith("/chat/completion")
+        ]
+        self.assertEqual(len(completions), 2)
+        self.assertIsNone(completions[0]["parent_message_id"])
+        self.assertEqual(completions[1]["parent_message_id"], "message-bad")
+        self.assertIn("TOOL CALL FORMAT ERROR", completions[1]["prompt"])
+        self.assertIn("invalid JSON arguments", completions[1]["prompt"])
 
     def test_provider_uses_web_history_to_keep_thinking_out_of_final_answer(self) -> None:
         class FakeProvider(DeepSeekHarnessProvider):

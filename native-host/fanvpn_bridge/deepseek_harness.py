@@ -154,57 +154,80 @@ class DeepSeekHarnessProvider:
             else:
                 prompt = _responses_to_deepseek_prompt(payload, input_items=delta_items, include_control=False)
 
-            challenge = self._create_pow_challenge()
-            try:
-                answer = self._pow_solver(challenge)
-            except Exception as exc:
-                raise DeepSeekHarnessError(
-                    f"DeepSeek proof of work failed: {exc}",
-                    code="deepseek_pow_failed",
-                ) from exc
-            pow_header = _encode_pow_response(challenge, answer)
             reasoning = payload.get("reasoning")
             effort = str(reasoning.get("effort") or "").lower() if isinstance(reasoning, dict) else ""
             reasoner = model.endswith("/reasoner")
-            completion = {
-                "chat_session_id": state.session_id,
-                "parent_message_id": state.parent_message_id,
-                "model_type": "expert" if reasoner else "default",
-                "prompt": prompt,
-                "ref_file_ids": [],
-                "thinking_enabled": reasoner or effort in {"low", "medium", "high"},
-                "search_enabled": False,
-                "action": None,
-                "preempt": False,
-            }
-            status, _headers, raw = self._request(
-                "POST",
-                _COMPLETION_PATH,
-                json.dumps(completion, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
-                {
-                    "accept": "text/event-stream",
-                    "content-type": "application/json",
-                    "x-ds-pow-response": pow_header,
-                },
-            )
-            self._raise_for_status(status, raw, "completion")
-            answer_text, _reasoning_text = _parse_deepseek_stream(raw)
-            response_message_id = _deepseek_response_message_id(raw)
-            if completion["thinking_enabled"] and response_message_id is not None:
-                history_turn = self._history_turn(state.session_id, response_message_id)
-                if history_turn is not None and history_turn[1].strip():
-                    response_message_id, answer_text, _reasoning_text = history_turn
-            if not answer_text.strip():
-                raise DeepSeekHarnessError(
-                    "DeepSeek Web completed without an answer. Its web stream format may have changed.",
-                    code="deepseek_empty_response",
-                )
             available_tools = {
                 str(item.get("name"))
                 for item in payload.get("tools") or []
                 if isinstance(item, dict) and item.get("type") == "function" and item.get("name")
             }
-            tool_calls = _parse_tool_calls(answer_text, available_tools)
+            thinking_enabled = reasoner or effort in {"low", "medium", "high"}
+            current_prompt = prompt
+            parent_message_id = state.parent_message_id
+            answer_text = ""
+            response_message_id: str | int | None = None
+            tool_calls: list[dict[str, Any]] | None = None
+            for recovery_attempt in range(3):
+                challenge = self._create_pow_challenge()
+                try:
+                    answer = self._pow_solver(challenge)
+                except Exception as exc:
+                    raise DeepSeekHarnessError(
+                        f"DeepSeek proof of work failed: {exc}",
+                        code="deepseek_pow_failed",
+                    ) from exc
+                pow_header = _encode_pow_response(challenge, answer)
+                completion = {
+                    "chat_session_id": state.session_id,
+                    "parent_message_id": parent_message_id,
+                    "model_type": "expert" if reasoner else "default",
+                    "prompt": current_prompt,
+                    "ref_file_ids": [],
+                    "thinking_enabled": thinking_enabled,
+                    "search_enabled": False,
+                    "action": None,
+                    "preempt": False,
+                }
+                status, _headers, raw = self._request(
+                    "POST",
+                    _COMPLETION_PATH,
+                    json.dumps(completion, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+                    {
+                        "accept": "text/event-stream",
+                        "content-type": "application/json",
+                        "x-ds-pow-response": pow_header,
+                    },
+                )
+                self._raise_for_status(status, raw, "completion")
+                answer_text, _reasoning_text = _parse_deepseek_stream(raw)
+                response_message_id = _deepseek_response_message_id(raw)
+                if thinking_enabled and response_message_id is not None:
+                    history_turn = self._history_turn(state.session_id, response_message_id)
+                    if history_turn is not None and history_turn[1].strip():
+                        response_message_id, answer_text, _reasoning_text = history_turn
+                if not answer_text.strip():
+                    raise DeepSeekHarnessError(
+                        "DeepSeek Web completed without an answer. Its web stream format may have changed.",
+                        code="deepseek_empty_response",
+                    )
+                tool_calls = _parse_tool_calls(answer_text, available_tools)
+                protocol_error = None if tool_calls is not None else _tool_call_protocol_error(answer_text, available_tools)
+                if protocol_error is None:
+                    break
+                if recovery_attempt == 2:
+                    raise DeepSeekHarnessError(
+                        f"DeepSeek Web repeatedly emitted an invalid tool call: {protocol_error}",
+                        code="deepseek_tool_call_invalid",
+                    )
+                if response_message_id is None:
+                    raise DeepSeekHarnessError(
+                        f"DeepSeek Web emitted an invalid tool call and no continuation id: {protocol_error}",
+                        code="deepseek_tool_call_invalid",
+                    )
+                parent_message_id = response_message_id
+                current_prompt = _tool_call_recovery_prompt(protocol_error)
+
             events = list(_responses_events(model, answer_text if tool_calls is None else "", tool_calls or []))
             completed = _last_completed_response(events)
 
@@ -872,6 +895,50 @@ def _parse_tool_calls(text: str, available_tools: set[str]) -> list[dict[str, An
             return None
         calls.append({"name": name, "arguments": arguments})
     return calls or None
+
+
+def _tool_call_protocol_error(text: str, available_tools: set[str]) -> str | None:
+    """Describe malformed tool syntax so DeepSeek can correct it on a continuation turn."""
+    if not available_tools:
+        return None
+    tag_map = _tool_tag_map(available_tools)
+    for tool_name, tag_name in tag_map.items():
+        opening = f"<{tag_name}>"
+        closing = f"</{tag_name}>"
+        search_from = 0
+        while True:
+            open_at = text.find(opening, search_from)
+            if open_at < 0:
+                break
+            start = open_at + len(opening)
+            end = text.find(closing, start)
+            if end < 0:
+                return f"tool {tool_name!r} is missing its exact closing tag {closing}"
+            raw = text[start:end].strip()
+            try:
+                arguments = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                return (
+                    f"tool {tool_name!r} has invalid JSON arguments at character {exc.pos}: {exc.msg}. "
+                    "Quotes inside JSON string values must be escaped as \\.\"."
+                )
+            if not isinstance(arguments, dict):
+                return f"tool {tool_name!r} arguments must be one JSON object"
+            search_from = end + len(closing)
+    if "<codex_tool_call>" in text.lower():
+        return "the legacy <codex_tool_call> wrapper is not allowed; use the tool's direct XML tag"
+    return None
+
+
+def _tool_call_recovery_prompt(error: str) -> str:
+    return (
+        "TOOL CALL FORMAT ERROR:\n"
+        f"Your previous RESPONSE could not be executed: {error}\n"
+        "Re-emit the intended tool call(s) now. Output ONLY the corrected direct tool XML block(s), with no explanation. "
+        "Use the exact per-tool tag names and put one valid JSON object in each tag body. "
+        "Escape every double quote that occurs inside a JSON string value as \\.\". "
+        "Do not use <codex_tool_call>, <invoke>, <tool_call>, DSML, Markdown fences, or any wrapper object."
+    )
 
 
 def _parse_direct_tool_calls(text: str, available_tools: set[str]) -> list[dict[str, Any]] | None:
