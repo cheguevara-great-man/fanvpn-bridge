@@ -17,6 +17,7 @@ from typing import Any
 
 DEEPSEEK_PREFIX = "deepseek-web/"
 _COMPLETION_PATH = "/api/v0/chat/completion"
+_HISTORY_PATH = "/api/v0/chat/history_messages"
 _CREATE_SESSION_PATH = "/api/v0/chat_session/create"
 _POW_PATH = "/api/v0/chat/create_pow_challenge"
 _MAX_UPSTREAM_BODY = 8 * 1024 * 1024
@@ -187,6 +188,11 @@ class DeepSeekHarnessProvider:
             )
             self._raise_for_status(status, raw, "completion")
             answer_text, _reasoning_text = _parse_deepseek_stream(raw)
+            response_message_id = _deepseek_response_message_id(raw)
+            if completion["thinking_enabled"] and response_message_id is not None:
+                history_turn = self._history_turn(state.session_id, response_message_id)
+                if history_turn is not None and history_turn[1].strip():
+                    response_message_id, answer_text, _reasoning_text = history_turn
             if not answer_text.strip():
                 raise DeepSeekHarnessError(
                     "DeepSeek Web completed without an answer. Its web stream format may have changed.",
@@ -201,7 +207,7 @@ class DeepSeekHarnessProvider:
             events = list(_responses_events(model, answer_text if tool_calls is None else "", tool_calls or []))
             completed = _last_completed_response(events)
 
-            state.parent_message_id = _deepseek_response_message_id(raw)
+            state.parent_message_id = response_message_id
             state.control_signature = control_signature
             state.last_response_id = str(completed.get("id") or "") or None
             state.represented_items = (
@@ -219,6 +225,65 @@ class DeepSeekHarnessProvider:
                 state = _DeepSeekConversationState()
                 self._conversation_states[key] = state
             return state
+
+    def _history_turn(
+        self,
+        session_id: str | None,
+        response_message_id: str | int,
+    ) -> tuple[str | int, str, str] | None:
+        if not session_id:
+            return None
+        query = urllib.parse.urlencode({"chat_session_id": session_id})
+        try:
+            status, _headers, raw = self._request(
+                "GET",
+                f"{_HISTORY_PATH}?{query}",
+                None,
+                {"accept": "application/json"},
+            )
+        except DeepSeekHarnessError:
+            return None
+        if not 200 <= status < 300:
+            return None
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+        biz = data.get("biz_data") if isinstance(data, dict) and isinstance(data.get("biz_data"), dict) else data
+        messages = biz.get("chat_messages") if isinstance(biz, dict) else None
+        if not isinstance(messages, list):
+            return None
+
+        expected = str(response_message_id)
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            message_id = message.get("message_id", message.get("id"))
+            if message_id is None or str(message_id) != expected:
+                continue
+            fragments = message.get("fragments")
+            if not isinstance(fragments, list):
+                return None
+            answer: list[str] = []
+            reasoning: list[str] = []
+            for fragment in fragments:
+                if not isinstance(fragment, dict):
+                    continue
+                content = fragment.get("content")
+                if not isinstance(content, str):
+                    content = fragment.get("text")
+                if not isinstance(content, str) or not content:
+                    continue
+                fragment_type = str(fragment.get("type") or "").upper()
+                if fragment_type == "THINK":
+                    reasoning.append(content)
+                elif fragment_type == "RESPONSE":
+                    answer.append(content)
+            return message_id, "".join(answer), "".join(reasoning)
+        return None
 
     def _create_session(self) -> str:
         status, _headers, raw = self._request(
@@ -639,7 +704,7 @@ def _split_deepseek_text(parsed: object, state: dict[str, Any]) -> tuple[str, st
 
     path = parsed.get("p")
     value = parsed.get("v")
-    if path == "response/fragments" and parsed.get("o") == "APPEND" and isinstance(value, list):
+    if isinstance(path, str) and path.endswith("/fragments") and parsed.get("o") == "APPEND" and isinstance(value, list):
         types = [str(item.get("type") or "RESPONSE") if isinstance(item, dict) else "RESPONSE" for item in value]
         state["types"].extend(types)
         state["current"] = len(state["types"]) - 1

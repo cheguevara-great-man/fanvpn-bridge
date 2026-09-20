@@ -229,6 +229,67 @@ class DeepSeekHarnessTests(unittest.TestCase):
         pow_value = json.loads(base64.b64decode(provider.requests[-1][3]["x-ds-pow-response"]))
         self.assertEqual(pow_value["answer"], 23)
 
+    def test_provider_uses_web_history_to_keep_thinking_out_of_final_answer(self) -> None:
+        class FakeProvider(DeepSeekHarnessProvider):
+            def __init__(self):
+                super().__init__(pow_solver=lambda _challenge: 1)
+
+            def _request(self, method, upstream_path, body, headers):
+                if upstream_path.endswith("chat_session/create"):
+                    return 200, {}, json.dumps({
+                        "data": {"biz_code": 0, "biz_data": {"chat_session": {"id": "session-1"}}}
+                    }).encode()
+                if upstream_path.endswith("create_pow_challenge"):
+                    return 200, {}, json.dumps({
+                        "data": {
+                            "biz_code": 0,
+                            "biz_data": {
+                                "challenge": {
+                                    "algorithm": "DeepSeekHashV1",
+                                    "challenge": "a" * 64,
+                                    "salt": "salt",
+                                    "difficulty": 1,
+                                    "signature": "signature",
+                                    "expire_at": 12345,
+                                }
+                            },
+                        }
+                    }).encode()
+                if upstream_path.startswith("/api/v0/chat/history_messages?"):
+                    return 200, {}, json.dumps({
+                        "data": {
+                            "biz_code": 0,
+                            "biz_data": {
+                                "chat_messages": [{
+                                    "message_id": 20,
+                                    "role": "ASSISTANT",
+                                    "fragments": [
+                                        {"type": "THINK", "content": "private planning"},
+                                        {"type": "RESPONSE", "content": "visible answer"},
+                                        {"type": "TIP", "content": "AI generated"},
+                                    ],
+                                }]
+                            },
+                        }
+                    }).encode()
+                return 200, {"content-type": "text/event-stream"}, (
+                    'event: ready\n'
+                    'data: {"response_message_id":20,"model_type":"default"}\n\n'
+                    'data: {"v":"private planning"}\n\n'
+                    'data: {"p":"response/fragments","o":"APPEND","v":'
+                    '[{"type":"RESPONSE","content":"visible answer"}]}\n\n'
+                    'data: {"p":"response/status","v":"FINISHED"}\n\n'
+                ).encode()
+
+        provider = FakeProvider()
+        streaming, response = provider.responses({
+            "model": "deepseek-web/chat",
+            "reasoning": {"effort": "high"},
+            "input": "answer me",
+        })
+        self.assertFalse(streaming)
+        self.assertEqual(response["output"][0]["content"][0]["text"], "visible answer")
+
     def test_provider_reuses_same_deepseek_session_and_sends_only_new_turn(self) -> None:
         class FakeProvider(DeepSeekHarnessProvider):
             def __init__(self):
