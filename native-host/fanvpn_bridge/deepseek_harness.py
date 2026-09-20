@@ -196,6 +196,14 @@ class DeepSeekHarnessProvider:
                     history_turn = self._history_turn(state.session_id, response_message_id)
                     if history_turn is not None and history_turn[1].strip():
                         response_message_id, answer_text, _reasoning_text = history_turn
+                    elif not answer_text.strip():
+                        deadline = time.monotonic() + 30.0
+                        while time.monotonic() < deadline:
+                            time.sleep(0.25)
+                            history_turn = self._history_turn(state.session_id, response_message_id)
+                            if history_turn is not None and history_turn[1].strip():
+                                response_message_id, answer_text, _reasoning_text = history_turn
+                                break
                 if not answer_text.strip():
                     raise DeepSeekHarnessError(
                         "DeepSeek Web completed without an answer. Its web stream format may have changed.",
@@ -269,23 +277,48 @@ class DeepSeekHarnessProvider:
         if not isinstance(payload, dict):
             return None
         data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
-        biz = data.get("biz_data") if isinstance(data, dict) and isinstance(data.get("biz_data"), dict) else data
-        messages = biz.get("chat_messages") if isinstance(biz, dict) else None
+        if isinstance(data, dict) and isinstance(data.get("biz_data"), dict):
+            biz = data["biz_data"]
+        elif isinstance(data, dict) and isinstance(data.get("bizData"), dict):
+            biz = data["bizData"]
+        else:
+            biz = data
+        messages = None
+        if isinstance(biz, dict):
+            messages = biz.get("chat_messages")
+            if not isinstance(messages, list):
+                messages = biz.get("chatMessages")
         if not isinstance(messages, list):
             return None
 
         expected = str(response_message_id)
+        selected: dict[str, Any] | None = None
+        normalized: list[dict[str, Any]] = []
         for message in messages:
             if not isinstance(message, dict):
                 continue
-            message_id = message.get("message_id", message.get("id"))
-            if message_id is None or str(message_id) != expected:
+            message_id = message.get("message_id", message.get("id", message.get("uuid")))
+            if message_id is None:
                 continue
-            fragments = message.get("fragments")
-            if not isinstance(fragments, list):
-                return None
-            answer: list[str] = []
-            reasoning: list[str] = []
+            normalized.append(message)
+            if str(message_id) == expected:
+                selected = message
+        if selected is None and normalized:
+            for message in reversed(normalized):
+                role = str(message.get("message_role", message.get("role", ""))).lower()
+                if role != "user":
+                    selected = message
+                    break
+            if selected is None:
+                selected = normalized[-1]
+        if selected is None:
+            return None
+
+        message_id = selected.get("message_id", selected.get("id", selected.get("uuid")))
+        fragments = selected.get("fragments")
+        answer: list[str] = []
+        reasoning: list[str] = []
+        if isinstance(fragments, list):
             for fragment in fragments:
                 if not isinstance(fragment, dict):
                     continue
@@ -294,13 +327,18 @@ class DeepSeekHarnessProvider:
                     content = fragment.get("text")
                 if not isinstance(content, str) or not content:
                     continue
-                fragment_type = str(fragment.get("type") or "").upper()
+                fragment_type = str(fragment.get("type") or "RESPONSE").upper()
                 if fragment_type == "THINK":
                     reasoning.append(content)
-                elif fragment_type == "RESPONSE":
+                elif fragment_type in {"RESPONSE", "TOOL"}:
                     answer.append(content)
-            return message_id, "".join(answer), "".join(reasoning)
-        return None
+        if not answer:
+            for key in ("content", "text", "markdown"):
+                value = selected.get(key)
+                if isinstance(value, str) and value:
+                    answer.append(value)
+                    break
+        return message_id, "".join(answer), "".join(reasoning)
 
     def _create_session(self) -> str:
         status, _headers, raw = self._request(
@@ -511,13 +549,18 @@ def _deepseek_response_message_id(raw: bytes) -> str | int | None:
 
         path = value.get("p")
         event_value = value.get("v")
-        if path in {"response/message_id", "response/response_message_id", "response/id"}:
+        if isinstance(path, str) and (
+            path in {"response/message_id", "response/response_message_id", "response/id"}
+            or "response_message_id" in path
+            or "responseMessageId" in path
+        ):
             if isinstance(event_value, (str, int)):
                 return event_value
 
-        direct = value.get("response_message_id")
-        if isinstance(direct, (str, int)):
-            return direct
+        for key in ("response_message_id", "responseMessageId"):
+            direct = value.get(key)
+            if isinstance(direct, (str, int)):
+                return direct
 
         response = value.get("response")
         if isinstance(response, dict):
@@ -526,7 +569,7 @@ def _deepseek_response_message_id(raw: bytes) -> str | int | None:
                 if isinstance(candidate, (str, int)):
                     return candidate
 
-        if value.get("o") == "BATCH" and isinstance(event_value, list):
+        if isinstance(event_value, list):
             return from_event(event_value)
         if isinstance(event_value, dict):
             return from_event(event_value)
