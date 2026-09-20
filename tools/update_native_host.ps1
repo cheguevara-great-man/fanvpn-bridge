@@ -54,6 +54,33 @@ function Restore-DirectProxy {
     }
 }
 
+function Stop-StaleTargetSlotProcesses {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BuildDirectory
+    )
+
+    $normalizedBuild = [System.IO.Path]::GetFullPath($BuildDirectory).TrimEnd('\')
+    $staleProcesses = @(
+        Get-CimInstance Win32_Process -Filter "Name = 'browser-ai-bridge.exe'" -ErrorAction SilentlyContinue |
+            Where-Object {
+                if (-not $_.ExecutablePath) { return $false }
+                $exeDirectory = [System.IO.Path]::GetFullPath((Split-Path -Parent ([string]$_.ExecutablePath))).TrimEnd('\')
+                $exeDirectory.Equals($normalizedBuild, [System.StringComparison]::OrdinalIgnoreCase)
+            }
+    )
+
+    foreach ($staleProcess in $staleProcesses) {
+        $processId = [int]$staleProcess.ProcessId
+        $processHandle = Get-Process -Id $processId -ErrorAction SilentlyContinue
+        if (-not $processHandle) { continue }
+
+        Stop-Process -Id $processId -Force -ErrorAction Stop
+        [void]$processHandle.WaitForExit(5000)
+        Write-Host "Stopped stale Native Host PID $processId from target slot before rebuild."
+    }
+}
+
 if ($registryWasPresent) {
     try {
         $previousManifestPath = Get-ItemPropertyValue -LiteralPath $registryPath -Name '(default)'
@@ -128,6 +155,14 @@ if (-not $Python) {
 $Python = [System.IO.Path]::GetFullPath($Python)
 
 if (-not $Rollback) {
+    # The registry can already point at the opposite A/B slot while Chrome still
+    # keeps a Native Messaging process from this target slot alive.  PyInstaller
+    # cannot clean an output directory whose DLLs are loaded by that stale
+    # process, so release only processes whose executable lives in the inactive
+    # slot we are about to rebuild.  Never stop the currently registered slot.
+    if (-not $activeBuild -or -not $activeBuild.Equals($targetBuild, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Stop-StaleTargetSlotProcesses -BuildDirectory $targetBuild
+    }
     $buildParameters = @{ DistRoot = $targetRoot; Python = $Python }
     if ($SkipToolInstall) { $buildParameters.SkipToolInstall = $true }
     & (Join-Path $PSScriptRoot 'build_native_host.ps1') @buildParameters
