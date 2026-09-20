@@ -194,6 +194,7 @@ export class ChatGptMarkdownBuffer {
   constructor(
     private readonly transform: (markdown: string) => string = markdown => markdown,
     private readonly stabilityMs = 750,
+    private readonly deferUntilComplete = false,
   ) {
     if (!Number.isFinite(stabilityMs) || stabilityMs < 0) {
       throw new Error("ChatGPT Markdown stability window must be a non-negative finite number");
@@ -201,6 +202,29 @@ export class ChatGptMarkdownBuffer {
   }
 
   observe(segments: ChatGptMarkdownSegment[], now = Date.now()): string {
+    if (this.deferUntilComplete) {
+      // DOM stability is not an immutable text boundary. Keep the observed suffix
+      // editable until the browser's completion fence accepts the whole answer.
+      // Preserve an earlier, virtualized prefix using semantic source positions.
+      const first = segments[0];
+      if (!first) return "";
+      let prefixLength = 0;
+      if (first.sourceStart !== undefined) {
+        while (prefixLength < this.latest.length) {
+          const prior = this.latest[prefixLength]!;
+          if (prior.sourceEnd === undefined || prior.sourceEnd >= first.sourceStart) break;
+          prefixLength += 1;
+        }
+      } else {
+        const firstIndex = this.latest.findIndex(prior => prior.key === first.key);
+        if (firstIndex >= 0) prefixLength = firstIndex;
+      }
+      this.latest = [
+        ...this.latest.slice(0, prefixLength),
+        ...segments.map(segment => ({ ...segment })),
+      ];
+      return "";
+    }
     const reconciled = this.reconcile(segments);
     if (reconciled instanceof ChatGptMarkdownConsistencyError) {
       this.consistencyError = reconciled;

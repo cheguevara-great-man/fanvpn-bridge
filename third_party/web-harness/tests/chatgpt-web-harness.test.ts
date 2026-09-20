@@ -1747,6 +1747,38 @@ describe("ChatGPT outer-native harness v4", () => {
       .toBe("Ordinary \\[brackets\\] stay escaped");
   });
 
+  test("defers answer deltas until completion so late same-length rewrites remain editable", () => {
+    const buffer = new ChatGptMarkdownBuffer(undefined, 0, true);
+    const first = { key: "0:p", tag: "p", sourceStart: 0, sourceEnd: 10,
+      html: "<p>Old answer</p>", text: "Old answer", streamable: true };
+    const tail = { key: "12:p", tag: "p", sourceStart: 12, sourceEnd: 20,
+      html: "<p>Tail</p>", text: "Tail", streamable: false };
+    expect(buffer.observe([first, tail], 0)).toBe("");
+    expect(buffer.observe([first, tail], 5000)).toBe("");
+    expect(buffer.observe([{ ...first, html: "<p>New answer</p>", text: "New answer" }, tail], 6000)).toBe("");
+    expect(buffer.finish()).toEqual({ markdown: "New answer\n\nTail", delta: "New answer\n\nTail" });
+    expect(buffer.finish().delta).toBe("");
+  });
+
+  test("retains virtualized prefixes while replacing a deferred suffix and its obsolete blocks", () => {
+    const buffer = new ChatGptMarkdownBuffer(undefined, 0, true);
+    const block = (start: number, end: number, text: string) => ({
+      key: `${start}:p`, tag: "p", sourceStart: start, sourceEnd: end,
+      html: `<p>${text}</p>`, text, streamable: true,
+    });
+    buffer.observe([block(0, 5, "First"), block(10, 15, "Old"), block(20, 25, "Obsolete")]);
+    buffer.observe([]); // A transient empty React frame is not an empty answer.
+    buffer.observe([block(10, 30, "Replacement")]);
+    expect(buffer.finish().markdown).toBe("First\n\nReplacement");
+  });
+
+  test("replaces deferred blocks when final DOM changes their tag or has no source ranges", () => {
+    const buffer = new ChatGptMarkdownBuffer(undefined, 0, true);
+    buffer.observe([{ key: "0:p", html: "<p>Draft</p>", text: "Draft", streamable: true }]);
+    buffer.observe([{ key: "0:h2", html: "<h2>Final</h2>", text: "Final", streamable: false }]);
+    expect(buffer.finish().markdown).toBe("## Final");
+  });
+
   test("buffers citation hydration, tolerates later markup-only rewrites, and rejects text rewrites", () => {
     const plain = "<p>Source</p>";
     const linked = '<p><a href="https://example.com">Source</a></p>';

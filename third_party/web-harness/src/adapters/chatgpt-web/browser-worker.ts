@@ -4918,7 +4918,10 @@ export class ChatGptBrowserWorker {
       let capturedResponse = false;
       const sentAt = Date.now();
       const visibleTrace = new ChatGptVisibleTraceTracker();
-      const markdownBuffer = new ChatGptMarkdownBuffer();
+      // ChatGPT can revise even previously stable blocks. Responses text deltas
+      // cannot be retracted, so publish answer text only after completion is fenced.
+      // Tool calls and visible commentary/reasoning keep their existing live paths.
+      const markdownBuffer = new ChatGptMarkdownBuffer(undefined, 750, true);
       const checkpointStream = turn.captureLunaCheckpoint
         ? new ChatGptLunaCheckpointStream()
         : undefined;
