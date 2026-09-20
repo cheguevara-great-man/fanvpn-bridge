@@ -36,21 +36,36 @@ class DeepSeekHarnessTests(unittest.TestCase):
                         "name": "read_file",
                         "description": "Read one file",
                         "parameters": {"type": "object", "properties": {"path": {"type": "string"}}},
-                    }
+                    },
+                    {
+                        "type": "function",
+                        "name": "exec_command",
+                        "description": "Run a command",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "cmd": {"type": "string"},
+                                "workdir": {"type": "string"},
+                                "max_output_tokens": {"type": "integer"},
+                            },
+                            "required": ["cmd"],
+                        },
+                    },
                 ],
             }
         )
         self.assertIn("Follow the repository rules.", prompt)
         self.assertIn("USER:\ninspect it", prompt)
         self.assertIn("TOOL RESULT (call_old):\ncontents", prompt)
-        self.assertIn('"name":"read_file"', prompt)
         self.assertIn("Codex, not you, executes tools", prompt)
-        self.assertIn("<codex_tool_call>", prompt)
-        self.assertIn("Do not use DSML", prompt)
-        self.assertIn("The opening tag MUST be exactly `<codex_tool_call>`", prompt)
-        self.assertIn('exactly two outer fields: `name` and `arguments`', prompt)
-        self.assertIn('<codex_tool_call\\">', prompt)
-        self.assertIn("Do not emit an extra `</codex_tool_call>`", prompt)
+        self.assertIn("### Tool read_file", prompt)
+        self.assertIn("### Tool exec_command", prompt)
+        self.assertIn("<read_file>\n{\"path\":\"path/to/file\"}\n</read_file>", prompt)
+        self.assertIn("<exec_command>\n", prompt)
+        self.assertIn('"cmd":"Get-Content a.txt"', prompt)
+        self.assertIn("Parameters JSON Schema", prompt)
+        self.assertIn("Never use `<codex_tool_call>`", prompt)
+        self.assertIn("Do not wrap arguments in `name`, `arguments`, or `tool`", prompt)
 
     def test_deepseek_stream_separates_thinking_from_answer(self) -> None:
         raw = (
@@ -79,6 +94,30 @@ class DeepSeekHarnessTests(unittest.TestCase):
             [{"name": "read_file", "arguments": {"path": "a.py"}}],
         )
         self.assertIsNone(_parse_tool_calls(text, {"different_tool"}))
+
+    def test_direct_per_tool_tags_become_function_calls(self) -> None:
+        text = (
+            '<exec_command>{"cmd":"Get-Content a.txt","max_output_tokens":3000}</exec_command>\n'
+            '<write_stdin>{"session_id":12,"chars":"y\\n"}</write_stdin>'
+        )
+        self.assertEqual(
+            _parse_tool_calls(text, {"exec_command", "write_stdin"}),
+            [
+                {"name": "exec_command", "arguments": {"cmd": "Get-Content a.txt", "max_output_tokens": 3000}},
+                {"name": "write_stdin", "arguments": {"session_id": 12, "chars": "y\n"}},
+            ],
+        )
+
+    def test_direct_tool_tag_requires_valid_json_object(self) -> None:
+        self.assertIsNone(_parse_tool_calls('<exec_command>{"cmd":BROKEN}</exec_command>', {"exec_command"}))
+        self.assertIsNone(_parse_tool_calls('<exec_command>["not-an-object"]</exec_command>', {"exec_command"}))
+
+    def test_legacy_codex_tool_call_remains_backward_compatible(self) -> None:
+        text = '<codex_tool_call>{"name":"read_file","arguments":{"path":"a.py"}}</codex_tool_call>'
+        self.assertEqual(
+            _parse_tool_calls(text, {"read_file"}),
+            [{"name": "read_file", "arguments": {"path": "a.py"}}],
+        )
 
     def test_tool_blocks_repair_missing_outer_closing_brace(self) -> None:
         text = (

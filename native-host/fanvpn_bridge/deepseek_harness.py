@@ -30,6 +30,7 @@ _DSML_INVOKE_RE = re.compile(
     r'(?P<body>.*?)</(?P=marker)\s+invoke\s*>',
     re.DOTALL | re.IGNORECASE,
 )
+_DIRECT_TOOL_TAG_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.:-]*$")
 
 
 class DeepSeekHarnessError(RuntimeError):
@@ -587,27 +588,23 @@ def _responses_to_deepseek_prompt(
             }
         )
     if tools:
+        tag_map = _tool_tag_map(str(tool["name"]) for tool in tools)
+        tool_sections = [
+            _render_tool_prompt(tool, tag_map[str(tool["name"])])
+            for tool in tools
+        ]
         sections.append(
-            "CODEX TOOLS AVAILABLE:\n"
-            + json.dumps(tools, ensure_ascii=False, separators=(",", ":"))
-            + "\n\nTOOL PROTOCOL:\n"
-            "Codex, not you, executes tools. When a tool is required, you MUST output only one or more tool-call blocks and no prose outside them.\n"
-            "The opening tag MUST be exactly `<codex_tool_call>` and the closing tag MUST be exactly `</codex_tool_call>`. "
-            "Do not add quotes, attributes, spaces, backslashes, or any other characters inside either tag.\n"
-            "Inside each block, output one valid JSON object with exactly two outer fields: `name` and `arguments`. "
-            "`name` must be one listed tool name. `arguments` must be a JSON object containing all tool parameters. "
-            "Never put parameters such as `cmd`, `workdir`, `path`, or `max_output_tokens` at the top level.\n"
-            "Correct example:\n"
-            '<codex_tool_call>{"name":"exec_command","arguments":{"cmd":"Get-Content a.txt","workdir":"C:\\\\tmp","max_output_tokens":3000}}</codex_tool_call>\n'
-            "Wrong examples that you MUST NOT emit:\n"
-            '<codex_tool_call\\">{"cmd":"Get-Content a.txt"}</codex_tool_call>\n'
-            '<codex_tool_call>{"cmd":"Get-Content a.txt"}</codex_tool_call>\n'
-            '<codex_tool_call>{"name":"exec_command","cmd":"Get-Content a.txt"}</codex_tool_call>\n'
-            "Do not emit an extra `</codex_tool_call>` after the final block. "
-            "Do not use DSML, function-call XML, or any other internal tool syntax. "
-            "Use only listed tool names and valid JSON arguments. Never invent a tool result. "
-            "After Codex returns TOOL RESULT in a later turn, continue the task normally. "
-            "If no tool is required, answer normally and never emit codex_tool_call tags."
+            "CODEX TOOL PROTOCOL:\n"
+            "Codex, not you, executes tools. Each available tool has its own direct XML tag and its own JSON argument schema below.\n"
+            "When a tool is required, output only one or more direct tool blocks and no prose outside them. "
+            "The XML tag name itself selects the tool; the tag body MUST be one valid JSON object containing only that tool's arguments.\n"
+            "Use the exact tag shown for that tool. Do not add attributes to tool tags. Do not wrap arguments in `name`, `arguments`, or `tool`.\n"
+            "Never use `<codex_tool_call>`, `<invoke>`, `<tool_call>`, DSML, function-call XML, Markdown code fences, or any other tool-call syntax.\n"
+            "For Windows paths inside JSON, use forward slashes when practical or correctly escaped backslashes. "
+            "Tool-call XML belongs in the final RESPONSE, never in private reasoning/THINK content.\n"
+            "Never invent a tool result. After Codex returns TOOL RESULT in a later turn, continue the task normally. "
+            "If no tool is required, answer normally and emit no tool tags.\n\n"
+            + "\n\n".join(tool_sections)
         )
     return "\n\n".join(sections).strip()
 
@@ -636,6 +633,89 @@ def _function_output_text(output: object) -> str:
     if isinstance(output, (dict, list)):
         return json.dumps(output, ensure_ascii=False, separators=(",", ":"))
     return "" if output is None else str(output)
+
+
+def _tool_tag_map(tool_names: Iterator[str] | list[str] | set[str] | tuple[str, ...]) -> dict[str, str]:
+    """Build deterministic XML-safe direct tags for Responses function tools."""
+    names = sorted(set(tool_names))
+    used: set[str] = set()
+    result: dict[str, str] = {}
+    for name in names:
+        if _DIRECT_TOOL_TAG_RE.fullmatch(name):
+            candidate = name
+        else:
+            candidate = re.sub(r"[^A-Za-z0-9_.:-]", "_", name)
+            if not candidate or not re.match(r"^[A-Za-z_]", candidate):
+                candidate = "tool_" + candidate
+        base = candidate
+        suffix = 2
+        while candidate in used:
+            candidate = f"{base}_{suffix}"
+            suffix += 1
+        used.add(candidate)
+        result[name] = candidate
+    return result
+
+
+def _schema_example(schema: object, property_name: str = "value") -> object:
+    if not isinstance(schema, dict):
+        return None
+    for key in ("example", "default", "const"):
+        if key in schema:
+            return schema[key]
+    enum = schema.get("enum")
+    if isinstance(enum, list) and enum:
+        return enum[0]
+    schema_type = schema.get("type")
+    if isinstance(schema_type, list):
+        schema_type = next((item for item in schema_type if item != "null"), schema_type[0] if schema_type else None)
+    if schema_type == "object" or isinstance(schema.get("properties"), dict):
+        properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+        return {name: _schema_example(value, name) for name, value in properties.items()}
+    if schema_type == "array":
+        return [_schema_example(schema.get("items"), property_name)]
+    if schema_type == "boolean":
+        return False
+    if schema_type == "integer":
+        return 1
+    if schema_type == "number":
+        return 1.0
+    if schema_type == "null":
+        return None
+    lowered = property_name.lower()
+    if lowered in {"cmd", "command"}:
+        return "Get-Content a.txt"
+    if lowered in {"workdir", "cwd", "directory"}:
+        return "C:/path/to/workspace"
+    if "path" in lowered:
+        return "path/to/file"
+    return "value"
+
+
+def _render_tool_prompt(tool: Mapping[str, object], tag_name: str) -> str:
+    name = str(tool.get("name") or "tool")
+    description = str(tool.get("description") or "").strip() or "No description provided."
+    parameters = tool.get("parameters") if isinstance(tool.get("parameters"), dict) else {"type": "object"}
+    example = _schema_example(parameters)
+    if not isinstance(example, dict):
+        example = {}
+    lines = [
+        f"### Tool {name}",
+        f"Description: {description}",
+    ]
+    if tag_name != name:
+        lines.append(f"Direct tag name: `{tag_name}` (maps to Responses tool `{name}`).")
+    lines.extend(
+        [
+            f"Valid call format for {name}:",
+            f"<{tag_name}>",
+            json.dumps(example, ensure_ascii=False, separators=(",", ":")),
+            f"</{tag_name}>",
+            "The tag body must be valid JSON matching this Parameters JSON Schema:",
+            json.dumps(parameters, ensure_ascii=False, separators=(",", ":")),
+        ]
+    )
+    return "\n".join(lines)
 
 
 def _json_object(raw: bytes, label: str) -> dict[str, Any]:
@@ -760,6 +840,9 @@ def _route_fragment_text(value: str, fragment_type: str) -> tuple[str, str]:
 
 
 def _parse_tool_calls(text: str, available_tools: set[str]) -> list[dict[str, Any]] | None:
+    direct_calls = _parse_direct_tool_calls(text, available_tools)
+    if direct_calls is not None:
+        return direct_calls
     matches = list(_TOOL_CALL_RE.finditer(text))
     if not matches:
         return _parse_dsml_tool_calls(text, available_tools)
@@ -788,6 +871,31 @@ def _parse_tool_calls(text: str, available_tools: set[str]) -> list[dict[str, An
         if not isinstance(name, str) or name not in available_tools or not isinstance(arguments, dict):
             return None
         calls.append({"name": name, "arguments": arguments})
+    return calls or None
+
+
+def _parse_direct_tool_calls(text: str, available_tools: set[str]) -> list[dict[str, Any]] | None:
+    if not available_tools:
+        return None
+    tag_map = _tool_tag_map(available_tools)
+    tool_by_tag = {tag: name for name, tag in tag_map.items()}
+    tag_alternation = "|".join(re.escape(tag) for tag in sorted(tool_by_tag, key=len, reverse=True))
+    pattern = re.compile(
+        rf"<(?P<tag>{tag_alternation})>\s*(?P<body>.*?)\s*</(?P=tag)>",
+        re.DOTALL,
+    )
+    matches = list(pattern.finditer(text))
+    if not matches:
+        return None
+    calls: list[dict[str, Any]] = []
+    for match in matches:
+        try:
+            arguments = json.loads(match.group("body"))
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(arguments, dict):
+            return None
+        calls.append({"name": tool_by_tag[match.group("tag")], "arguments": arguments})
     return calls or None
 
 
