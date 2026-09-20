@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import base64
-import html
 import http.client
 import json
 import re
@@ -21,15 +20,6 @@ _HISTORY_PATH = "/api/v0/chat/history_messages"
 _CREATE_SESSION_PATH = "/api/v0/chat_session/create"
 _POW_PATH = "/api/v0/chat/create_pow_challenge"
 _MAX_UPSTREAM_BODY = 8 * 1024 * 1024
-_TOOL_CALL_RE = re.compile(
-    r"<codex_tool_call>\s*(.*?)\s*</codex_tool_call>",
-    re.DOTALL | re.IGNORECASE,
-)
-_DSML_INVOKE_RE = re.compile(
-    r'<(?P<marker>[^<>\s]*DSML[^<>\s]*)\s+invoke\s+name=(?P<quote>["\'])(?P<name>.*?)(?P=quote)\s*>'
-    r'(?P<body>.*?)</(?P=marker)\s+invoke\s*>',
-    re.DOTALL | re.IGNORECASE,
-)
 _DIRECT_TOOL_TAG_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.:-]*$")
 
 
@@ -212,21 +202,24 @@ class DeepSeekHarnessProvider:
                         code="deepseek_empty_response",
                     )
                 tool_calls = _parse_tool_calls(answer_text, available_tools)
-                protocol_error = None if tool_calls is not None else _tool_call_protocol_error(answer_text, available_tools)
-                if protocol_error is None:
+                invalid_tool_attempt = tool_calls is None and _looks_like_tool_call_attempt(
+                    answer_text,
+                    available_tools,
+                )
+                if not invalid_tool_attempt:
                     break
                 if recovery_attempt == 2:
                     raise DeepSeekHarnessError(
-                        f"DeepSeek Web repeatedly emitted an invalid tool call: {protocol_error}",
+                        "DeepSeek Web repeatedly emitted an invalid direct tool call",
                         code="deepseek_tool_call_invalid",
                     )
                 if response_message_id is None:
                     raise DeepSeekHarnessError(
-                        f"DeepSeek Web emitted an invalid tool call and no continuation id: {protocol_error}",
+                        "DeepSeek Web emitted an invalid direct tool call and no continuation id",
                         code="deepseek_tool_call_invalid",
                     )
                 parent_message_id = response_message_id
-                current_prompt = _tool_call_recovery_prompt(protocol_error)
+                current_prompt = _tool_call_recovery_prompt(available_tools)
 
             events = list(_responses_events(model, answer_text if tool_calls is None else "", tool_calls or []))
             completed = _last_completed_response(events)
@@ -600,7 +593,7 @@ def _responses_to_deepseek_prompt(
         sections.append("CONVERSATION:\n" + "\n\n".join(conversation))
 
     tools: list[dict[str, object]] = []
-    for tool in (payload.get("tools") or []) if include_control else []:
+    for tool in payload.get("tools") or []:
         if not isinstance(tool, dict) or tool.get("type") != "function":
             continue
         tools.append(
@@ -610,7 +603,7 @@ def _responses_to_deepseek_prompt(
                 "parameters": tool.get("parameters") if isinstance(tool.get("parameters"), dict) else {},
             }
         )
-    if tools:
+    if tools and include_control:
         tag_map = _tool_tag_map(str(tool["name"]) for tool in tools)
         tool_sections = [
             _render_tool_prompt(tool, tag_map[str(tool["name"])])
@@ -622,13 +615,15 @@ def _responses_to_deepseek_prompt(
             "When a tool is required, output only one or more direct tool blocks and no prose outside them. "
             "The XML tag name itself selects the tool; the tag body MUST be one valid JSON object containing only that tool's arguments.\n"
             "Use the exact tag shown for that tool. Do not add attributes to tool tags. Do not wrap arguments in `name`, `arguments`, or `tool`.\n"
-            "Never use `<codex_tool_call>`, `<invoke>`, `<tool_call>`, DSML, function-call XML, Markdown code fences, or any other tool-call syntax.\n"
+            "This direct per-tool XML format is the only valid tool-call syntax.\n"
             "For Windows paths inside JSON, use forward slashes when practical or correctly escaped backslashes. "
             "Tool-call XML belongs in the final RESPONSE, never in private reasoning/THINK content.\n"
             "Never invent a tool result. After Codex returns TOOL RESULT in a later turn, continue the task normally. "
             "If no tool is required, answer normally and emit no tool tags.\n\n"
             + "\n\n".join(tool_sections)
         )
+    elif tools:
+        sections.append(_tool_format_reminder({str(tool["name"]) for tool in tools}))
     return "\n\n".join(sections).strip()
 
 
@@ -863,81 +858,41 @@ def _route_fragment_text(value: str, fragment_type: str) -> tuple[str, str]:
 
 
 def _parse_tool_calls(text: str, available_tools: set[str]) -> list[dict[str, Any]] | None:
-    direct_calls = _parse_direct_tool_calls(text, available_tools)
-    if direct_calls is not None:
-        return direct_calls
-    matches = list(_TOOL_CALL_RE.finditer(text))
-    if not matches:
-        return _parse_dsml_tool_calls(text, available_tools)
-    calls: list[dict[str, Any]] = []
-    for match in matches:
-        value = _load_tool_call_json(match.group(1))
-        if value is None:
-            return None
-        if not isinstance(value, dict):
-            return None
-        name = value.get("name")
-        arguments = value.get("arguments")
-        # DeepSeek occasionally emits exec_command's argument object directly,
-        # omitting the required {"name": ..., "arguments": ...} envelope.  This
-        # shape is unambiguous when exec_command is available and `cmd` is a
-        # string, so normalize it instead of leaking the raw protocol tag back
-        # to Codex as assistant text.
-        if (
-            name is None
-            and arguments is None
-            and "exec_command" in available_tools
-            and isinstance(value.get("cmd"), str)
-        ):
-            name = "exec_command"
-            arguments = value
-        if not isinstance(name, str) or name not in available_tools or not isinstance(arguments, dict):
-            return None
-        calls.append({"name": name, "arguments": arguments})
-    return calls or None
+    return _parse_direct_tool_calls(text, available_tools)
 
 
-def _tool_call_protocol_error(text: str, available_tools: set[str]) -> str | None:
-    """Describe malformed tool syntax so DeepSeek can correct it on a continuation turn."""
+def _looks_like_tool_call_attempt(text: str, available_tools: set[str]) -> bool:
+    """Detect a likely tool-call attempt without trying to diagnose every possible mistake."""
     if not available_tools:
-        return None
+        return False
     tag_map = _tool_tag_map(available_tools)
-    for tool_name, tag_name in tag_map.items():
-        opening = f"<{tag_name}>"
-        closing = f"</{tag_name}>"
-        search_from = 0
-        while True:
-            open_at = text.find(opening, search_from)
-            if open_at < 0:
-                break
-            start = open_at + len(opening)
-            end = text.find(closing, start)
-            if end < 0:
-                return f"tool {tool_name!r} is missing its exact closing tag {closing}"
-            raw = text[start:end].strip()
-            try:
-                arguments = json.loads(raw)
-            except json.JSONDecodeError as exc:
-                return (
-                    f"tool {tool_name!r} has invalid JSON arguments at character {exc.pos}: {exc.msg}. "
-                    "Quotes inside JSON string values must be escaped as \\.\"."
-                )
-            if not isinstance(arguments, dict):
-                return f"tool {tool_name!r} arguments must be one JSON object"
-            search_from = end + len(closing)
-    if "<codex_tool_call>" in text.lower():
-        return "the legacy <codex_tool_call> wrapper is not allowed; use the tool's direct XML tag"
-    return None
+    if any(f"<{tag}" in text or f"</{tag}" in text for tag in tag_map.values()):
+        return True
+    stripped = text.strip()
+    if not stripped.startswith("<") or ">" not in stripped:
+        return False
+    return any(name in stripped for name in available_tools)
 
 
-def _tool_call_recovery_prompt(error: str) -> str:
+def _tool_format_reminder(available_tools: set[str]) -> str:
+    tag_map = _tool_tag_map(available_tools)
+    valid_tags = "\n".join(f"<{tag}>...</{tag}>" for tag in tag_map.values())
+    return (
+        "CODEX TOOL FORMAT REMINDER:\n"
+        "If a tool is required, output ONLY direct tool XML blocks using the exact tags below.\n"
+        "Valid tool tags this turn:\n"
+        f"{valid_tags}\n"
+        "Each tag body must contain exactly one valid JSON object matching that tool's schema already provided for this conversation. "
+        "Do not add prose outside tool blocks. This is the only valid tool-call format."
+    )
+
+
+def _tool_call_recovery_prompt(available_tools: set[str]) -> str:
     return (
         "TOOL CALL FORMAT ERROR:\n"
-        f"Your previous RESPONSE could not be executed: {error}\n"
-        "Re-emit the intended tool call(s) now. Output ONLY the corrected direct tool XML block(s), with no explanation. "
-        "Use the exact per-tool tag names and put one valid JSON object in each tag body. "
-        "Escape every double quote that occurs inside a JSON string value as \\.\". "
-        "Do not use <codex_tool_call>, <invoke>, <tool_call>, DSML, Markdown fences, or any wrapper object."
+        "Your previous RESPONSE could not be executed as a valid tool call.\n"
+        f"{_tool_format_reminder(available_tools)}\n"
+        "Re-emit the intended tool call(s) now using that exact format, with no explanation."
     )
 
 
@@ -955,7 +910,10 @@ def _parse_direct_tool_calls(text: str, available_tools: set[str]) -> list[dict[
     if not matches:
         return None
     calls: list[dict[str, Any]] = []
+    cursor = 0
     for match in matches:
+        if text[cursor:match.start()].strip():
+            return None
         try:
             arguments = json.loads(match.group("body"))
         except json.JSONDecodeError:
@@ -963,86 +921,9 @@ def _parse_direct_tool_calls(text: str, available_tools: set[str]) -> list[dict[
         if not isinstance(arguments, dict):
             return None
         calls.append({"name": tool_by_tag[match.group("tag")], "arguments": arguments})
-    return calls or None
-
-
-def _load_tool_call_json(raw: str) -> object | None:
-    """Parse a tool block, repairing only missing trailing JSON closers."""
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError as error:
-        # DeepSeek sometimes emits the inner `arguments` closing brace but
-        # omits the final brace for the outer tool-call object.  Repair only
-        # end-of-input truncation; malformed JSON in the middle stays invalid.
-        if error.pos < max(0, len(raw) - 1):
-            return None
-
-    stack: list[str] = []
-    in_string = False
-    escaped = False
-    for char in raw:
-        if in_string:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-            continue
-        if char == '"':
-            in_string = True
-        elif char == "{":
-            stack.append("}")
-        elif char == "[":
-            stack.append("]")
-        elif char in "}]":
-            if not stack or stack[-1] != char:
-                return None
-            stack.pop()
-
-    if in_string or escaped or not stack or len(stack) > 2:
+        cursor = match.end()
+    if text[cursor:].strip():
         return None
-    repaired = raw + "".join(reversed(stack))
-    try:
-        return json.loads(repaired)
-    except json.JSONDecodeError:
-        return None
-
-
-def _parse_dsml_tool_calls(text: str, available_tools: set[str]) -> list[dict[str, Any]] | None:
-    """Normalize DeepSeek's occasional internal DSML tool syntax into Codex calls."""
-    matches = list(_DSML_INVOKE_RE.finditer(text))
-    if not matches:
-        return None
-    calls: list[dict[str, Any]] = []
-    for match in matches:
-        name = html.unescape(match.group("name"))
-        if name not in available_tools:
-            return None
-        marker = re.escape(match.group("marker"))
-        parameter_re = re.compile(
-            rf'<{marker}\s+parameter\s+name=(?P<quote>["\'])(?P<name>.*?)(?P=quote)'
-            rf'(?:\s+string=(?P<string_quote>["\'])(?P<string>true|false)(?P=string_quote))?\s*>'
-            rf'(?P<value>.*?)</{marker}\s+parameter\s*>',
-            re.DOTALL | re.IGNORECASE,
-        )
-        arguments: dict[str, Any] = {}
-        body = match.group("body")
-        parameter_matches = list(parameter_re.finditer(body))
-        if not parameter_matches:
-            return None
-        for parameter in parameter_matches:
-            key = html.unescape(parameter.group("name"))
-            raw_value = html.unescape(parameter.group("value"))
-            if parameter.group("string") is None or parameter.group("string").lower() == "true":
-                value: Any = raw_value
-            else:
-                try:
-                    value = json.loads(raw_value)
-                except json.JSONDecodeError:
-                    return None
-            arguments[key] = value
-        calls.append({"name": name, "arguments": arguments})
     return calls or None
 
 

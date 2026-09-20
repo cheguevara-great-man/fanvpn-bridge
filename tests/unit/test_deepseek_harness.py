@@ -8,9 +8,9 @@ from fanvpn_bridge.deepseek_harness import (
     DeepSeekHarnessProvider,
     _deepseek_response_message_id,
     _encode_pow_response,
+    _looks_like_tool_call_attempt,
     _parse_deepseek_stream,
     _parse_tool_calls,
-    _tool_call_protocol_error,
     _responses_events,
     _responses_to_deepseek_prompt,
 )
@@ -65,8 +65,38 @@ class DeepSeekHarnessTests(unittest.TestCase):
         self.assertIn("<exec_command>\n", prompt)
         self.assertIn('"cmd":"Get-Content a.txt"', prompt)
         self.assertIn("Parameters JSON Schema", prompt)
-        self.assertIn("Never use `<codex_tool_call>`", prompt)
+        self.assertIn("This direct per-tool XML format is the only valid tool-call syntax", prompt)
+        self.assertNotIn("<codex_tool_call>", prompt)
         self.assertIn("Do not wrap arguments in `name`, `arguments`, or `tool`", prompt)
+
+    def test_continuation_prompt_repeats_short_valid_tool_tag_reminder(self) -> None:
+        prompt = _responses_to_deepseek_prompt(
+            {
+                "instructions": "Follow the repository rules.",
+                "input": [{"type": "message", "role": "user", "content": "continue"}],
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "exec_command",
+                        "description": "Run a command",
+                        "parameters": {"type": "object", "properties": {"cmd": {"type": "string"}}},
+                    },
+                    {
+                        "type": "function",
+                        "name": "write_stdin",
+                        "description": "Continue a command",
+                        "parameters": {"type": "object", "properties": {"session_id": {"type": "integer"}}},
+                    },
+                ],
+            },
+            include_control=False,
+        )
+        self.assertIn("USER:\ncontinue", prompt)
+        self.assertIn("CODEX TOOL FORMAT REMINDER", prompt)
+        self.assertIn("<exec_command>...</exec_command>", prompt)
+        self.assertIn("<write_stdin>...</write_stdin>", prompt)
+        self.assertNotIn("Parameters JSON Schema", prompt)
+        self.assertNotIn("Follow the repository rules.", prompt)
 
     def test_deepseek_stream_separates_thinking_from_answer(self) -> None:
         raw = (
@@ -86,14 +116,13 @@ class DeepSeekHarnessTests(unittest.TestCase):
         ).encode()
         self.assertEqual(_deepseek_response_message_id(raw), "message-123")
 
-    def test_valid_tool_blocks_become_function_calls_even_with_surrounding_prose(self) -> None:
-        text = '<codex_tool_call>{"name":"read_file","arguments":{"path":"a.py"}}</codex_tool_call>'
+    def test_direct_tool_blocks_are_the_only_accepted_tool_syntax(self) -> None:
+        text = '<read_file>{"path":"a.py"}</read_file>'
         calls = _parse_tool_calls(text, {"read_file"})
         self.assertEqual(calls, [{"name": "read_file", "arguments": {"path": "a.py"}}])
-        self.assertEqual(
-            _parse_tool_calls("I will inspect it first.\n\n" + text, {"read_file"}),
-            [{"name": "read_file", "arguments": {"path": "a.py"}}],
-        )
+        mixed = "I will inspect it first.\n\n" + text
+        self.assertIsNone(_parse_tool_calls(mixed, {"read_file"}))
+        self.assertTrue(_looks_like_tool_call_attempt(mixed, {"read_file"}))
         self.assertIsNone(_parse_tool_calls(text, {"different_tool"}))
 
     def test_direct_per_tool_tags_become_function_calls(self) -> None:
@@ -110,110 +139,32 @@ class DeepSeekHarnessTests(unittest.TestCase):
         )
 
     def test_direct_tool_tag_requires_valid_json_object(self) -> None:
-        self.assertIsNone(_parse_tool_calls('<exec_command>{"cmd":BROKEN}</exec_command>', {"exec_command"}))
-        self.assertIsNone(_parse_tool_calls('<exec_command>["not-an-object"]</exec_command>', {"exec_command"}))
-        self.assertIn(
-            "invalid JSON arguments",
-            _tool_call_protocol_error('<exec_command>{"cmd":"say "hello""}</exec_command>', {"exec_command"}) or "",
-        )
-        self.assertIn(
-            "one JSON object",
-            _tool_call_protocol_error('<exec_command>["not-an-object"]</exec_command>', {"exec_command"}) or "",
-        )
-        self.assertIn(
-            "invalid JSON arguments",
-            _tool_call_protocol_error(
-                '<exec_command>{"cmd":"ok"}</exec_command>\n'
-                '<exec_command>{"cmd":"say "broken""}</exec_command>',
-                {"exec_command"},
-            ) or "",
-        )
+        broken_json = '<exec_command>{"cmd":BROKEN}</exec_command>'
+        wrong_shape = '<exec_command>["not-an-object"]</exec_command>'
+        self.assertIsNone(_parse_tool_calls(broken_json, {"exec_command"}))
+        self.assertIsNone(_parse_tool_calls(wrong_shape, {"exec_command"}))
+        self.assertTrue(_looks_like_tool_call_attempt(broken_json, {"exec_command"}))
+        self.assertTrue(_looks_like_tool_call_attempt(wrong_shape, {"exec_command"}))
 
-    def test_legacy_codex_tool_call_remains_backward_compatible(self) -> None:
-        text = '<codex_tool_call>{"name":"read_file","arguments":{"path":"a.py"}}</codex_tool_call>'
-        self.assertEqual(
-            _parse_tool_calls(text, {"read_file"}),
-            [{"name": "read_file", "arguments": {"path": "a.py"}}],
-        )
-
-    def test_tool_blocks_repair_missing_outer_closing_brace(self) -> None:
+    def test_one_valid_block_followed_by_broken_block_rejects_whole_response(self) -> None:
         text = (
-            'I will inspect it first.\n\n'
-            '<codex_tool_call>{"name":"exec_command","arguments":'
-            '{"cmd":"$code = @\'\\nprint(f\\\"x={value}\\\")\\n\'@\\n$code | python -",'
-            '"workdir":"D:\\\\software\\\\Note","max_output_tokens":8000}</codex_tool_call>\n'
-            '<codex_tool_call>{"name":"exec_command","arguments":'
-            '{"cmd":"Get-Content a.txt","max_output_tokens":15000}</codex_tool_call>'
-        )
-        calls = _parse_tool_calls(text, {"exec_command"})
-        self.assertIsNotNone(calls)
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(calls[0]["arguments"]["workdir"], "D:\\software\\Note")
-        self.assertEqual(calls[0]["arguments"]["max_output_tokens"], 8000)
-        self.assertEqual(calls[1]["arguments"]["cmd"], "Get-Content a.txt")
-
-    def test_tool_block_does_not_repair_malformed_json_in_middle(self) -> None:
-        text = (
-            '<codex_tool_call>{"name":"exec_command","arguments":'
-            '{"cmd":BROKEN,"max_output_tokens":8000}</codex_tool_call>'
+            '<exec_command>{"cmd":"ok"}</exec_command>\n'
+            '<exec_command>{"cmd":"broken"}'
         )
         self.assertIsNone(_parse_tool_calls(text, {"exec_command"}))
+        self.assertTrue(_looks_like_tool_call_attempt(text, {"exec_command"}))
 
-    def test_flat_exec_command_arguments_are_normalized(self) -> None:
-        text = (
-            '<codex_tool_call>{"cmd":"Get-Content a.txt","workdir":"C:\\\\tmp",'
-            '"max_output_tokens":4000}</codex_tool_call>'
-        )
-        self.assertEqual(
-            _parse_tool_calls(text, {"exec_command"}),
-            [
-                {
-                    "name": "exec_command",
-                    "arguments": {
-                        "cmd": "Get-Content a.txt",
-                        "workdir": "C:\\tmp",
-                        "max_output_tokens": 4000,
-                    },
-                }
-            ],
-        )
-        self.assertIsNone(_parse_tool_calls(text, {"read_file"}))
-
-    def test_dsml_exec_command_is_normalized_instead_of_leaking_as_text(self) -> None:
-        text = (
-            '<锝滐綔DSML锝滐綔 calls>\n'
-            '<锝滐綔DSML锝滐綔 invoke name="exec_command">\n'
-            '<锝滐綔DSML锝滐綔 parameter name="cmd" string="true">Get-Content a.txt</锝滐綔DSML锝滐綔 parameter>\n'
-            '<锝滐綔DSML锝滐綔 parameter name="workdir" string="true">C:\\tmp</锝滐綔DSML锝滐綔 parameter>\n'
-            '<锝滐綔DSML锝滐綔 parameter name="max_output_tokens" string="false">3000</锝滐綔DSML锝滐綔 parameter>\n'
-            '</锝滐綔DSML锝滐綔 invoke>\n'
-            '</锝滐綔DSML锝滐綔 calls>'
-        )
-        self.assertEqual(
-            _parse_tool_calls(text, {"exec_command"}),
-            [
-                {
-                    "name": "exec_command",
-                    "arguments": {
-                        "cmd": "Get-Content a.txt",
-                        "workdir": "C:\\tmp",
-                        "max_output_tokens": 3000,
-                    },
-                }
-            ],
-        )
-        self.assertIsNone(_parse_tool_calls(text, {"read_file"}))
-
-    def test_ascii_dsml_tool_call_is_also_normalized(self) -> None:
-        text = (
+    def test_old_or_alternate_tool_syntax_is_not_accepted(self) -> None:
+        legacy = '<codex_tool_call>{"name":"read_file","arguments":{"path":"a.py"}}</codex_tool_call>'
+        dsml = (
             '<|DSML| invoke name="read_file">'
-            '<|DSML| parameter name="path" string="true">a&amp;b.py</|DSML| parameter>'
+            '<|DSML| parameter name="path" string="true">a.py</|DSML| parameter>'
             '</|DSML| invoke>'
         )
-        self.assertEqual(
-            _parse_tool_calls(text, {"read_file"}),
-            [{"name": "read_file", "arguments": {"path": "a&b.py"}}],
-        )
+        self.assertIsNone(_parse_tool_calls(legacy, {"read_file"}))
+        self.assertIsNone(_parse_tool_calls(dsml, {"read_file"}))
+        self.assertTrue(_looks_like_tool_call_attempt(legacy, {"read_file"}))
+        self.assertTrue(_looks_like_tool_call_attempt(dsml, {"read_file"}))
 
     def test_pow_response_matches_deepseek_web_shape(self) -> None:
         encoded = _encode_pow_response(
@@ -277,8 +228,7 @@ class DeepSeekHarnessTests(unittest.TestCase):
                     }).encode()
                 return 200, {"content-type": "text/event-stream"}, (
                     'data: {"p":"response/fragments","o":"APPEND","v":'
-                    '[{"type":"RESPONSE","content":"<codex_tool_call>{\\"name\\":\\"read_file\\",'
-                    '\\"arguments\\":{\\"path\\":\\"main.py\\"}}</codex_tool_call>"}]}\n\n'
+                    '[{"type":"RESPONSE","content":"<read_file>{\\"path\\":\\"main.py\\"}</read_file>"}]}\n\n'
                     'data: {"p":"response/status","v":"FINISHED"}\n\n'
                 ).encode()
 
@@ -375,7 +325,10 @@ class DeepSeekHarnessTests(unittest.TestCase):
         self.assertIsNone(completions[0]["parent_message_id"])
         self.assertEqual(completions[1]["parent_message_id"], "message-bad")
         self.assertIn("TOOL CALL FORMAT ERROR", completions[1]["prompt"])
-        self.assertIn("invalid JSON arguments", completions[1]["prompt"])
+        self.assertIn("<exec_command>...</exec_command>", completions[1]["prompt"])
+        self.assertIn("This is the only valid tool-call format", completions[1]["prompt"])
+        self.assertNotIn("invalid JSON arguments", completions[1]["prompt"])
+        self.assertNotIn("codex_tool_call", completions[1]["prompt"])
 
     def test_provider_uses_web_history_to_keep_thinking_out_of_final_answer(self) -> None:
         class FakeProvider(DeepSeekHarnessProvider):
