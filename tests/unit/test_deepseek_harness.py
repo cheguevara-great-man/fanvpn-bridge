@@ -80,6 +80,29 @@ class DeepSeekHarnessTests(unittest.TestCase):
         )
         self.assertIsNone(_parse_tool_calls(text, {"different_tool"}))
 
+    def test_tool_blocks_repair_missing_outer_closing_brace(self) -> None:
+        text = (
+            'I will inspect it first.\n\n'
+            '<codex_tool_call>{"name":"exec_command","arguments":'
+            '{"cmd":"$code = @\'\\nprint(f\\\"x={value}\\\")\\n\'@\\n$code | python -",'
+            '"workdir":"D:\\\\software\\\\Note","max_output_tokens":8000}</codex_tool_call>\n'
+            '<codex_tool_call>{"name":"exec_command","arguments":'
+            '{"cmd":"Get-Content a.txt","max_output_tokens":15000}</codex_tool_call>'
+        )
+        calls = _parse_tool_calls(text, {"exec_command"})
+        self.assertIsNotNone(calls)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0]["arguments"]["workdir"], "D:\\software\\Note")
+        self.assertEqual(calls[0]["arguments"]["max_output_tokens"], 8000)
+        self.assertEqual(calls[1]["arguments"]["cmd"], "Get-Content a.txt")
+
+    def test_tool_block_does_not_repair_malformed_json_in_middle(self) -> None:
+        text = (
+            '<codex_tool_call>{"name":"exec_command","arguments":'
+            '{"cmd":BROKEN,"max_output_tokens":8000}</codex_tool_call>'
+        )
+        self.assertIsNone(_parse_tool_calls(text, {"exec_command"}))
+
     def test_flat_exec_command_arguments_are_normalized(self) -> None:
         text = (
             '<codex_tool_call>{"cmd":"Get-Content a.txt","workdir":"C:\\\\tmp",'

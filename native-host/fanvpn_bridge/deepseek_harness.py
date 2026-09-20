@@ -22,7 +22,7 @@ _CREATE_SESSION_PATH = "/api/v0/chat_session/create"
 _POW_PATH = "/api/v0/chat/create_pow_challenge"
 _MAX_UPSTREAM_BODY = 8 * 1024 * 1024
 _TOOL_CALL_RE = re.compile(
-    r"<codex_tool_call>\s*(\{.*?\})\s*</codex_tool_call>",
+    r"<codex_tool_call>\s*(.*?)\s*</codex_tool_call>",
     re.DOTALL | re.IGNORECASE,
 )
 _DSML_INVOKE_RE = re.compile(
@@ -765,9 +765,8 @@ def _parse_tool_calls(text: str, available_tools: set[str]) -> list[dict[str, An
         return _parse_dsml_tool_calls(text, available_tools)
     calls: list[dict[str, Any]] = []
     for match in matches:
-        try:
-            value = json.loads(match.group(1))
-        except json.JSONDecodeError:
+        value = _load_tool_call_json(match.group(1))
+        if value is None:
             return None
         if not isinstance(value, dict):
             return None
@@ -790,6 +789,49 @@ def _parse_tool_calls(text: str, available_tools: set[str]) -> list[dict[str, An
             return None
         calls.append({"name": name, "arguments": arguments})
     return calls or None
+
+
+def _load_tool_call_json(raw: str) -> object | None:
+    """Parse a tool block, repairing only missing trailing JSON closers."""
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as error:
+        # DeepSeek sometimes emits the inner `arguments` closing brace but
+        # omits the final brace for the outer tool-call object.  Repair only
+        # end-of-input truncation; malformed JSON in the middle stays invalid.
+        if error.pos < max(0, len(raw) - 1):
+            return None
+
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+    for char in raw:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            stack.append("}")
+        elif char == "[":
+            stack.append("]")
+        elif char in "}]":
+            if not stack or stack[-1] != char:
+                return None
+            stack.pop()
+
+    if in_string or escaped or not stack or len(stack) > 2:
+        return None
+    repaired = raw + "".join(reversed(stack))
+    try:
+        return json.loads(repaired)
+    except json.JSONDecodeError:
+        return None
 
 
 def _parse_dsml_tool_calls(text: str, available_tools: set[str]) -> list[dict[str, Any]] | None:
