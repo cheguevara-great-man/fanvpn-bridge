@@ -309,12 +309,21 @@ def _responses_to_deepseek_prompt(payload: Mapping[str, Any]) -> str:
             "CODEX TOOLS AVAILABLE:\n"
             + json.dumps(tools, ensure_ascii=False, separators=(",", ":"))
             + "\n\nTOOL PROTOCOL:\n"
-            "Codex, not you, executes tools. When a tool is required, output only one or more exact blocks of this form, with no prose outside them:\n"
-            '<codex_tool_call>{"name":"tool_name","arguments":{}}</codex_tool_call>\n'
-            "The JSON object must always have exactly the outer fields `name` and `arguments`; "
-            "put tool parameters such as `cmd`, `workdir`, and `max_output_tokens` inside `arguments`, never at the top level. "
+            "Codex, not you, executes tools. When a tool is required, you MUST output only one or more tool-call blocks and no prose outside them.\n"
+            "The opening tag MUST be exactly `<codex_tool_call>` and the closing tag MUST be exactly `</codex_tool_call>`. "
+            "Do not add quotes, attributes, spaces, backslashes, or any other characters inside either tag.\n"
+            "Inside each block, output one valid JSON object with exactly two outer fields: `name` and `arguments`. "
+            "`name` must be one listed tool name. `arguments` must be a JSON object containing all tool parameters. "
+            "Never put parameters such as `cmd`, `workdir`, `path`, or `max_output_tokens` at the top level.\n"
+            "Correct example:\n"
+            '<codex_tool_call>{"name":"exec_command","arguments":{"cmd":"Get-Content a.txt","workdir":"C:\\\\tmp","max_output_tokens":3000}}</codex_tool_call>\n'
+            "Wrong examples that you MUST NOT emit:\n"
+            '<codex_tool_call\\">{"cmd":"Get-Content a.txt"}</codex_tool_call>\n'
+            '<codex_tool_call>{"cmd":"Get-Content a.txt"}</codex_tool_call>\n'
+            '<codex_tool_call>{"name":"exec_command","cmd":"Get-Content a.txt"}</codex_tool_call>\n'
+            "Do not emit an extra `</codex_tool_call>` after the final block. "
+            "Do not use DSML, function-call XML, or any other internal tool syntax. "
             "Use only listed tool names and valid JSON arguments. Never invent a tool result. "
-            "Do not use DSML, function-call XML, or any other internal tool syntax; only use codex_tool_call blocks. "
             "After Codex returns TOOL RESULT in a later turn, continue the task normally. "
             "If no tool is required, answer normally and never emit codex_tool_call tags."
         )

@@ -46,6 +46,10 @@ class DeepSeekHarnessTests(unittest.TestCase):
         self.assertIn("Codex, not you, executes tools", prompt)
         self.assertIn("<codex_tool_call>", prompt)
         self.assertIn("Do not use DSML", prompt)
+        self.assertIn("The opening tag MUST be exactly `<codex_tool_call>`", prompt)
+        self.assertIn('exactly two outer fields: `name` and `arguments`', prompt)
+        self.assertIn('<codex_tool_call\\">', prompt)
+        self.assertIn("Do not emit an extra `</codex_tool_call>`", prompt)
 
     def test_deepseek_stream_separates_thinking_from_answer(self) -> None:
         raw = (
