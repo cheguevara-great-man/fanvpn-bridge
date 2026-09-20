@@ -496,6 +496,9 @@ export function compileChatGptWebPrompt(
     : mode.localTools
     ? [
       "For local work required by the task, use the attached Codex Native tools directly according to their declared descriptions and schemas.",
+      "The ChatGPT-side local bridge exposes codex_tool_inventory and codex_tool_call. Historical Codex function_call records naming tools such as exec_command are conversation history, not directly attached ChatGPT tools.",
+      "To invoke a local Codex tool, use codex_tool_inventory when discovery is needed, then call codex_tool_call with the exact returned wire_name. Never directly invoke exec_command or another historical Codex tool name from the transported task context.",
+      "Never emit, quote, or simulate internal tool-call markup such as DSML or serialized function-call syntax as user-visible text. If tool routing fails, surface a normal bridge error instead of printing a tool call.",
       "Call a Codex Native tool only when the latest active request requires a local effect or fresh local evidence that is not already present in the supplied context; otherwise answer the request directly without a tool call.",
       "Use actual Codex Native results as evidence for local observations and effects.",
       "Keep tool output bounded to protect the task context: for exploratory command tools, request max_output_tokens around 2000 when supported, narrow searches by file and pattern, and read only the relevant line ranges. Increase the limit only when a specific missing detail requires it.",
