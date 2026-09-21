@@ -377,15 +377,13 @@ class DeepSeekHarnessProvider:
             reasoning = payload.get("reasoning")
             effort = str(reasoning.get("effort") or "").lower() if isinstance(reasoning, dict) else ""
             reasoner = model.endswith("/reasoner")
-            tool_definitions = [
-                {
-                    "name": str(item.get("name")),
-                    "parameters": item.get("parameters") if isinstance(item.get("parameters"), dict) else {},
-                }
-                for item in payload.get("tools") or []
-                if isinstance(item, dict) and item.get("type") == "function" and item.get("name")
-            ]
+            tool_definitions = _deepseek_tool_definitions(payload)
             available_tools = {str(item["name"]) for item in tool_definitions}
+            freeform_tools = {
+                str(item["name"])
+                for item in tool_definitions
+                if item.get("freeform") is True
+            }
             thinking_enabled = reasoner or effort in {"low", "medium", "high"}
             current_prompt = prompt
             parent_message_id = state.parent_message_id
@@ -454,7 +452,7 @@ class DeepSeekHarnessProvider:
                     tool_calls = None
                     invalid_tool_attempt = False
                 else:
-                    tool_calls = _parse_tool_calls(answer_text, available_tools)
+                    tool_calls = _parse_tool_calls(answer_text, available_tools, freeform_tools)
                     invalid_tool_attempt = tool_calls is None and _looks_like_tool_call_attempt(
                         answer_text,
                         available_tools,
@@ -1282,9 +1280,22 @@ def _history_item_fingerprint(item: Mapping[str, Any]) -> str:
             "name": str(item.get("name") or "tool"),
             "arguments": _canonical_json(item.get("arguments")),
         }
+    elif item_type == "custom_tool_call":
+        normalized = {
+            "type": "custom_tool_call",
+            "name": str(item.get("name") or "tool"),
+            "input": str(item.get("input") or ""),
+        }
     elif item_type == "function_call_output":
         normalized = {
             "type": "function_call_output",
+            "call_id": str(item.get("call_id") or ""),
+            "output": _function_output_text(item.get("output")),
+            "images": _history_image_fingerprints(item.get("output")),
+        }
+    elif item_type == "custom_tool_call_output":
+        normalized = {
+            "type": "custom_tool_call_output",
             "call_id": str(item.get("call_id") or ""),
             "output": _function_output_text(item.get("output")),
             "images": _history_image_fingerprints(item.get("output")),
@@ -1301,9 +1312,13 @@ def _response_history_fingerprints(
     if tool_calls:
         return tuple(
             _history_item_fingerprint({
-                "type": "function_call",
+                "type": "custom_tool_call" if call.get("freeform") else "function_call",
                 "name": call.get("name"),
-                "arguments": call.get("arguments"),
+                **(
+                    {"input": call.get("input")}
+                    if call.get("freeform")
+                    else {"arguments": call.get("arguments")}
+                ),
             })
             for call in tool_calls
         )
@@ -1317,16 +1332,35 @@ def _response_history_fingerprints(
 
 
 def _deepseek_control_signature(payload: Mapping[str, Any]) -> str:
-    tools = [
-        tool
-        for tool in payload.get("tools") or []
-        if isinstance(tool, dict) and tool.get("type") == "function"
-    ]
+    tools = _deepseek_tool_definitions(payload)
     return _canonical_json({
         "model": payload.get("model"),
         "instructions": payload.get("instructions"),
         "tools": tools,
     })
+
+
+def _deepseek_tool_definitions(payload: Mapping[str, Any]) -> list[dict[str, object]]:
+    tools: list[dict[str, object]] = []
+    for item in payload.get("tools") or []:
+        if not isinstance(item, dict) or not item.get("name"):
+            continue
+        tool_type = str(item.get("type") or "")
+        if tool_type == "function":
+            tools.append({
+                "name": str(item.get("name")),
+                "description": str(item.get("description") or ""),
+                "parameters": item.get("parameters") if isinstance(item.get("parameters"), dict) else {},
+                "freeform": False,
+            })
+        elif tool_type == "custom":
+            tools.append({
+                "name": str(item.get("name")),
+                "description": str(item.get("description") or ""),
+                "parameters": {},
+                "freeform": True,
+            })
+    return tools
 
 
 def _starts_with(values: tuple[str, ...], prefix: tuple[str, ...]) -> bool:
@@ -1535,24 +1569,26 @@ def _responses_to_deepseek_prompt(
             )
             rendered = _redact_data_uris(rendered)
             conversation.append(rendered)
+        elif item_type == "custom_tool_call":
+            name = str(item.get("name") or "tool")
+            call_id = str(item.get("call_id") or item.get("id") or "")
+            rendered = (
+                f"ASSISTANT FREEFORM TOOL CALL ({call_id}, {name}):\n"
+                f"{str(item.get('input') or '')}"
+            )
+            conversation.append(_redact_data_uris(rendered))
         elif item_type == "function_call_output":
+            call_id = str(item.get("call_id") or "")
+            rendered = f"TOOL RESULT ({call_id}):\n{_function_output_text(item.get('output'))}"
+            conversation.append(rendered)
+        elif item_type == "custom_tool_call_output":
             call_id = str(item.get("call_id") or "")
             rendered = f"TOOL RESULT ({call_id}):\n{_function_output_text(item.get('output'))}"
             conversation.append(rendered)
     if conversation:
         sections.append("CONVERSATION:\n" + "\n\n".join(conversation))
 
-    tools: list[dict[str, object]] = []
-    for tool in payload.get("tools") or []:
-        if not isinstance(tool, dict) or tool.get("type") != "function":
-            continue
-        tools.append(
-            {
-                "name": str(tool.get("name") or "tool"),
-                "description": str(tool.get("description") or ""),
-                "parameters": tool.get("parameters") if isinstance(tool.get("parameters"), dict) else {},
-            }
-        )
+    tools = _deepseek_tool_definitions(payload)
     if tools and include_control:
         tag_map = _tool_tag_map(str(tool["name"]) for tool in tools)
         tool_sections = [
@@ -1561,7 +1597,8 @@ def _responses_to_deepseek_prompt(
         ]
         sections.append(
             "CODEX TOOL PROTOCOL:\n"
-            "Codex, not you, executes tools. Each available tool has its own direct XML tag and its own JSON argument schema below.\n"
+            "Codex, not you, executes tools. Each available tool has its own direct XML tag. "
+            "Structured tools use JSON bodies; freeform tools use raw text bodies.\n"
             f"{_tool_format_requirements()}\n\n"
             + "\n\n".join(tool_sections)
         )
@@ -1767,6 +1804,26 @@ def _schema_example(schema: object, property_name: str = "value") -> object:
 def _render_tool_prompt(tool: Mapping[str, object], tag_name: str) -> str:
     name = str(tool.get("name") or "tool")
     description = str(tool.get("description") or "").strip() or "No description provided."
+    if tool.get("freeform") is True:
+        example = (
+            "*** Begin Patch\n*** Update File: path/to/file\n@@\n-old\n+new\n*** End Patch"
+            if name == "apply_patch"
+            else "RAW TOOL INPUT"
+        )
+        lines = [
+            f"### Tool {name}",
+            f"Description: {description}",
+        ]
+        if tag_name != name:
+            lines.append(f"Direct tag name: `{tag_name}` (maps to Responses tool `{name}`).")
+        lines.extend([
+            f"Valid freeform call format for {name}:",
+            f"<{tag_name}>",
+            example,
+            f"</{tag_name}>",
+            "The tag body is raw freeform tool input. Do NOT JSON-encode it, quote it, or wrap it in an `input` object.",
+        ])
+        return "\n".join(lines)
     parameters = tool.get("parameters") if isinstance(tool.get("parameters"), dict) else {"type": "object"}
     example = _schema_example(parameters)
     if not isinstance(example, dict):
@@ -1920,8 +1977,12 @@ def _route_fragment_text(value: str, fragment_type: str) -> tuple[str, str]:
     return ("", value) if fragment_type.upper() == "THINK" else (value, "")
 
 
-def _parse_tool_calls(text: str, available_tools: set[str]) -> list[dict[str, Any]] | None:
-    return _parse_direct_tool_calls(text, available_tools)
+def _parse_tool_calls(
+    text: str,
+    available_tools: set[str],
+    freeform_tools: set[str] | None = None,
+) -> list[dict[str, Any]] | None:
+    return _parse_direct_tool_calls(text, available_tools, freeform_tools or set())
 
 
 def _looks_like_tool_call_attempt(text: str, available_tools: set[str]) -> bool:
@@ -1940,9 +2001,10 @@ def _looks_like_tool_call_attempt(text: str, available_tools: set[str]) -> bool:
 def _tool_format_requirements() -> str:
     return (
         "When a tool is required, output only one or more direct tool blocks and no prose outside them. "
-        "The XML tag name itself selects the tool; each tag body MUST contain exactly one valid JSON object containing only that tool's arguments.\n"
-        "JSON string values MUST use valid JSON escaping: escape embedded double quotes as \\\" and backslashes as \\\\ when needed. "
-        "For Windows paths inside JSON, prefer forward slashes or correctly escaped backslashes.\n"
+        "The XML tag name itself selects the tool. Structured tools MUST contain exactly one valid JSON object containing only that tool's arguments. "
+        "Freeform tools MUST contain raw tool input and MUST NOT JSON-encode that input.\n"
+        "For structured tools, JSON string values MUST use valid JSON escaping: escape embedded double quotes as \\\" and backslashes as \\\\ when needed. "
+        "For Windows paths inside structured JSON, prefer forward slashes or correctly escaped backslashes.\n"
         "Use the exact opening and closing tag shown for that tool. Every opening tag MUST have exactly one matching closing tag; "
         "after closing a tool block, either start the next complete tool block or stop. Never switch to a different tool-call syntax or closing delimiter.\n"
         "Do not add attributes to tool tags. Do not wrap arguments in `name`, `arguments`, or `tool`. "
@@ -1958,14 +2020,18 @@ def _tool_format_reminder(tools: list[Mapping[str, object]]) -> str:
     examples: list[str] = []
     for tool in tools:
         name = str(tool.get("name") or "tool")
-        parameters = tool.get("parameters") if isinstance(tool.get("parameters"), dict) else {"type": "object"}
-        example = _schema_example(parameters)
-        if not isinstance(example, dict):
-            example = {}
         tag = tag_map[name]
-        examples.append(
-            f"<{tag}>{json.dumps(example, ensure_ascii=False, separators=(',', ':'))}</{tag}>"
-        )
+        if tool.get("freeform") is True:
+            example = "*** Begin Patch\n*** End Patch" if name == "apply_patch" else "RAW TOOL INPUT"
+            examples.append(f"<{tag}>{example}</{tag}>")
+        else:
+            parameters = tool.get("parameters") if isinstance(tool.get("parameters"), dict) else {"type": "object"}
+            example = _schema_example(parameters)
+            if not isinstance(example, dict):
+                example = {}
+            examples.append(
+                f"<{tag}>{json.dumps(example, ensure_ascii=False, separators=(',', ':'))}</{tag}>"
+            )
     valid_examples = "\n".join(examples)
     return (
         "CODEX TOOL FORMAT REMINDER:\n"
@@ -1985,16 +2051,17 @@ def _tool_call_recovery_prompt(tools: list[Mapping[str, object]]) -> str:
     )
 
 
-def _parse_direct_tool_calls(text: str, available_tools: set[str]) -> list[dict[str, Any]] | None:
+def _parse_direct_tool_calls(
+    text: str,
+    available_tools: set[str],
+    freeform_tools: set[str],
+) -> list[dict[str, Any]] | None:
     if not available_tools:
         return None
     tag_map = _tool_tag_map(available_tools)
     tool_by_tag = {tag: name for name, tag in tag_map.items()}
     tag_alternation = "|".join(re.escape(tag) for tag in sorted(tool_by_tag, key=len, reverse=True))
-    pattern = re.compile(
-        rf"<(?P<tag>{tag_alternation})>\s*(?P<body>.*?)\s*</(?P=tag)>",
-        re.DOTALL,
-    )
+    pattern = re.compile(rf"<(?P<tag>{tag_alternation})>(?P<body>.*?)</(?P=tag)>", re.DOTALL)
     matches = list(pattern.finditer(text))
     if not matches:
         return None
@@ -2003,13 +2070,21 @@ def _parse_direct_tool_calls(text: str, available_tools: set[str]) -> list[dict[
     for match in matches:
         if text[cursor:match.start()].strip():
             return None
-        try:
-            arguments = json.loads(match.group("body"))
-        except json.JSONDecodeError:
-            return None
-        if not isinstance(arguments, dict):
-            return None
-        calls.append({"name": tool_by_tag[match.group("tag")], "arguments": arguments})
+        name = tool_by_tag[match.group("tag")]
+        body = match.group("body")
+        if name in freeform_tools:
+            raw_input = body.strip()
+            if not raw_input:
+                return None
+            calls.append({"name": name, "input": raw_input, "freeform": True})
+        else:
+            try:
+                arguments = json.loads(body.strip())
+            except json.JSONDecodeError:
+                return None
+            if not isinstance(arguments, dict):
+                return None
+            calls.append({"name": name, "arguments": arguments})
         cursor = match.end()
     if text[cursor:].strip():
         return None
@@ -2055,9 +2130,27 @@ def _responses_events(
         output.append(message)
     for call in tool_calls:
         index = len(output)
+        call_id = "call_" + uuid.uuid4().hex
+        if call.get("freeform"):
+            raw_input = str(call.get("input") or "")
+            item_id = "ctc_" + uuid.uuid4().hex
+            item = {
+                "id": item_id,
+                "type": "custom_tool_call",
+                "status": "in_progress",
+                "call_id": call_id,
+                "name": call["name"],
+                "input": "",
+            }
+            yield emit("response.output_item.added", output_index=index, item=item)
+            yield emit("response.custom_tool_call_input.delta", item_id=item_id, output_index=index, delta=raw_input)
+            completed = {**item, "status": "completed", "input": raw_input}
+            yield emit("response.custom_tool_call_input.done", item_id=item_id, output_index=index, input=raw_input)
+            yield emit("response.output_item.done", output_index=index, item=completed)
+            output.append(completed)
+            continue
         arguments = json.dumps(call["arguments"], ensure_ascii=False, separators=(",", ":"))
         item_id = "fc_" + uuid.uuid4().hex
-        call_id = "call_" + uuid.uuid4().hex
         item = {
             "id": item_id,
             "type": "function_call",

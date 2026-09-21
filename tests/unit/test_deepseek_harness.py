@@ -62,6 +62,11 @@ class DeepSeekHarnessTests(unittest.TestCase):
                             "required": ["cmd"],
                         },
                     },
+                    {
+                        "type": "custom",
+                        "name": "apply_patch",
+                        "description": "Apply a patch",
+                    },
                 ],
             }
         )
@@ -71,9 +76,13 @@ class DeepSeekHarnessTests(unittest.TestCase):
         self.assertIn("Codex, not you, executes tools", prompt)
         self.assertIn("### Tool read_file", prompt)
         self.assertIn("### Tool exec_command", prompt)
+        self.assertIn("### Tool apply_patch", prompt)
         self.assertIn("<read_file>\n{\"path\":\"path/to/file\"}\n</read_file>", prompt)
         self.assertIn("<exec_command>\n", prompt)
         self.assertIn('"cmd":"Get-Content a.txt"', prompt)
+        self.assertIn("<apply_patch>\n*** Begin Patch", prompt)
+        self.assertIn("raw freeform tool input", prompt)
+        self.assertIn("Do NOT JSON-encode it", prompt)
         self.assertIn("Parameters JSON Schema", prompt)
         self.assertIn("This direct per-tool XML format is the only valid tool-call syntax", prompt)
         self.assertIn("JSON string values MUST use valid JSON escaping", prompt)
@@ -259,6 +268,24 @@ class DeepSeekHarnessTests(unittest.TestCase):
         )
         upload_value = json.loads(base64.b64decode(upload_encoded))
         self.assertEqual(upload_value["target_path"], "/api/v0/file/upload_file")
+
+    def test_freeform_tool_block_keeps_raw_patch_without_json(self) -> None:
+        patch_text = """*** Begin Patch
+*** Update File: README.md
+@@
+-old
++new \"quoted\" text with \\slashes
+*** End Patch"""
+        text = f"<apply_patch>\n{patch_text}\n</apply_patch>"
+        self.assertEqual(
+            _parse_tool_calls(text, {"apply_patch"}, {"apply_patch"}),
+            [{"name": "apply_patch", "input": patch_text, "freeform": True}],
+        )
+
+    def test_freeform_tool_does_not_accept_empty_body(self) -> None:
+        text = "<apply_patch>\n\n</apply_patch>"
+        self.assertIsNone(_parse_tool_calls(text, {"apply_patch"}, {"apply_patch"}))
+        self.assertTrue(_looks_like_tool_call_attempt(text, {"apply_patch"}))
 
     def test_image_input_uses_official_upload_then_vision_completion(self) -> None:
         image_bytes = b"\x89PNG\r\n\x1a\nabc"
@@ -455,6 +482,25 @@ class DeepSeekHarnessTests(unittest.TestCase):
         self.assertEqual(output[0]["name"], "read_file")
         self.assertEqual(json.loads(output[0]["arguments"]), {"path": "a.py"})
 
+    def test_freeform_tool_call_is_returned_as_custom_tool_call(self) -> None:
+        patch_text = "*** Begin Patch\n*** Add File: note.md\n+hello\n*** End Patch"
+        events = list(
+            _responses_events(
+                "deepseek-web/chat",
+                "",
+                [{"name": "apply_patch", "input": patch_text, "freeform": True}],
+            )
+        )
+        decoded = [line[6:] for event in events for line in event.decode().splitlines() if line.startswith("data: {")]
+        event_types = [json.loads(line).get("type") for line in decoded]
+        self.assertIn("response.custom_tool_call_input.delta", event_types)
+        self.assertIn("response.custom_tool_call_input.done", event_types)
+        completed = next(json.loads(line) for line in decoded if json.loads(line).get("type") == "response.completed")
+        output = completed["response"]["output"]
+        self.assertEqual(output[0]["type"], "custom_tool_call")
+        self.assertEqual(output[0]["name"], "apply_patch")
+        self.assertEqual(output[0]["input"], patch_text)
+
     def test_provider_runs_session_pow_completion_and_returns_tool_call(self) -> None:
         solved = []
 
@@ -516,6 +562,64 @@ class DeepSeekHarnessTests(unittest.TestCase):
         self.assertEqual(completion["model_type"], "default")
         pow_value = json.loads(base64.b64decode(provider.requests[-1][3]["x-ds-pow-response"]))
         self.assertEqual(pow_value["answer"], 23)
+
+    def test_provider_exposes_custom_apply_patch_as_freeform_tool_call(self) -> None:
+        patch_text = "*** Begin Patch\n*** Add File: note.md\n+hello\n*** End Patch"
+
+        class FakeProvider(DeepSeekHarnessProvider):
+            def __init__(self):
+                super().__init__(pow_solver=lambda _challenge: 23)
+                self.requests = []
+
+            def _request(self, method, upstream_path, body, headers):
+                self.requests.append((method, upstream_path, body, dict(headers)))
+                if upstream_path.endswith("chat_session/create"):
+                    return 200, {}, json.dumps({
+                        "data": {"biz_code": 0, "biz_data": {"chat_session": {"id": "session-1"}}}
+                    }).encode()
+                if upstream_path.endswith("create_pow_challenge"):
+                    return 200, {}, json.dumps({
+                        "data": {
+                            "biz_code": 0,
+                            "biz_data": {
+                                "challenge": {
+                                    "algorithm": "DeepSeekHashV1",
+                                    "challenge": "a" * 64,
+                                    "salt": "salt",
+                                    "difficulty": 100,
+                                    "signature": "signature",
+                                    "expire_at": 12345,
+                                }
+                            },
+                        }
+                    }).encode()
+                fragment = json.dumps({
+                    "p": "response/fragments",
+                    "o": "APPEND",
+                    "v": [{"type": "RESPONSE", "content": f"<apply_patch>\n{patch_text}\n</apply_patch>"}],
+                }, ensure_ascii=False, separators=(",", ":"))
+                finished = json.dumps({"p": "response/status", "v": "FINISHED"}, separators=(",", ":"))
+                return 200, {"content-type": "text/event-stream"}, (
+                    f"data: {fragment}\n\ndata: {finished}\n\n"
+                ).encode()
+
+        provider = FakeProvider()
+        streaming, response = provider.responses({
+            "model": "deepseek-web/chat",
+            "input": "update note.md",
+            "tools": [{
+                "type": "custom",
+                "name": "apply_patch",
+                "description": "Apply a patch",
+            }],
+        })
+        self.assertFalse(streaming)
+        self.assertEqual(response["output"][0]["type"], "custom_tool_call")
+        self.assertEqual(response["output"][0]["name"], "apply_patch")
+        self.assertEqual(response["output"][0]["input"], patch_text)
+        completion = json.loads(provider.requests[-1][2])
+        self.assertIn("<apply_patch>\n*** Begin Patch", completion["prompt"])
+        self.assertIn("Do NOT JSON-encode it", completion["prompt"])
 
     def test_streaming_provider_yields_text_before_upstream_finishes(self) -> None:
         release_second_chunk = threading.Event()
