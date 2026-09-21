@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import hashlib
 import http.client
 import json
 import re
@@ -72,6 +73,7 @@ class _DeepSeekConversationState:
     lock: threading.Lock = field(default_factory=threading.Lock)
     session_id: str | None = None
     parent_message_id: str | int | None = None
+    represented_items: tuple[str, ...] = ()
     control_signature: str | None = None
     last_response_id: str | None = None
 
@@ -169,7 +171,6 @@ class DeepSeekHarnessProvider:
         state = self._conversation_state(conversation_key) if conversation_key else _DeepSeekConversationState()
         with state.lock:
             input_items = _prompt_input_items(payload)
-            ref_file_ids = self._upload_input_images(input_items)
             control_signature = _deepseek_control_signature(payload)
             previous_response_id = payload.get("previous_response_id")
 
@@ -177,17 +178,52 @@ class DeepSeekHarnessProvider:
                 state.session_id is not None
                 and state.parent_message_id is not None
                 and state.control_signature == control_signature
+            )
+            delta_items: list[dict[str, Any]] | None = None
+            input_fingerprints: tuple[str, ...] | None = None
+            represented_after_input: tuple[str, ...]
+
+            # Normal continuation: hash only this request's delta so state can
+            # still recover later without rescanning the represented history.
+            if (
+                can_reuse
                 and isinstance(previous_response_id, str)
                 and previous_response_id == state.last_response_id
-            )
-            if not can_reuse:
+            ):
+                delta_items = input_items
+                input_fingerprints = tuple(_history_item_fingerprint(item) for item in input_items)
+                represented_after_input = state.represented_items + input_fingerprints
+            elif can_reuse:
+                # Recovery path for Codex replaying canonical/full history
+                # without a matching previous_response_id.
+                input_fingerprints = tuple(_history_item_fingerprint(item) for item in input_items)
+                if _starts_with(input_fingerprints, state.represented_items):
+                    delta_items = input_items[len(state.represented_items):]
+                    represented_after_input = input_fingerprints
+
+            if not can_reuse or not delta_items:
                 state.session_id = self._create_session()
                 state.parent_message_id = None
+                state.represented_items = ()
                 state.control_signature = control_signature
                 state.last_response_id = None
-                prompt = _responses_to_deepseek_prompt(payload, input_items=input_items, include_control=True)
+                if input_fingerprints is None:
+                    input_fingerprints = tuple(_history_item_fingerprint(item) for item in input_items)
+                represented_after_input = input_fingerprints
+                turn_items = input_items
+                include_control = True
             else:
-                prompt = _responses_to_deepseek_prompt(payload, input_items=input_items, include_control=False)
+                turn_items = delta_items
+                include_control = False
+
+            # Upload only images that belong to the actual DeepSeek turn. In
+            # particular, do not re-upload images present only in replayed history.
+            ref_file_ids = self._upload_input_images(turn_items)
+            prompt = _responses_to_deepseek_prompt(
+                payload,
+                input_items=turn_items,
+                include_control=include_control,
+            )
 
             reasoning = payload.get("reasoning")
             effort = str(reasoning.get("effort") or "").lower() if isinstance(reasoning, dict) else ""
@@ -279,6 +315,9 @@ class DeepSeekHarnessProvider:
             state.parent_message_id = response_message_id
             state.control_signature = control_signature
             state.last_response_id = str(completed.get("id") or "") or None
+            state.represented_items = (
+                represented_after_input + _response_history_fingerprints(answer_text, tool_calls)
+            )
 
             if bool(payload.get("stream", False)):
                 return True, iter(events)
@@ -860,6 +899,83 @@ def _canonical_json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
 
 
+def _history_image_fingerprints(value: object) -> tuple[str, ...]:
+    fingerprints: list[str] = []
+
+    def visit(current: object) -> None:
+        if isinstance(current, list):
+            for item in current:
+                visit(item)
+            return
+        if not isinstance(current, Mapping):
+            return
+
+        part_type = str(current.get("type") or "").lower()
+        if part_type in {"input_image", "image", "output_image"}:
+            image_url: object = current.get("image_url")
+            if isinstance(image_url, Mapping):
+                image_url = image_url.get("url")
+            identity = image_url if isinstance(image_url, str) else _canonical_json(dict(current))
+            fingerprints.append(hashlib.sha256(str(identity).encode("utf-8")).hexdigest())
+            return
+
+        for key in ("content", "output"):
+            if key in current:
+                visit(current.get(key))
+
+    visit(value)
+    return tuple(fingerprints)
+
+
+def _history_item_fingerprint(item: Mapping[str, Any]) -> str:
+    item_type = str(item.get("type") or ("message" if item.get("role") else ""))
+    if item_type == "message":
+        normalized: object = {
+            "type": "message",
+            "role": str(item.get("role") or "user"),
+            "content": _content_text(item.get("content")),
+            "images": _history_image_fingerprints(item.get("content")),
+        }
+    elif item_type == "function_call":
+        normalized = {
+            "type": "function_call",
+            "name": str(item.get("name") or "tool"),
+            "arguments": _canonical_json(item.get("arguments")),
+        }
+    elif item_type == "function_call_output":
+        normalized = {
+            "type": "function_call_output",
+            "call_id": str(item.get("call_id") or ""),
+            "output": _function_output_text(item.get("output")),
+            "images": _history_image_fingerprints(item.get("output")),
+        }
+    else:
+        normalized = dict(item)
+    return hashlib.sha256(_canonical_json(normalized).encode("utf-8")).hexdigest()
+
+
+def _response_history_fingerprints(
+    answer_text: str,
+    tool_calls: list[dict[str, Any]] | None,
+) -> tuple[str, ...]:
+    if tool_calls:
+        return tuple(
+            _history_item_fingerprint({
+                "type": "function_call",
+                "name": call.get("name"),
+                "arguments": call.get("arguments"),
+            })
+            for call in tool_calls
+        )
+    if answer_text:
+        return (_history_item_fingerprint({
+            "type": "message",
+            "role": "assistant",
+            "content": answer_text,
+        }),)
+    return ()
+
+
 def _deepseek_control_signature(payload: Mapping[str, Any]) -> str:
     tools = [
         tool
@@ -871,6 +987,10 @@ def _deepseek_control_signature(payload: Mapping[str, Any]) -> str:
         "instructions": payload.get("instructions"),
         "tools": tools,
     })
+
+
+def _starts_with(values: tuple[str, ...], prefix: tuple[str, ...]) -> bool:
+    return len(values) >= len(prefix) and values[:len(prefix)] == prefix
 
 
 def _deepseek_conversation_key(payload: Mapping[str, Any]) -> str | None:

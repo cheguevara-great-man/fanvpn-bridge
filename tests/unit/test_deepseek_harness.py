@@ -786,7 +786,12 @@ class DeepSeekHarnessTests(unittest.TestCase):
                         }
                     }).encode()
                 self.completion_count += 1
-                answers = {1: "first answer", 2: "second answer", 3: "third answer"}
+                answers = {
+                    1: "first answer",
+                    2: "second answer",
+                    3: "third answer",
+                    4: "fourth answer",
+                }
                 answer = answers[self.completion_count]
                 message_id = f"message-{self.completion_count}"
                 return 200, {"content-type": "text/event-stream"}, (
@@ -871,6 +876,136 @@ class DeepSeekHarnessTests(unittest.TestCase):
         self.assertIn("third question", completions[2]["prompt"])
         self.assertNotIn("second question", completions[2]["prompt"])
         self.assertNotIn("CODEX TOOLS AVAILABLE", completions[2]["prompt"])
+
+        # Codex can also replay canonical/full history without a usable
+        # previous_response_id. The adapter should recover the delta and keep
+        # using the same DeepSeek Web session.
+        _streaming, fourth = provider.responses({
+            **common,
+            "client_metadata": {
+                "x-codex-turn-metadata": json.dumps({
+                    "thread_id": "thread-1",
+                    "turn_id": "turn-4",
+                })
+            },
+            "input": [
+                {"type": "message", "role": "user", "content": "first question"},
+                {"type": "message", "role": "assistant", "content": "first answer"},
+                {"type": "message", "role": "user", "content": "second question"},
+                {"type": "message", "role": "assistant", "content": "second answer"},
+                {"type": "message", "role": "user", "content": "third question"},
+                {"type": "message", "role": "assistant", "content": "third answer"},
+                {"type": "message", "role": "user", "content": "fourth question"},
+            ],
+        })
+        self.assertEqual(fourth["output"][0]["content"][0]["text"], "fourth answer")
+        self.assertEqual(provider.session_count, 1)
+        completions = [
+            json.loads(body)
+            for _method, path, body, _headers in provider.requests
+            if path.endswith("/chat/completion")
+        ]
+        self.assertEqual(completions[3]["chat_session_id"], "session-1")
+        self.assertEqual(completions[3]["parent_message_id"], "message-3")
+        self.assertIn("fourth question", completions[3]["prompt"])
+        self.assertNotIn("first question", completions[3]["prompt"])
+        self.assertNotIn("third answer", completions[3]["prompt"])
+
+    def test_replayed_history_does_not_reupload_old_images(self) -> None:
+        image_bytes = b"\x89PNG\r\n\x1a\nabc"
+        image_url = "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
+
+        class FakeProvider(DeepSeekHarnessProvider):
+            def __init__(self):
+                super().__init__(pow_solver=lambda _challenge: 1)
+                self.requests = []
+                self.session_count = 0
+                self.completion_count = 0
+                self.image_batches = []
+
+            def _upload_input_images(self, input_items):
+                images = _extract_deepseek_images(input_items)
+                self.image_batches.append(len(images))
+                return ["file-image-1"] if images else []
+
+            def _request(self, method, upstream_path, body, headers):
+                self.requests.append((method, upstream_path, body, dict(headers)))
+                if upstream_path.endswith("chat_session/create"):
+                    self.session_count += 1
+                    return 200, {}, json.dumps({
+                        "data": {
+                            "biz_code": 0,
+                            "biz_data": {"chat_session": {"id": f"session-{self.session_count}"}},
+                        }
+                    }).encode()
+                if upstream_path.endswith("create_pow_challenge"):
+                    return 200, {}, json.dumps({
+                        "data": {
+                            "biz_code": 0,
+                            "biz_data": {
+                                "challenge": {
+                                    "algorithm": "DeepSeekHashV1",
+                                    "challenge": "a" * 64,
+                                    "salt": "salt",
+                                    "difficulty": 1,
+                                    "signature": "signature",
+                                    "expire_at": 12345,
+                                }
+                            },
+                        }
+                    }).encode()
+                self.completion_count += 1
+                answer = "image answer" if self.completion_count == 1 else "follow-up answer"
+                message_id = f"message-{self.completion_count}"
+                return 200, {"content-type": "text/event-stream"}, (
+                    f'data: {{"p":"response/message_id","v":"{message_id}"}}\n\n'
+                    f'data: {{"p":"response/fragments","o":"APPEND","v":'
+                    f'[{{"type":"RESPONSE","content":"{answer}"}}]}}\n\n'
+                    'data: {"p":"response/status","v":"FINISHED"}\n\n'
+                ).encode()
+
+        provider = FakeProvider()
+        common = {
+            "model": "deepseek-web/chat",
+            "prompt_cache_key": "image-thread",
+            "client_metadata": {
+                "x-codex-turn-metadata": json.dumps({"thread_id": "image-thread", "turn_id": "turn-1"})
+            },
+        }
+        first_user = {
+            "type": "message",
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "inspect this"},
+                {"type": "input_image", "image_url": image_url},
+            ],
+        }
+        provider.responses({**common, "input": [first_user]})
+        provider.responses({
+            **common,
+            "client_metadata": {
+                "x-codex-turn-metadata": json.dumps({"thread_id": "image-thread", "turn_id": "turn-2"})
+            },
+            "input": [
+                first_user,
+                {"type": "message", "role": "assistant", "content": "image answer"},
+                {"type": "message", "role": "user", "content": "tell me more"},
+            ],
+        })
+
+        self.assertEqual(provider.session_count, 1)
+        self.assertEqual(provider.image_batches, [1, 0])
+        completions = [
+            json.loads(body)
+            for _method, path, body, _headers in provider.requests
+            if path.endswith("/chat/completion")
+        ]
+        self.assertEqual(completions[0]["ref_file_ids"], ["file-image-1"])
+        self.assertEqual(completions[1]["ref_file_ids"], [])
+        self.assertEqual(completions[1]["model_type"], "default")
+        self.assertIn("tell me more", completions[1]["prompt"])
+        self.assertNotIn("inspect this", completions[1]["prompt"])
+        self.assertNotIn("[Image attached separately for DeepSeek Vision]", completions[1]["prompt"])
 
     def test_compaction_uses_dedicated_summary_turn_and_returns_checkpoint(self) -> None:
         class FakeProvider(DeepSeekHarnessProvider):
