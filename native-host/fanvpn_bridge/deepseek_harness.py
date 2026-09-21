@@ -20,12 +20,25 @@ _COMPLETION_PATH = "/api/v0/chat/completion"
 _HISTORY_PATH = "/api/v0/chat/history_messages"
 _CREATE_SESSION_PATH = "/api/v0/chat_session/create"
 _POW_PATH = "/api/v0/chat/create_pow_challenge"
+_UPLOAD_FILE_PATH = "/api/v0/file/upload_file"
+_FETCH_FILES_PATH = "/api/v0/file/fetch_files"
 _MAX_UPSTREAM_BODY = 8 * 1024 * 1024
+_MAX_VISION_IMAGES = 4
+_MAX_VISION_IMAGE_BYTES = 8 * 1024 * 1024
+_FILE_READY_POLL_SECONDS = 0.5
+_FILE_READY_TIMEOUT_SECONDS = 15.0
+_EMPTY_RESPONSE_RECOVERY_POLL_SECONDS = 0.35
+_EMPTY_RESPONSE_RECOVERY_TIMEOUT_SECONDS = 4.0
 _DIRECT_TOOL_TAG_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.:-]*$")
 _DATA_URI_RE = re.compile(
     r"data:([^;,\s]+)(?:;[^,\s]*)?;base64,[A-Za-z0-9+/=_-]+",
     re.IGNORECASE,
 )
+_ACCEPTED_FILE_AUDIT_RESULTS = {"PASS", "PASSED", "SUCCESS", "OK", "UNKNOWN"}
+_REJECTED_FILE_AUDIT_RESULTS = {
+    "REJECT", "REJECTED", "FAIL", "FAILED", "ERROR", "BLOCK", "BLOCKED", "DENY", "DENIED",
+}
+_FAILED_FILE_STATUSES = {"FAIL", "FAILED", "ERROR"}
 _DEEPSEEK_CONTEXT_WINDOW = 1_000_000
 _DEEPSEEK_AUTO_COMPACT_TOKEN_LIMIT = 900_000
 _COMPACT_RETAINED_USER_CHAR_BUDGET = 20_000 * 4
@@ -61,6 +74,13 @@ class _DeepSeekConversationState:
     parent_message_id: str | int | None = None
     control_signature: str | None = None
     last_response_id: str | None = None
+
+
+@dataclass(frozen=True)
+class _DeepSeekImage:
+    mime_type: str
+    data: bytes
+    filename: str
 
 
 def is_deepseek_model(value: object) -> bool:
@@ -109,6 +129,7 @@ class DeepSeekHarnessProvider:
                     "max_context_window": _DEEPSEEK_CONTEXT_WINDOW,
                     "effective_context_window_percent": 90,
                     "auto_compact_token_limit": _DEEPSEEK_AUTO_COMPACT_TOKEN_LIMIT,
+                    "input_modalities": ["text", "image"],
                 },
                 {
                     "id": "deepseek-web/reasoner",
@@ -122,6 +143,7 @@ class DeepSeekHarnessProvider:
                     "max_context_window": _DEEPSEEK_CONTEXT_WINDOW,
                     "effective_context_window_percent": 90,
                     "auto_compact_token_limit": _DEEPSEEK_AUTO_COMPACT_TOKEN_LIMIT,
+                    "input_modalities": ["text", "image"],
                 },
             ],
         }
@@ -147,6 +169,7 @@ class DeepSeekHarnessProvider:
         state = self._conversation_state(conversation_key) if conversation_key else _DeepSeekConversationState()
         with state.lock:
             input_items = _prompt_input_items(payload)
+            ref_file_ids = self._upload_input_images(input_items)
             control_signature = _deepseek_control_signature(payload)
             previous_response_id = payload.get("previous_response_id")
 
@@ -181,7 +204,10 @@ class DeepSeekHarnessProvider:
             response_message_id: str | int | None = None
             tool_calls: list[dict[str, Any]] | None = None
             for recovery_attempt in range(3):
-                challenge = self._create_pow_challenge()
+                turn_ref_file_ids = ref_file_ids if recovery_attempt == 0 else []
+                vision_enabled = bool(turn_ref_file_ids)
+                turn_thinking_enabled = thinking_enabled and not vision_enabled
+                challenge = self._create_pow_challenge(_COMPLETION_PATH)
                 try:
                     answer = self._pow_solver(challenge)
                 except Exception as exc:
@@ -193,10 +219,10 @@ class DeepSeekHarnessProvider:
                 completion = {
                     "chat_session_id": state.session_id,
                     "parent_message_id": parent_message_id,
-                    "model_type": "expert" if reasoner else "default",
+                    "model_type": "vision" if vision_enabled else ("expert" if reasoner else "default"),
                     "prompt": current_prompt,
-                    "ref_file_ids": [],
-                    "thinking_enabled": thinking_enabled,
+                    "ref_file_ids": turn_ref_file_ids,
+                    "thinking_enabled": turn_thinking_enabled,
                     "search_enabled": False,
                     "action": None,
                     "preempt": False,
@@ -214,8 +240,12 @@ class DeepSeekHarnessProvider:
                 self._raise_for_status(status, raw, "completion")
                 answer_text, _reasoning_text = _parse_deepseek_stream(raw)
                 response_message_id = _deepseek_response_message_id(raw)
-                if thinking_enabled and response_message_id is not None:
+                if turn_thinking_enabled and response_message_id is not None:
                     history_turn = self._history_turn(state.session_id, response_message_id)
+                    if history_turn is not None and history_turn[1].strip():
+                        response_message_id, answer_text, _reasoning_text = history_turn
+                if not answer_text.strip() and response_message_id is not None:
+                    history_turn = self._wait_for_history_answer(state.session_id, response_message_id)
                     if history_turn is not None and history_turn[1].strip():
                         response_message_id, answer_text, _reasoning_text = history_turn
                 if not answer_text.strip():
@@ -290,7 +320,7 @@ class DeepSeekHarnessProvider:
         )
         prompt = (prompt + "\n\nCOMPACTION TASK:\n" + _COMPACT_PROMPT).strip()
         session_id = self._create_session()
-        challenge = self._create_pow_challenge()
+        challenge = self._create_pow_challenge(_COMPLETION_PATH)
         try:
             answer = self._pow_solver(challenge)
         except Exception as exc:
@@ -324,6 +354,10 @@ class DeepSeekHarnessProvider:
         response_message_id = _deepseek_response_message_id(raw)
         if thinking_enabled and response_message_id is not None:
             history_turn = self._history_turn(session_id, response_message_id)
+            if history_turn is not None and history_turn[1].strip():
+                summary = history_turn[1]
+        if not summary.strip() and response_message_id is not None:
+            history_turn = self._wait_for_history_answer(session_id, response_message_id)
             if history_turn is not None and history_turn[1].strip():
                 summary = history_turn[1]
         if not summary.strip():
@@ -436,6 +470,120 @@ class DeepSeekHarnessProvider:
                     break
         return message_id, "".join(answer), "".join(reasoning)
 
+    def _wait_for_history_answer(
+        self,
+        session_id: str | None,
+        response_message_id: str | int,
+    ) -> tuple[str | int, str, str] | None:
+        """Recover a response whose SSE ended before the visible answer reached the stream."""
+        deadline = time.monotonic() + _EMPTY_RESPONSE_RECOVERY_TIMEOUT_SECONDS
+        latest: tuple[str | int, str, str] | None = None
+        while True:
+            latest = self._history_turn(session_id, response_message_id)
+            if latest is not None and latest[1].strip():
+                return latest
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return latest
+            time.sleep(min(_EMPTY_RESPONSE_RECOVERY_POLL_SECONDS, remaining))
+
+    def _upload_input_images(self, input_items: list[dict[str, Any]]) -> list[str]:
+        images = _extract_deepseek_images(input_items)
+        return [self._upload_image(image) for image in images]
+
+    def _upload_image(self, image: _DeepSeekImage) -> str:
+        challenge = self._create_pow_challenge(_UPLOAD_FILE_PATH)
+        try:
+            answer = self._pow_solver(challenge)
+        except Exception as exc:
+            raise DeepSeekHarnessError(
+                f"DeepSeek image upload proof of work failed: {exc}",
+                code="deepseek_pow_failed",
+            ) from exc
+
+        boundary = "----FanVPNBridge" + uuid.uuid4().hex
+        prefix = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="{image.filename}"\r\n'
+            f"Content-Type: {image.mime_type}\r\n\r\n"
+        ).encode("ascii")
+        body = prefix + image.data + f"\r\n--{boundary}--\r\n".encode("ascii")
+        status, _headers, raw = self._request(
+            "POST",
+            _UPLOAD_FILE_PATH,
+            body,
+            {
+                "accept": "application/json",
+                "content-type": f"multipart/form-data; boundary={boundary}",
+                "x-ds-pow-response": _encode_pow_response(
+                    challenge,
+                    answer,
+                    target_path=_UPLOAD_FILE_PATH,
+                ),
+                "x-thinking-enabled": "0",
+                "x-model-type": "vision",
+                "x-file-size": str(len(image.data)),
+            },
+        )
+        self._raise_for_status(status, raw, "file upload")
+        value = _json_object(raw, "DeepSeek file upload")
+        data = value.get("data") if isinstance(value.get("data"), dict) else {}
+        uploaded = _uploaded_file_record(value)
+        if data.get("biz_code") != 0 or uploaded is None:
+            raise DeepSeekHarnessError(
+                "DeepSeek Web image upload did not return a usable file",
+                status=401 if _is_auth_biz_error(value) else 502,
+                code="deepseek_auth_required" if _is_auth_biz_error(value) else "deepseek_image_upload_failed",
+            )
+        _validate_uploaded_file(uploaded, image.filename)
+        file_id = str(uploaded["id"])
+        if _uploaded_file_ready(uploaded):
+            return file_id
+
+        deadline = time.monotonic() + _FILE_READY_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            time.sleep(_FILE_READY_POLL_SECONDS)
+            uploaded = self._fetch_uploaded_file(file_id)
+            if uploaded is None:
+                continue
+            _validate_uploaded_file(uploaded, image.filename)
+            if _uploaded_file_ready(uploaded):
+                return file_id
+        raise DeepSeekHarnessError(
+            f"DeepSeek Web image {image.filename} is still processing after "
+            f"{int(_FILE_READY_TIMEOUT_SECONDS)}s",
+            code="deepseek_image_processing_timeout",
+        )
+
+    def _fetch_uploaded_file(self, file_id: str) -> dict[str, Any] | None:
+        query = urllib.parse.urlencode({"file_ids": file_id})
+        status, _headers, raw = self._request(
+            "GET",
+            f"{_FETCH_FILES_PATH}?{query}",
+            None,
+            {"accept": "application/json"},
+        )
+        if not 200 <= status < 300:
+            return None
+        try:
+            value = json.loads(raw.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError):
+            return None
+        if not isinstance(value, dict):
+            return None
+        data = value.get("data") if isinstance(value.get("data"), dict) else {}
+        if data.get("biz_code") != 0:
+            return None
+        biz = _deepseek_biz_data(value)
+        files = biz.get("files") if isinstance(biz, dict) else None
+        if not isinstance(files, list):
+            return None
+        for item in files:
+            uploaded = _uploaded_file_record(item)
+            if uploaded is not None and str(uploaded.get("id") or "") == file_id:
+                return uploaded
+        return None
+
     def _create_session(self) -> str:
         status, _headers, raw = self._request(
             "POST",
@@ -457,8 +605,8 @@ class DeepSeekHarnessProvider:
             )
         return session_id
 
-    def _create_pow_challenge(self) -> dict[str, object]:
-        body = json.dumps({"target_path": _COMPLETION_PATH}, separators=(",", ":")).encode("utf-8")
+    def _create_pow_challenge(self, target_path: str = _COMPLETION_PATH) -> dict[str, object]:
+        body = json.dumps({"target_path": target_path}, separators=(",", ":")).encode("utf-8")
         status, _headers, raw = self._request(
             "POST",
             _POW_PATH,
@@ -538,6 +686,168 @@ def _prompt_input_items(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
     if isinstance(input_value, list):
         return [item for item in input_value if isinstance(item, dict)]
     return [{"type": "message", "role": "user", "content": input_value}]
+
+
+def _extract_deepseek_images(input_items: list[dict[str, Any]]) -> list[_DeepSeekImage]:
+    images: list[_DeepSeekImage] = []
+
+    def visit(value: object) -> None:
+        if isinstance(value, list):
+            for item in value:
+                visit(item)
+            return
+        if not isinstance(value, dict):
+            return
+
+        part_type = str(value.get("type") or "").lower()
+        if part_type in {"input_image", "image", "output_image"}:
+            image_url: object = value.get("image_url")
+            if isinstance(image_url, Mapping):
+                image_url = image_url.get("url")
+            if not isinstance(image_url, str) or not image_url:
+                raise DeepSeekHarnessError(
+                    "DeepSeek Web vision requires image input as an inline data:image/...;base64 URL",
+                    status=400,
+                    code="deepseek_image_input_unsupported",
+                )
+            images.append(_decode_deepseek_image_data_uri(image_url, len(images) + 1))
+            if len(images) > _MAX_VISION_IMAGES:
+                raise DeepSeekHarnessError(
+                    f"DeepSeek Web supports at most {_MAX_VISION_IMAGES} image attachments per turn",
+                    status=400,
+                    code="deepseek_image_count_exceeded",
+                )
+            return
+
+        for key in ("content", "output"):
+            if key in value:
+                visit(value.get(key))
+
+    visit(input_items)
+    return images
+
+
+def _decode_deepseek_image_data_uri(image_url: str, index: int) -> _DeepSeekImage:
+    if not image_url.lower().startswith("data:") or "," not in image_url:
+        raise DeepSeekHarnessError(
+            "DeepSeek Web vision currently requires inline data:image/...;base64 image input",
+            status=400,
+            code="deepseek_image_url_unsupported",
+        )
+    header, encoded = image_url.split(",", 1)
+    metadata = header[5:].split(";")
+    mime_type = metadata[0].strip().lower()
+    flags = {item.strip().lower() for item in metadata[1:] if item.strip()}
+    if not mime_type.startswith("image/") or "base64" not in flags:
+        raise DeepSeekHarnessError(
+            "DeepSeek Web vision received an invalid image data URL",
+            status=400,
+            code="deepseek_image_data_invalid",
+        )
+
+    encoded = "".join(encoded.split())
+    max_encoded_length = ((_MAX_VISION_IMAGE_BYTES + 2) // 3) * 4
+    if len(encoded) > max_encoded_length + 4:
+        raise DeepSeekHarnessError(
+            f"DeepSeek Web image {index} exceeds the {_MAX_VISION_IMAGE_BYTES // (1024 * 1024)} MiB upload limit",
+            status=400,
+            code="deepseek_image_too_large",
+        )
+    try:
+        data = base64.b64decode(encoded, altchars=b"-_", validate=True)
+    except (ValueError, base64.binascii.Error) as exc:
+        raise DeepSeekHarnessError(
+            "DeepSeek Web vision received invalid Base64 image data",
+            status=400,
+            code="deepseek_image_data_invalid",
+        ) from exc
+    if len(data) > _MAX_VISION_IMAGE_BYTES:
+        raise DeepSeekHarnessError(
+            f"DeepSeek Web image {index} exceeds the {_MAX_VISION_IMAGE_BYTES // (1024 * 1024)} MiB upload limit",
+            status=400,
+            code="deepseek_image_too_large",
+        )
+
+    extension_map = {
+        "image/jpeg": "jpg",
+        "image/png": "png",
+        "image/gif": "gif",
+        "image/webp": "webp",
+        "image/bmp": "bmp",
+        "image/avif": "avif",
+        "image/svg+xml": "svg",
+    }
+    extension = extension_map.get(mime_type, "img")
+    return _DeepSeekImage(mime_type=mime_type, data=data, filename=f"codex-input-image-{index}.{extension}")
+
+
+def _deepseek_biz_data(value: Mapping[str, Any]) -> dict[str, Any]:
+    data = value.get("data") if isinstance(value.get("data"), Mapping) else None
+    for container in (data, value):
+        if not isinstance(container, Mapping):
+            continue
+        for key in ("biz_data", "bizData"):
+            candidate = container.get(key)
+            if isinstance(candidate, Mapping):
+                return dict(candidate)
+    return {}
+
+
+def _uploaded_file_record(value: Mapping[str, Any]) -> dict[str, Any] | None:
+    candidate: Mapping[str, Any] = _deepseek_biz_data(value) or value
+    files = candidate.get("files")
+    if isinstance(files, list):
+        for item in files:
+            if isinstance(item, Mapping):
+                normalized = _uploaded_file_record(item)
+                if normalized is not None:
+                    return normalized
+        return None
+
+    file_id = next(
+        (candidate.get(key) for key in ("id", "file_id", "fileId") if isinstance(candidate.get(key), (str, int))),
+        None,
+    )
+    if file_id is None or not str(file_id):
+        return None
+    return {
+        "id": str(file_id),
+        "file_name": next(
+            (candidate.get(key) for key in ("file_name", "fileName", "name") if isinstance(candidate.get(key), str)),
+            None,
+        ),
+        "status": candidate.get("status") if isinstance(candidate.get("status"), str) else None,
+        "audit_result": next(
+            (candidate.get(key) for key in ("audit_result", "auditResult") if isinstance(candidate.get(key), str)),
+            None,
+        ),
+        "retryable": candidate.get("retryable") if isinstance(candidate.get("retryable"), bool) else None,
+    }
+
+
+def _validate_uploaded_file(file: Mapping[str, Any], fallback_name: str) -> None:
+    name = str(file.get("file_name") or file.get("id") or fallback_name)
+    status = str(file.get("status") or "").strip().upper()
+    audit_result = str(file.get("audit_result") or "").strip().upper()
+    if audit_result in _REJECTED_FILE_AUDIT_RESULTS:
+        raise DeepSeekHarnessError(
+            f"DeepSeek rejected {name}: audit_result={audit_result}",
+            status=400,
+            code="deepseek_image_rejected",
+        )
+    if status in _FAILED_FILE_STATUSES:
+        raise DeepSeekHarnessError(
+            f"DeepSeek failed to process {name}: status={status}",
+            code="deepseek_image_processing_failed",
+        )
+
+
+def _uploaded_file_ready(file: Mapping[str, Any]) -> bool:
+    status = str(file.get("status") or "").strip().upper()
+    audit_result = str(file.get("audit_result") or "").strip().upper()
+    return status == "SUCCESS" and (
+        not audit_result or audit_result in _ACCEPTED_FILE_AUDIT_RESULTS
+    )
 
 
 def _canonical_json(value: object) -> str:
@@ -745,7 +1055,7 @@ def _content_text(content: object) -> str:
             if isinstance(text, str):
                 parts.append(text)
             elif part.get("type") in {"input_image", "image"}:
-                parts.append("[Image input omitted by the current DeepSeek Web text adapter]")
+                parts.append("[Image attached separately for DeepSeek Vision]")
     return "\n".join(parts)
 
 
@@ -966,14 +1276,19 @@ def _is_auth_biz_error(value: Mapping[str, Any]) -> bool:
     return data.get("biz_code") in {40002, 40003} or value.get("code") in {40002, 40003}
 
 
-def _encode_pow_response(challenge: Mapping[str, object], answer: int) -> str:
+def _encode_pow_response(
+    challenge: Mapping[str, object],
+    answer: int,
+    *,
+    target_path: str = _COMPLETION_PATH,
+) -> str:
     payload = {
         "algorithm": challenge["algorithm"],
         "challenge": challenge["challenge"],
         "salt": challenge["salt"],
         "answer": answer,
         "signature": challenge["signature"],
-        "target_path": _COMPLETION_PATH,
+        "target_path": target_path,
     }
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     return base64.b64encode(raw).decode("ascii")

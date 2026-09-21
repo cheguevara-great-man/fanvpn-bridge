@@ -3,11 +3,14 @@ from __future__ import annotations
 import base64
 import json
 import unittest
+from unittest.mock import patch
 
 from fanvpn_bridge.deepseek_harness import (
+    DeepSeekHarnessError,
     DeepSeekHarnessProvider,
     _deepseek_response_message_id,
     _encode_pow_response,
+    _extract_deepseek_images,
     _looks_like_tool_call_attempt,
     _parse_deepseek_stream,
     _parse_tool_calls,
@@ -24,6 +27,7 @@ class DeepSeekHarnessTests(unittest.TestCase):
         self.assertEqual(ids, ["deepseek-web/chat", "deepseek-web/reasoner"])
         self.assertEqual(models[0]["context_window"], 1_000_000)
         self.assertEqual(models[0]["auto_compact_token_limit"], 900_000)
+        self.assertEqual(models[0]["input_modalities"], ["text", "image"])
 
     def test_responses_prompt_keeps_codex_as_tool_executor(self) -> None:
         prompt = _responses_to_deepseek_prompt(
@@ -230,6 +234,199 @@ class DeepSeekHarnessTests(unittest.TestCase):
         value = json.loads(base64.b64decode(encoded))
         self.assertEqual(value["answer"], 42)
         self.assertEqual(value["target_path"], "/api/v0/chat/completion")
+
+        upload_encoded = _encode_pow_response(
+            {
+                "algorithm": "DeepSeekHashV1",
+                "challenge": "a" * 64,
+                "salt": "salt",
+                "signature": "signature",
+            },
+            7,
+            target_path="/api/v0/file/upload_file",
+        )
+        upload_value = json.loads(base64.b64decode(upload_encoded))
+        self.assertEqual(upload_value["target_path"], "/api/v0/file/upload_file")
+
+    def test_image_input_uses_official_upload_then_vision_completion(self) -> None:
+        image_bytes = b"\x89PNG\r\n\x1a\nabc"
+        image_url = "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
+
+        class FakeProvider(DeepSeekHarnessProvider):
+            def __init__(self):
+                super().__init__(pow_solver=lambda _challenge: 17)
+                self.requests = []
+
+            def _request(self, method, upstream_path, body, headers):
+                self.requests.append((method, upstream_path, body, dict(headers)))
+                if upstream_path.endswith("create_pow_challenge"):
+                    return 200, {}, json.dumps({
+                        "data": {
+                            "biz_code": 0,
+                            "biz_data": {
+                                "challenge": {
+                                    "algorithm": "DeepSeekHashV1",
+                                    "challenge": "a" * 64,
+                                    "salt": "salt",
+                                    "difficulty": 1,
+                                    "signature": "signature",
+                                    "expire_at": 12345,
+                                }
+                            },
+                        }
+                    }).encode()
+                if upstream_path.endswith("file/upload_file"):
+                    return 200, {}, json.dumps({
+                        "data": {
+                            "biz_code": 0,
+                            "biz_data": {
+                                "id": "file-image-1",
+                                "file_name": "codex-input-image-1.png",
+                                "status": "SUCCESS",
+                                "audit_result": "unknown",
+                            },
+                        }
+                    }).encode()
+                if upstream_path.endswith("chat_session/create"):
+                    return 200, {}, json.dumps({
+                        "data": {"biz_code": 0, "biz_data": {"chat_session": {"id": "session-1"}}}
+                    }).encode()
+                return 200, {"content-type": "text/event-stream"}, (
+                    'data: {"p":"response/message_id","v":"message-1"}\n\n'
+                    'data: {"p":"response/fragments","o":"APPEND","v":'
+                    '[{"type":"RESPONSE","content":"I can see it"}]}\n\n'
+                    'data: {"p":"response/status","v":"FINISHED"}\n\n'
+                ).encode()
+
+        provider = FakeProvider()
+        streaming, response = provider.responses({
+            "model": "deepseek-web/reasoner",
+            "reasoning": {"effort": "high"},
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "what is in this image?"},
+                    {"type": "input_image", "image_url": image_url},
+                ],
+            }],
+        })
+
+        self.assertFalse(streaming)
+        self.assertEqual(response["output"][0]["content"][0]["text"], "I can see it")
+        pow_requests = [
+            json.loads(body)
+            for _method, path, body, _headers in provider.requests
+            if path.endswith("create_pow_challenge")
+        ]
+        self.assertEqual(
+            [item["target_path"] for item in pow_requests],
+            ["/api/v0/file/upload_file", "/api/v0/chat/completion"],
+        )
+        upload = next(item for item in provider.requests if item[1].endswith("file/upload_file"))
+        self.assertEqual(upload[3]["x-model-type"], "vision")
+        self.assertEqual(upload[3]["x-file-size"], str(len(image_bytes)))
+        self.assertIn(image_bytes, upload[2])
+        upload_pow = json.loads(base64.b64decode(upload[3]["x-ds-pow-response"]))
+        self.assertEqual(upload_pow["target_path"], "/api/v0/file/upload_file")
+
+        completion_request = next(item for item in provider.requests if item[1].endswith("chat/completion"))
+        completion = json.loads(completion_request[2])
+        self.assertEqual(completion["model_type"], "vision")
+        self.assertEqual(completion["ref_file_ids"], ["file-image-1"])
+        self.assertFalse(completion["thinking_enabled"])
+        self.assertIn("[Image attached separately for DeepSeek Vision]", completion["prompt"])
+        self.assertNotIn("data:image/png;base64", completion["prompt"])
+        self.assertNotIn(base64.b64encode(image_bytes).decode("ascii"), completion["prompt"])
+
+    def test_image_input_validation_limits_count_size_and_format(self) -> None:
+        tiny = "data:image/png;base64," + base64.b64encode(b"abc").decode("ascii")
+        with self.assertRaisesRegex(DeepSeekHarnessError, "at most 4 image attachments"):
+            _extract_deepseek_images([{
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_image", "image_url": tiny} for _ in range(5)],
+            }])
+
+        with patch("fanvpn_bridge.deepseek_harness._MAX_VISION_IMAGE_BYTES", 3):
+            too_large = "data:image/png;base64," + base64.b64encode(b"abcd").decode("ascii")
+            with self.assertRaisesRegex(DeepSeekHarnessError, "upload limit"):
+                _extract_deepseek_images([{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_image", "image_url": too_large}],
+                }])
+
+        with self.assertRaisesRegex(DeepSeekHarnessError, "invalid Base64"):
+            _extract_deepseek_images([{
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_image", "image_url": "data:image/png;base64,%%%"}],
+            }])
+
+    def test_image_upload_waits_for_processing_and_rejects_audit_failure(self) -> None:
+        image_url = "data:image/png;base64," + base64.b64encode(b"abc").decode("ascii")
+
+        class PendingProvider(DeepSeekHarnessProvider):
+            def __init__(self, audit_result="PASS"):
+                super().__init__(pow_solver=lambda _challenge: 1)
+                self.audit_result = audit_result
+
+            def _request(self, method, upstream_path, body, headers):
+                if upstream_path.endswith("create_pow_challenge"):
+                    return 200, {}, json.dumps({
+                        "data": {
+                            "biz_code": 0,
+                            "biz_data": {
+                                "challenge": {
+                                    "algorithm": "DeepSeekHashV1",
+                                    "challenge": "a" * 64,
+                                    "salt": "salt",
+                                    "difficulty": 1,
+                                    "signature": "signature",
+                                    "expire_at": 12345,
+                                }
+                            },
+                        }
+                    }).encode()
+                if upstream_path.endswith("file/upload_file"):
+                    return 200, {}, json.dumps({
+                        "data": {
+                            "biz_code": 0,
+                            "biz_data": {"id": "file-image-1", "file_name": "shot.png", "status": "PENDING"},
+                        }
+                    }).encode()
+                if upstream_path.startswith("/api/v0/file/fetch_files?"):
+                    return 200, {}, json.dumps({
+                        "data": {
+                            "biz_code": 0,
+                            "bizData": {
+                                "files": [{
+                                    "fileId": "file-image-1",
+                                    "fileName": "shot.png",
+                                    "status": "SUCCESS",
+                                    "auditResult": self.audit_result,
+                                }]
+                            },
+                        }
+                    }).encode()
+                raise AssertionError(upstream_path)
+
+        with patch("fanvpn_bridge.deepseek_harness._FILE_READY_POLL_SECONDS", 0):
+            provider = PendingProvider()
+            self.assertEqual(provider._upload_input_images([{
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_image", "image_url": image_url}],
+            }]), ["file-image-1"])
+
+            rejected = PendingProvider(audit_result="REJECTED")
+            with self.assertRaisesRegex(DeepSeekHarnessError, "audit_result=REJECTED"):
+                rejected._upload_input_images([{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_image", "image_url": image_url}],
+                }])
 
     def test_tool_call_is_returned_as_responses_function_call(self) -> None:
         events = list(
@@ -496,6 +693,63 @@ class DeepSeekHarnessTests(unittest.TestCase):
         })
         self.assertFalse(streaming)
         self.assertEqual(response["output"][0]["content"][0]["text"], "final answer")
+
+    def test_provider_waits_for_history_when_stream_finishes_before_visible_answer(self) -> None:
+        class FakeProvider(DeepSeekHarnessProvider):
+            def __init__(self):
+                super().__init__(pow_solver=lambda _challenge: 1)
+                self.history_reads = 0
+
+            def _request(self, method, upstream_path, body, headers):
+                if upstream_path.endswith("chat_session/create"):
+                    return 200, {}, json.dumps({
+                        "data": {"biz_code": 0, "biz_data": {"chat_session": {"id": "session-1"}}}
+                    }).encode()
+                if upstream_path.endswith("create_pow_challenge"):
+                    return 200, {}, json.dumps({
+                        "data": {
+                            "biz_code": 0,
+                            "biz_data": {
+                                "challenge": {
+                                    "algorithm": "DeepSeekHashV1",
+                                    "challenge": "a" * 64,
+                                    "salt": "salt",
+                                    "difficulty": 1,
+                                    "signature": "signature",
+                                    "expire_at": 12345,
+                                }
+                            },
+                        }
+                    }).encode()
+                if upstream_path.startswith("/api/v0/chat/history_messages?"):
+                    self.history_reads += 1
+                    answer = "" if self.history_reads == 1 else "eventually visible answer"
+                    return 200, {}, json.dumps({
+                        "data": {
+                            "biz_code": 0,
+                            "biz_data": {
+                                "chat_messages": [{
+                                    "message_id": "message-delayed",
+                                    "role": "ASSISTANT",
+                                    "fragments": [{"type": "RESPONSE", "content": answer}],
+                                }]
+                            },
+                        }
+                    }).encode()
+                return 200, {"content-type": "text/event-stream"}, (
+                    'data: {"p":"response/message_id","v":"message-delayed"}\n\n'
+                    'data: {"p":"response/status","v":"FINISHED"}\n\n'
+                ).encode()
+
+        provider = FakeProvider()
+        with patch("fanvpn_bridge.deepseek_harness._EMPTY_RESPONSE_RECOVERY_POLL_SECONDS", 0):
+            streaming, response = provider.responses({
+                "model": "deepseek-web/chat",
+                "input": "answer me",
+            })
+        self.assertFalse(streaming)
+        self.assertEqual(response["output"][0]["content"][0]["text"], "eventually visible answer")
+        self.assertEqual(provider.history_reads, 2)
 
     def test_provider_reuses_same_deepseek_session_and_sends_only_new_turn(self) -> None:
         class FakeProvider(DeepSeekHarnessProvider):
