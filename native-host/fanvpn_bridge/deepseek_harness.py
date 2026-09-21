@@ -236,11 +236,15 @@ class DeepSeekHarnessProvider:
             reasoning = payload.get("reasoning")
             effort = str(reasoning.get("effort") or "").lower() if isinstance(reasoning, dict) else ""
             reasoner = model.endswith("/reasoner")
-            available_tools = {
-                str(item.get("name"))
+            tool_definitions = [
+                {
+                    "name": str(item.get("name")),
+                    "parameters": item.get("parameters") if isinstance(item.get("parameters"), dict) else {},
+                }
                 for item in payload.get("tools") or []
                 if isinstance(item, dict) and item.get("type") == "function" and item.get("name")
-            }
+            ]
+            available_tools = {str(item["name"]) for item in tool_definitions}
             thinking_enabled = reasoner or effort in {"low", "medium", "high"}
             current_prompt = prompt
             parent_message_id = state.parent_message_id
@@ -315,7 +319,7 @@ class DeepSeekHarnessProvider:
                         code="deepseek_tool_call_invalid",
                     )
                 parent_message_id = response_message_id
-                current_prompt = _tool_call_recovery_prompt(available_tools)
+                current_prompt = _tool_call_recovery_prompt(tool_definitions)
 
             events = list(_responses_events(model, answer_text if tool_calls is None else "", tool_calls or []))
             completed = _last_completed_response(events)
@@ -1324,7 +1328,7 @@ def _responses_to_deepseek_prompt(
             + "\n\n".join(tool_sections)
         )
     elif tools:
-        sections.append(_tool_format_reminder({str(tool["name"]) for tool in tools}))
+        sections.append(_tool_format_reminder(tools))
     return "\n\n".join(sections).strip()
 
 
@@ -1691,25 +1695,36 @@ def _looks_like_tool_call_attempt(text: str, available_tools: set[str]) -> bool:
     return any(name in stripped for name in available_tools)
 
 
-def _tool_format_reminder(available_tools: set[str]) -> str:
-    tag_map = _tool_tag_map(available_tools)
-    valid_tags = "\n".join(f"<{tag}>...</{tag}>" for tag in tag_map.values())
+def _tool_format_reminder(tools: list[Mapping[str, object]]) -> str:
+    tag_map = _tool_tag_map(str(tool.get("name") or "tool") for tool in tools)
+    examples: list[str] = []
+    for tool in tools:
+        name = str(tool.get("name") or "tool")
+        parameters = tool.get("parameters") if isinstance(tool.get("parameters"), dict) else {"type": "object"}
+        example = _schema_example(parameters)
+        if not isinstance(example, dict):
+            example = {}
+        tag = tag_map[name]
+        examples.append(
+            f"<{tag}>{json.dumps(example, ensure_ascii=False, separators=(',', ':'))}</{tag}>"
+        )
+    valid_examples = "\n".join(examples)
     return (
         "CODEX TOOL FORMAT REMINDER:\n"
-        "If a tool is required, output ONLY direct tool XML blocks using the exact tags below.\n"
-        "Valid tool tags this turn:\n"
-        f"{valid_tags}\n"
+        "If a tool is required, output ONLY direct tool XML blocks using the exact complete examples below as the format.\n"
+        "Complete valid tool-call examples this turn:\n"
+        f"{valid_examples}\n"
         "Each tag body must contain exactly one valid JSON object matching that tool's schema already provided for this conversation. "
         "Copy the matching closing tag exactly as shown for the tool you opened; do not substitute another tool-call syntax or closing delimiter. "
         "Do not add prose outside tool blocks. This is the only valid tool-call format."
     )
 
 
-def _tool_call_recovery_prompt(available_tools: set[str]) -> str:
+def _tool_call_recovery_prompt(tools: list[Mapping[str, object]]) -> str:
     return (
         "TOOL CALL FORMAT ERROR:\n"
         "Your previous RESPONSE could not be executed as a valid tool call.\n"
-        f"{_tool_format_reminder(available_tools)}\n"
+        f"{_tool_format_reminder(tools)}\n"
         "Re-emit the intended tool call(s) now using that exact format, with no explanation."
     )
 
