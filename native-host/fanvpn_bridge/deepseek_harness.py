@@ -7,6 +7,7 @@ import hashlib
 import http.client
 import json
 import os
+import queue
 import re
 import threading
 import time
@@ -88,6 +89,132 @@ class _DeepSeekImage:
     filename: str
 
 
+class _DeepSeekLiveResponse:
+    """Translate ordinary DeepSeek answer deltas into Responses SSE events.
+
+    Direct tool calls deliberately stay buffered. Their first non-whitespace
+    character must be ``<`` under our tool protocol, so ordinary prose can be
+    streamed without leaking a half-written tool block to Codex.
+    """
+
+    def __init__(self, model: str, has_tools: bool, emit: Callable[[bytes], None]) -> None:
+        self.model = model
+        self.has_tools = has_tools
+        self.emit = emit
+        self.response_id = "resp_" + uuid.uuid4().hex
+        self.message_id = "msg_" + uuid.uuid4().hex
+        self.created_at = int(time.time())
+        self.sequence = 0
+        self.started = False
+        self.streamed_this_attempt = False
+        self._mode = "undecided"
+        self._pending = ""
+        self.final_events: list[bytes] = []
+
+    def begin_attempt(self) -> None:
+        self.streamed_this_attempt = False
+        self._mode = "streaming" if not self.has_tools else "undecided"
+        self._pending = ""
+
+    def on_answer_delta(self, delta: str) -> None:
+        if not delta:
+            return
+        if self._mode == "buffered":
+            return
+        if self._mode == "undecided":
+            self._pending += delta
+            stripped = self._pending.lstrip()
+            if not stripped:
+                return
+            if stripped.startswith("<"):
+                self._mode = "buffered"
+                return
+            self._mode = "streaming"
+            delta = self._pending
+            self._pending = ""
+        self._start_text()
+        self.streamed_this_attempt = True
+        self.emit(self._event(
+            "response.output_text.delta",
+            item_id=self.message_id,
+            output_index=0,
+            content_index=0,
+            delta=delta,
+            logprobs=[],
+        ))
+
+    def finish_text(self, completed: Mapping[str, Any]) -> None:
+        output = completed.get("output") if isinstance(completed.get("output"), list) else []
+        message = next(
+            (
+                item for item in output
+                if isinstance(item, dict)
+                and item.get("type") == "message"
+                and item.get("id") == self.message_id
+            ),
+            None,
+        )
+        if not isinstance(message, dict):
+            raise DeepSeekHarnessError("DeepSeek live stream lost its final assistant message")
+        content = message.get("content") if isinstance(message.get("content"), list) else []
+        part = content[0] if content and isinstance(content[0], dict) else {
+            "type": "output_text",
+            "text": "",
+            "annotations": [],
+        }
+        text = str(part.get("text") or "")
+        self.emit(self._event(
+            "response.output_text.done",
+            item_id=self.message_id,
+            output_index=0,
+            content_index=0,
+            text=text,
+            logprobs=[],
+        ))
+        self.emit(self._event(
+            "response.content_part.done",
+            item_id=self.message_id,
+            output_index=0,
+            content_index=0,
+            part=part,
+        ))
+        self.emit(self._event("response.output_item.done", output_index=0, item=message))
+        self.emit(self._event("response.completed", response=dict(completed)))
+        self.emit(b"data: [DONE]\n\n")
+
+    def _start_text(self) -> None:
+        if self.started:
+            return
+        self.started = True
+        usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        self.emit(self._event(
+            "response.created",
+            response=_response_object(self.response_id, self.model, self.created_at, "in_progress", [], usage),
+        ))
+        item = {
+            "id": self.message_id,
+            "type": "message",
+            "status": "in_progress",
+            "role": "assistant",
+            "content": [],
+        }
+        self.emit(self._event("response.output_item.added", output_index=0, item=item))
+        part = {"type": "output_text", "text": "", "annotations": []}
+        self.emit(self._event(
+            "response.content_part.added",
+            item_id=self.message_id,
+            output_index=0,
+            content_index=0,
+            part=part,
+        ))
+
+    def _event(self, event_type: str, **values: Any) -> bytes:
+        event = {"type": event_type, "sequence_number": self.sequence, **values}
+        self.sequence += 1
+        data = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+        return f"event: {event_type}\ndata: {data}\n\n".encode("utf-8")
+
+
 def is_deepseek_model(value: object) -> bool:
     return isinstance(value, str) and value.startswith(DEEPSEEK_PREFIX)
 
@@ -119,6 +246,7 @@ class DeepSeekHarnessProvider:
         self._conversation_states_lock = threading.Lock()
         self._state_path = state_path
         self._state_file_lock = threading.Lock()
+        self._live_response_context = threading.local()
         self._load_conversation_states()
 
     def models_response(self) -> dict[str, object]:
@@ -173,6 +301,19 @@ class DeepSeekHarnessProvider:
             if bool(payload.get("stream", False)):
                 return True, iter(events)
             return False, completed
+
+        if bool(payload.get("stream", False)) and self._current_live_response() is None:
+            stream = self._live_responses(payload, model)
+            try:
+                first = next(stream)
+            except StopIteration as exc:
+                raise DeepSeekHarnessError("DeepSeek live stream ended without a response") from exc
+
+            def replay_first() -> Iterator[bytes]:
+                yield first
+                yield from stream
+
+            return True, replay_first()
 
         conversation_key = _deepseek_conversation_key(payload)
         state = self._conversation_state(conversation_key) if conversation_key else _DeepSeekConversationState()
@@ -251,6 +392,7 @@ class DeepSeekHarnessProvider:
             answer_text = ""
             response_message_id: str | int | None = None
             tool_calls: list[dict[str, Any]] | None = None
+            live_response = self._current_live_response()
             for recovery_attempt in range(3):
                 turn_ref_file_ids = ref_file_ids if recovery_attempt == 0 else []
                 vision_enabled = bool(turn_ref_file_ids)
@@ -288,7 +430,11 @@ class DeepSeekHarnessProvider:
                 self._raise_for_status(status, raw, "completion")
                 answer_text, _reasoning_text = _parse_deepseek_stream(raw)
                 response_message_id = _deepseek_response_message_id(raw)
-                if turn_thinking_enabled and response_message_id is not None:
+                if (
+                    turn_thinking_enabled
+                    and response_message_id is not None
+                    and not (live_response and live_response.streamed_this_attempt)
+                ):
                     history_turn = self._history_turn(state.session_id, response_message_id)
                     if history_turn is not None and history_turn[1].strip():
                         response_message_id, answer_text, _reasoning_text = history_turn
@@ -301,11 +447,18 @@ class DeepSeekHarnessProvider:
                         "DeepSeek Web completed without an answer. Its web stream format may have changed.",
                         code="deepseek_empty_response",
                     )
-                tool_calls = _parse_tool_calls(answer_text, available_tools)
-                invalid_tool_attempt = tool_calls is None and _looks_like_tool_call_attempt(
-                    answer_text,
-                    available_tools,
-                )
+                if live_response and live_response.streamed_this_attempt:
+                    # Once ordinary prose has been emitted it cannot be retracted.
+                    # Valid direct tool calls always begin with '<' and therefore
+                    # remain buffered instead of reaching this branch.
+                    tool_calls = None
+                    invalid_tool_attempt = False
+                else:
+                    tool_calls = _parse_tool_calls(answer_text, available_tools)
+                    invalid_tool_attempt = tool_calls is None and _looks_like_tool_call_attempt(
+                        answer_text,
+                        available_tools,
+                    )
                 if not invalid_tool_attempt:
                     break
                 if recovery_attempt == 2:
@@ -321,8 +474,18 @@ class DeepSeekHarnessProvider:
                 parent_message_id = response_message_id
                 current_prompt = _tool_call_recovery_prompt(tool_definitions)
 
-            events = list(_responses_events(model, answer_text if tool_calls is None else "", tool_calls or []))
+            response_text = answer_text if tool_calls is None else ""
+            events = list(_responses_events(
+                model,
+                response_text,
+                tool_calls or [],
+                response_id=live_response.response_id if live_response else None,
+                created_at=live_response.created_at if live_response else None,
+                message_id=live_response.message_id if live_response and response_text else None,
+            ))
             completed = _last_completed_response(events)
+            if live_response is not None:
+                live_response.final_events = events
 
             state.parent_message_id = response_message_id
             state.control_signature = control_signature
@@ -335,6 +498,52 @@ class DeepSeekHarnessProvider:
             if bool(payload.get("stream", False)):
                 return True, iter(events)
             return False, completed
+
+    def _live_responses(self, payload: dict[str, Any], model: str) -> Iterator[bytes]:
+        pending: queue.Queue[bytes | Exception | object] = queue.Queue()
+        finished = object()
+        has_tools = any(
+            isinstance(item, dict) and item.get("type") == "function" and item.get("name")
+            for item in payload.get("tools") or []
+        )
+        live = _DeepSeekLiveResponse(model, has_tools, pending.put)
+
+        def worker() -> None:
+            self._live_response_context.value = live
+            try:
+                nonstream_payload = copy.deepcopy(payload)
+                nonstream_payload["stream"] = False
+                streaming, completed = self.responses(nonstream_payload)
+                if streaming or not isinstance(completed, dict):
+                    raise DeepSeekHarnessError("DeepSeek live stream did not produce a completed response")
+                if live.started:
+                    live.finish_text(completed)
+                else:
+                    if not live.final_events:
+                        raise DeepSeekHarnessError("DeepSeek live stream produced no final events")
+                    for event in live.final_events:
+                        pending.put(event)
+            except Exception as exc:
+                pending.put(exc)
+            finally:
+                try:
+                    del self._live_response_context.value
+                except AttributeError:
+                    pass
+                pending.put(finished)
+
+        threading.Thread(target=worker, name="deepseek-live-response", daemon=True).start()
+        while True:
+            item = pending.get()
+            if item is finished:
+                return
+            if isinstance(item, Exception):
+                raise item
+            yield item
+
+    def _current_live_response(self) -> _DeepSeekLiveResponse | None:
+        value = getattr(self._live_response_context, "value", None)
+        return value if isinstance(value, _DeepSeekLiveResponse) else None
 
     def compact(self, payload: dict[str, Any]) -> dict[str, Any]:
         model = str(payload.get("model") or "deepseek-web/chat").strip()
@@ -786,6 +995,44 @@ class DeepSeekHarnessProvider:
         try:
             connection.request(method, "/deepseek-web" + upstream_path, body=body, headers=request_headers)
             response = connection.getresponse()
+            live_response = self._current_live_response()
+            live_completion = (
+                live_response is not None
+                and upstream_path == _COMPLETION_PATH
+                and 200 <= response.status < 300
+                and "text/event-stream" in str(headers.get("accept") or "").lower()
+            )
+            if live_completion:
+                live_response.begin_attempt()
+                raw = bytearray()
+                pending = bytearray()
+                stream_state: dict[str, Any] = {"types": [], "current": -1, "observed": False}
+                while True:
+                    chunk = response.read1(64 * 1024)
+                    if not chunk:
+                        break
+                    raw.extend(chunk)
+                    if len(raw) > _MAX_UPSTREAM_BODY:
+                        raise DeepSeekHarnessError("DeepSeek Web response exceeded the bridge safety limit")
+                    pending.extend(chunk)
+                    while True:
+                        boundary = re.search(br"\r?\n\r?\n", pending)
+                        if boundary is None:
+                            break
+                        block = bytes(pending[:boundary.start()]).decode("utf-8", errors="replace")
+                        del pending[:boundary.end()]
+                        delta_text, _delta_reasoning = _parse_deepseek_sse_block(block, stream_state)
+                        live_response.on_answer_delta(delta_text)
+                if pending:
+                    block = bytes(pending).decode("utf-8", errors="replace")
+                    delta_text, _delta_reasoning = _parse_deepseek_sse_block(block, stream_state)
+                    live_response.on_answer_delta(delta_text)
+                return (
+                    response.status,
+                    {name.lower(): value for name, value in response.getheaders()},
+                    bytes(raw),
+                )
+
             raw = response.read(_MAX_UPSTREAM_BODY + 1)
             if len(raw) > _MAX_UPSTREAM_BODY:
                 raise DeepSeekHarnessError("DeepSeek Web response exceeded the bridge safety limit")
@@ -1582,22 +1829,26 @@ def _parse_deepseek_stream(raw: bytes) -> tuple[str, str]:
     answer: list[str] = []
     reasoning: list[str] = []
     for block in re.split(r"\r?\n\r?\n", text):
-        data_lines = [line[5:].strip() for line in block.splitlines() if line.startswith("data:")]
-        if not data_lines:
-            continue
-        data = "\n".join(data_lines)
-        if data == "[DONE]":
-            continue
-        try:
-            parsed = json.loads(data)
-        except json.JSONDecodeError:
-            continue
-        delta_text, delta_reasoning = _split_deepseek_text(parsed, state)
+        delta_text, delta_reasoning = _parse_deepseek_sse_block(block, state)
         if delta_text:
             answer.append(delta_text)
         if delta_reasoning:
             reasoning.append(delta_reasoning)
     return "".join(answer), "".join(reasoning)
+
+
+def _parse_deepseek_sse_block(block: str, state: dict[str, Any]) -> tuple[str, str]:
+    data_lines = [line[5:].strip() for line in block.splitlines() if line.startswith("data:")]
+    if not data_lines:
+        return "", ""
+    data = "\n".join(data_lines)
+    if data == "[DONE]":
+        return "", ""
+    try:
+        parsed = json.loads(data)
+    except json.JSONDecodeError:
+        return "", ""
+    return _split_deepseek_text(parsed, state)
 
 
 def _split_deepseek_text(parsed: object, state: dict[str, Any]) -> tuple[str, str]:
@@ -1765,9 +2016,17 @@ def _parse_direct_tool_calls(text: str, available_tools: set[str]) -> list[dict[
     return calls or None
 
 
-def _responses_events(model: str, text: str, tool_calls: list[dict[str, Any]]) -> Iterator[bytes]:
-    response_id = "resp_" + uuid.uuid4().hex
-    created_at = int(time.time())
+def _responses_events(
+    model: str,
+    text: str,
+    tool_calls: list[dict[str, Any]],
+    *,
+    response_id: str | None = None,
+    created_at: int | None = None,
+    message_id: str | None = None,
+) -> Iterator[bytes]:
+    response_id = response_id or ("resp_" + uuid.uuid4().hex)
+    created_at = int(time.time()) if created_at is None else created_at
     sequence = 0
     output: list[dict[str, Any]] = []
     usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
@@ -1781,7 +2040,7 @@ def _responses_events(model: str, text: str, tool_calls: list[dict[str, Any]]) -
 
     yield emit("response.created", response=_response_object(response_id, model, created_at, "in_progress", [], usage))
     if text:
-        message_id = "msg_" + uuid.uuid4().hex
+        message_id = message_id or ("msg_" + uuid.uuid4().hex)
         index = len(output)
         item = {"id": message_id, "type": "message", "status": "in_progress", "role": "assistant", "content": []}
         yield emit("response.output_item.added", output_index=index, item=item)

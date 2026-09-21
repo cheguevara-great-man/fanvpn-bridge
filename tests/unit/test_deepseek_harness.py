@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -515,6 +516,192 @@ class DeepSeekHarnessTests(unittest.TestCase):
         self.assertEqual(completion["model_type"], "default")
         pow_value = json.loads(base64.b64decode(provider.requests[-1][3]["x-ds-pow-response"]))
         self.assertEqual(pow_value["answer"], 23)
+
+    def test_streaming_provider_yields_text_before_upstream_finishes(self) -> None:
+        release_second_chunk = threading.Event()
+        waiting_for_second_chunk = threading.Event()
+        first_chunk = (
+            'data: {"p":"response/fragments","o":"APPEND","v":'
+            '[{"type":"RESPONSE","content":"hello"}]}\n\n'
+        ).encode()
+        second_chunk = (
+            'data: {"p":"response/fragments/-1/content","v":" world"}\n\n'
+            'data: {"p":"response/status","v":"FINISHED"}\n\n'
+        ).encode()
+
+        class FakeResponse:
+            status = 200
+
+            def __init__(self):
+                self.index = 0
+
+            def getheaders(self):
+                return [("content-type", "text/event-stream")]
+
+            def read1(self, _size):
+                self.index += 1
+                if self.index == 1:
+                    return first_chunk
+                if self.index == 2:
+                    waiting_for_second_chunk.set()
+                    if not release_second_chunk.wait(2):
+                        raise AssertionError("test did not release second DeepSeek chunk")
+                    return second_chunk
+                return b""
+
+        class FakeConnection:
+            def __init__(self, *_args, **_kwargs):
+                self.response = FakeResponse()
+
+            def request(self, *_args, **_kwargs):
+                return None
+
+            def getresponse(self):
+                return self.response
+
+            def close(self):
+                return None
+
+        class FakeProvider(DeepSeekHarnessProvider):
+            def _create_session(self):
+                return "session-live"
+
+            def _create_pow_challenge(self, _target_path="/api/v0/chat/completion"):
+                return {
+                    "algorithm": "DeepSeekHashV1",
+                    "challenge": "a" * 64,
+                    "salt": "salt",
+                    "difficulty": 1,
+                    "signature": "signature",
+                    "expireAt": 123,
+                }
+
+        provider = FakeProvider(pow_solver=lambda _challenge: 1)
+        with patch("fanvpn_bridge.deepseek_harness.http.client.HTTPConnection", FakeConnection):
+            streaming, response = provider.responses({
+                "model": "deepseek-web/chat",
+                "input": "say hello",
+                "stream": True,
+                "tools": [{
+                    "type": "function",
+                    "name": "exec_command",
+                    "parameters": {"type": "object"},
+                }],
+            })
+            self.assertTrue(streaming)
+            self.assertTrue(waiting_for_second_chunk.wait(0.5))
+            iterator = iter(response)
+            seen = []
+            while True:
+                event = next(iterator)
+                seen.append(event)
+                decoded = [
+                    json.loads(line[6:])
+                    for line in event.decode().splitlines()
+                    if line.startswith("data: {")
+                ]
+                delta = next((item for item in decoded if item.get("type") == "response.output_text.delta"), None)
+                if delta is not None:
+                    self.assertEqual(delta["delta"], "hello")
+                    break
+            self.assertFalse(release_second_chunk.is_set())
+            release_second_chunk.set()
+            seen.extend(list(iterator))
+
+        decoded = [
+            json.loads(line[6:])
+            for event in seen
+            for line in event.decode().splitlines()
+            if line.startswith("data: {")
+        ]
+        deltas = [item["delta"] for item in decoded if item.get("type") == "response.output_text.delta"]
+        self.assertEqual(deltas, ["hello", " world"])
+        created = next(item for item in decoded if item.get("type") == "response.created")
+        completed = next(item for item in decoded if item.get("type") == "response.completed")
+        self.assertEqual(created["response"]["id"], completed["response"]["id"])
+
+    def test_streaming_provider_buffers_direct_tool_call_until_complete(self) -> None:
+        chunks = [
+            ('data: ' + json.dumps({
+                "p": "response/fragments",
+                "o": "APPEND",
+                "v": [{"type": "RESPONSE", "content": '<exec_command>{"cmd":"Get-'}],
+            }, separators=(",", ":")) + "\n\n").encode(),
+            ('data: ' + json.dumps({
+                "p": "response/fragments/-1/content",
+                "v": 'Content a.txt"}</exec_command>',
+            }, separators=(",", ":")) + "\n\n"
+             'data: {"p":"response/status","v":"FINISHED"}\n\n').encode(),
+        ]
+
+        class FakeResponse:
+            status = 200
+
+            def __init__(self):
+                self.index = 0
+
+            def getheaders(self):
+                return [("content-type", "text/event-stream")]
+
+            def read1(self, _size):
+                if self.index >= len(chunks):
+                    return b""
+                chunk = chunks[self.index]
+                self.index += 1
+                return chunk
+
+        class FakeConnection:
+            def __init__(self, *_args, **_kwargs):
+                self.response = FakeResponse()
+
+            def request(self, *_args, **_kwargs):
+                return None
+
+            def getresponse(self):
+                return self.response
+
+            def close(self):
+                return None
+
+        class FakeProvider(DeepSeekHarnessProvider):
+            def _create_session(self):
+                return "session-tool"
+
+            def _create_pow_challenge(self, _target_path="/api/v0/chat/completion"):
+                return {
+                    "algorithm": "DeepSeekHashV1",
+                    "challenge": "a" * 64,
+                    "salt": "salt",
+                    "difficulty": 1,
+                    "signature": "signature",
+                    "expireAt": 123,
+                }
+
+        provider = FakeProvider(pow_solver=lambda _challenge: 1)
+        with patch("fanvpn_bridge.deepseek_harness.http.client.HTTPConnection", FakeConnection):
+            streaming, response = provider.responses({
+                "model": "deepseek-web/chat",
+                "input": "inspect a.txt",
+                "stream": True,
+                "tools": [{
+                    "type": "function",
+                    "name": "exec_command",
+                    "parameters": {"type": "object"},
+                }],
+            })
+            self.assertTrue(streaming)
+            events = list(response)
+
+        decoded = [
+            json.loads(line[6:])
+            for event in events
+            for line in event.decode().splitlines()
+            if line.startswith("data: {")
+        ]
+        self.assertFalse(any(item.get("type") == "response.output_text.delta" for item in decoded))
+        completed = next(item for item in decoded if item.get("type") == "response.completed")
+        self.assertEqual(completed["response"]["output"][0]["type"], "function_call")
+        self.assertEqual(completed["response"]["output"][0]["name"], "exec_command")
 
     def test_provider_recovers_invalid_direct_tool_json_with_continuation(self) -> None:
         class FakeProvider(DeepSeekHarnessProvider):
