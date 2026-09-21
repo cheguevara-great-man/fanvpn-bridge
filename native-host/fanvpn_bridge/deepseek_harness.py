@@ -1313,7 +1313,9 @@ def _responses_to_deepseek_prompt(
             "Codex, not you, executes tools. Each available tool has its own direct XML tag and its own JSON argument schema below.\n"
             "When a tool is required, output only one or more direct tool blocks and no prose outside them. "
             "The XML tag name itself selects the tool; the tag body MUST be one valid JSON object containing only that tool's arguments.\n"
-            "Use the exact tag shown for that tool. Do not add attributes to tool tags. Do not wrap arguments in `name`, `arguments`, or `tool`.\n"
+            "Use the exact tag shown for that tool. Every opening tag MUST be closed by the exact matching closing tag shown for that same tool; "
+            "never switch to a different tool-call syntax or closing delimiter at the end of the block. "
+            "Do not add attributes to tool tags. Do not wrap arguments in `name`, `arguments`, or `tool`.\n"
             "This direct per-tool XML format is the only valid tool-call syntax.\n"
             "For Windows paths inside JSON, use forward slashes when practical or correctly escaped backslashes. "
             "Tool-call XML belongs in the final RESPONSE, never in private reasoning/THINK content.\n"
@@ -1698,6 +1700,7 @@ def _tool_format_reminder(available_tools: set[str]) -> str:
         "Valid tool tags this turn:\n"
         f"{valid_tags}\n"
         "Each tag body must contain exactly one valid JSON object matching that tool's schema already provided for this conversation. "
+        "Copy the matching closing tag exactly as shown for the tool you opened; do not substitute another tool-call syntax or closing delimiter. "
         "Do not add prose outside tool blocks. This is the only valid tool-call format."
     )
 

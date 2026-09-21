@@ -75,6 +75,8 @@ class DeepSeekHarnessTests(unittest.TestCase):
         self.assertIn('"cmd":"Get-Content a.txt"', prompt)
         self.assertIn("Parameters JSON Schema", prompt)
         self.assertIn("This direct per-tool XML format is the only valid tool-call syntax", prompt)
+        self.assertIn("Every opening tag MUST be closed by the exact matching closing tag", prompt)
+        self.assertIn("never switch to a different tool-call syntax or closing delimiter", prompt)
         self.assertNotIn("<codex_tool_call>", prompt)
         self.assertIn("Do not wrap arguments in `name`, `arguments`, or `tool`", prompt)
 
@@ -104,6 +106,8 @@ class DeepSeekHarnessTests(unittest.TestCase):
         self.assertIn("CODEX TOOL FORMAT REMINDER", prompt)
         self.assertIn("<exec_command>...</exec_command>", prompt)
         self.assertIn("<write_stdin>...</write_stdin>", prompt)
+        self.assertIn("Copy the matching closing tag exactly as shown", prompt)
+        self.assertIn("do not substitute another tool-call syntax or closing delimiter", prompt)
         self.assertNotIn("Parameters JSON Schema", prompt)
         self.assertNotIn("Follow the repository rules.", prompt)
 
