@@ -1315,16 +1315,7 @@ def _responses_to_deepseek_prompt(
         sections.append(
             "CODEX TOOL PROTOCOL:\n"
             "Codex, not you, executes tools. Each available tool has its own direct XML tag and its own JSON argument schema below.\n"
-            "When a tool is required, output only one or more direct tool blocks and no prose outside them. "
-            "The XML tag name itself selects the tool; the tag body MUST be one valid JSON object containing only that tool's arguments.\n"
-            "Use the exact tag shown for that tool. Every opening tag MUST be closed by the exact matching closing tag shown for that same tool; "
-            "never switch to a different tool-call syntax or closing delimiter at the end of the block. "
-            "Do not add attributes to tool tags. Do not wrap arguments in `name`, `arguments`, or `tool`.\n"
-            "This direct per-tool XML format is the only valid tool-call syntax.\n"
-            "For Windows paths inside JSON, use forward slashes when practical or correctly escaped backslashes. "
-            "Tool-call XML belongs in the final RESPONSE, never in private reasoning/THINK content.\n"
-            "Never invent a tool result. After Codex returns TOOL RESULT in a later turn, continue the task normally. "
-            "If no tool is required, answer normally and emit no tool tags.\n\n"
+            f"{_tool_format_requirements()}\n\n"
             + "\n\n".join(tool_sections)
         )
     elif tools:
@@ -1695,6 +1686,22 @@ def _looks_like_tool_call_attempt(text: str, available_tools: set[str]) -> bool:
     return any(name in stripped for name in available_tools)
 
 
+def _tool_format_requirements() -> str:
+    return (
+        "When a tool is required, output only one or more direct tool blocks and no prose outside them. "
+        "The XML tag name itself selects the tool; each tag body MUST contain exactly one valid JSON object containing only that tool's arguments.\n"
+        "JSON string values MUST use valid JSON escaping: escape embedded double quotes as \\\" and backslashes as \\\\ when needed. "
+        "For Windows paths inside JSON, prefer forward slashes or correctly escaped backslashes.\n"
+        "Use the exact opening and closing tag shown for that tool. Every opening tag MUST have exactly one matching closing tag; "
+        "after closing a tool block, either start the next complete tool block or stop. Never switch to a different tool-call syntax or closing delimiter.\n"
+        "Do not add attributes to tool tags. Do not wrap arguments in `name`, `arguments`, or `tool`. "
+        "This direct per-tool XML format is the only valid tool-call syntax. This is the only valid tool-call format.\n"
+        "Tool-call XML belongs in the final RESPONSE, never in private reasoning/THINK content. "
+        "Never invent a tool result. After Codex returns TOOL RESULT in a later turn, continue the task normally. "
+        "If no tool is required, answer normally and emit no tool tags."
+    )
+
+
 def _tool_format_reminder(tools: list[Mapping[str, object]]) -> str:
     tag_map = _tool_tag_map(str(tool.get("name") or "tool") for tool in tools)
     examples: list[str] = []
@@ -1714,9 +1721,7 @@ def _tool_format_reminder(tools: list[Mapping[str, object]]) -> str:
         "If a tool is required, output ONLY direct tool XML blocks using the exact complete examples below as the format.\n"
         "Complete valid tool-call examples this turn:\n"
         f"{valid_examples}\n"
-        "Each tag body must contain exactly one valid JSON object matching that tool's schema already provided for this conversation. "
-        "Copy the matching closing tag exactly as shown for the tool you opened; do not substitute another tool-call syntax or closing delimiter. "
-        "Do not add prose outside tool blocks. This is the only valid tool-call format."
+        f"{_tool_format_requirements()}"
     )
 
 
