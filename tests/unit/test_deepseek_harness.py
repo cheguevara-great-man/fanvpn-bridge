@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import base64
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from fanvpn_bridge.deepseek_harness import (
@@ -910,6 +912,118 @@ class DeepSeekHarnessTests(unittest.TestCase):
         self.assertIn("fourth question", completions[3]["prompt"])
         self.assertNotIn("first question", completions[3]["prompt"])
         self.assertNotIn("third answer", completions[3]["prompt"])
+
+    def test_provider_restores_deepseek_session_after_restart(self) -> None:
+        class FakeProvider(DeepSeekHarnessProvider):
+            def __init__(self, state_path: Path):
+                super().__init__(
+                    pow_solver=lambda _challenge: 1,
+                    state_path=state_path,
+                )
+                self.requests = []
+                self.created_sessions = 0
+
+            def _request(self, method, upstream_path, body, headers):
+                self.requests.append((method, upstream_path, body, dict(headers)))
+                if upstream_path.endswith("chat_session/create"):
+                    self.created_sessions += 1
+                    return 200, {}, json.dumps({
+                        "data": {
+                            "biz_code": 0,
+                            "biz_data": {"chat_session": {"id": "session-1"}},
+                        }
+                    }).encode()
+                if upstream_path.endswith("history_messages?chat_session_id=session-1"):
+                    return 200, {}, json.dumps({
+                        "data": {
+                            "biz_code": 0,
+                            "biz_data": {
+                                "chat_messages": [{
+                                    "message_id": "message-1",
+                                    "role": "ASSISTANT",
+                                    "fragments": [{"type": "RESPONSE", "content": "first answer"}],
+                                }]
+                            },
+                        }
+                    }).encode()
+                if upstream_path.endswith("create_pow_challenge"):
+                    return 200, {}, json.dumps({
+                        "data": {
+                            "biz_code": 0,
+                            "biz_data": {
+                                "challenge": {
+                                    "algorithm": "DeepSeekHashV1",
+                                    "challenge": "a" * 64,
+                                    "salt": "salt",
+                                    "difficulty": 1,
+                                    "signature": "signature",
+                                    "expire_at": 12345,
+                                }
+                            },
+                        }
+                    }).encode()
+                completion = json.loads(body)
+                parent = completion.get("parent_message_id")
+                message_id = "message-1" if parent is None else "message-2"
+                answer = "first answer" if parent is None else "second answer"
+                return 200, {"content-type": "text/event-stream"}, (
+                    f'data: {{"p":"response/message_id","v":"{message_id}"}}\n\n'
+                    f'data: {{"p":"response/fragments","o":"APPEND","v":'
+                    f'[{{"type":"RESPONSE","content":"{answer}"}}]}}\n\n'
+                    'data: {"p":"response/status","v":"FINISHED"}\n\n'
+                ).encode()
+
+        common = {
+            "model": "deepseek-web/chat",
+            "instructions": "Follow repo rules.",
+            "tools": [],
+            "prompt_cache_key": "thread-restart",
+            "client_metadata": {
+                "x-codex-turn-metadata": json.dumps({
+                    "thread_id": "thread-restart",
+                    "turn_id": "turn-1",
+                })
+            },
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "deepseek-conversations.json"
+            first_provider = FakeProvider(state_path)
+            _streaming, first = first_provider.responses({
+                **common,
+                "input": [{"type": "message", "role": "user", "content": "first question"}],
+            })
+            self.assertEqual(first_provider.created_sessions, 1)
+            self.assertTrue(state_path.exists())
+
+            restarted_provider = FakeProvider(state_path)
+            _streaming, second = restarted_provider.responses({
+                **common,
+                "client_metadata": {
+                    "x-codex-turn-metadata": json.dumps({
+                        "thread_id": "thread-restart",
+                        "turn_id": "turn-2",
+                    })
+                },
+                "previous_response_id": first["id"],
+                "input": [{"type": "message", "role": "user", "content": "second question"}],
+            })
+
+        self.assertEqual(second["output"][0]["content"][0]["text"], "second answer")
+        self.assertEqual(restarted_provider.created_sessions, 0)
+        history_reads = [
+            path for _method, path, _body, _headers in restarted_provider.requests
+            if "history_messages" in path
+        ]
+        self.assertEqual(len(history_reads), 1)
+        completions = [
+            json.loads(body)
+            for _method, path, body, _headers in restarted_provider.requests
+            if path.endswith("/chat/completion")
+        ]
+        self.assertEqual(completions[0]["chat_session_id"], "session-1")
+        self.assertEqual(completions[0]["parent_message_id"], "message-1")
+        self.assertIn("second question", completions[0]["prompt"])
+        self.assertNotIn("first question", completions[0]["prompt"])
 
     def test_replayed_history_does_not_reupload_old_images(self) -> None:
         image_bytes = b"\x89PNG\r\n\x1a\nabc"

@@ -6,6 +6,7 @@ import copy
 import hashlib
 import http.client
 import json
+import os
 import re
 import threading
 import time
@@ -13,6 +14,7 @@ import urllib.parse
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 
@@ -76,6 +78,7 @@ class _DeepSeekConversationState:
     represented_items: tuple[str, ...] = ()
     control_signature: str | None = None
     last_response_id: str | None = None
+    needs_validation: bool = False
 
 
 @dataclass(frozen=True)
@@ -103,6 +106,7 @@ class DeepSeekHarnessProvider:
         bridge_url: str = "http://127.0.0.1:18888",
         pow_solver: Callable[[Mapping[str, object]], int],
         timeout_seconds: float = 600,
+        state_path: Path | None = None,
     ) -> None:
         parsed = urllib.parse.urlsplit(bridge_url)
         if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"}:
@@ -113,6 +117,9 @@ class DeepSeekHarnessProvider:
         self._timeout = timeout_seconds
         self._conversation_states: dict[str, _DeepSeekConversationState] = {}
         self._conversation_states_lock = threading.Lock()
+        self._state_path = state_path
+        self._state_file_lock = threading.Lock()
+        self._load_conversation_states()
 
     def models_response(self) -> dict[str, object]:
         now = int(time.time())
@@ -170,6 +177,7 @@ class DeepSeekHarnessProvider:
         conversation_key = _deepseek_conversation_key(payload)
         state = self._conversation_state(conversation_key) if conversation_key else _DeepSeekConversationState()
         with state.lock:
+            self._validate_restored_state(state)
             input_items = _prompt_input_items(payload)
             control_signature = _deepseek_control_signature(payload)
             previous_response_id = payload.get("previous_response_id")
@@ -318,6 +326,7 @@ class DeepSeekHarnessProvider:
             state.represented_items = (
                 represented_after_input + _response_history_fingerprints(answer_text, tool_calls)
             )
+            self._save_state_file()
 
             if bool(payload.get("stream", False)):
                 return True, iter(events)
@@ -406,6 +415,85 @@ class DeepSeekHarnessProvider:
             )
         return summary.strip()
 
+    def _load_conversation_states(self) -> None:
+        if self._state_path is None:
+            return
+        try:
+            value = json.loads(self._state_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return
+        if not isinstance(value, dict) or value.get("version") != 1:
+            return
+        raw_states = value.get("states")
+        if not isinstance(raw_states, dict):
+            return
+        for key, raw in raw_states.items():
+            restored = _conversation_state_from_json(raw)
+            if isinstance(key, str) and restored is not None:
+                self._conversation_states[key] = restored
+
+    def _save_state_file(self) -> None:
+        if self._state_path is None:
+            return
+        with self._state_file_lock:
+            with self._conversation_states_lock:
+                states = {
+                    key: _conversation_state_to_json(state)
+                    for key, state in self._conversation_states.items()
+                    if state.session_id and state.parent_message_id is not None
+                }
+            value = {"version": 1, "states": states}
+            try:
+                self._state_path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = self._state_path.with_name(
+                    f"{self._state_path.name}.{os.getpid()}.next"
+                )
+                temporary.write_text(
+                    json.dumps(value, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                os.replace(temporary, self._state_path)
+            except OSError:
+                return
+
+    def _validate_restored_state(self, state: _DeepSeekConversationState) -> None:
+        if not state.needs_validation:
+            return
+        session_id = state.session_id
+        parent_message_id = state.parent_message_id
+        if not session_id or parent_message_id is None:
+            _clear_conversation_state(state)
+            return
+
+        query = urllib.parse.urlencode({"chat_session_id": session_id})
+        try:
+            status, _headers, raw = self._request(
+                "GET",
+                f"{_HISTORY_PATH}?{query}",
+                None,
+                {"accept": "application/json"},
+            )
+        except DeepSeekHarnessError:
+            raise
+        if status in {401, 403}:
+            self._raise_for_status(status, raw, "session validation")
+        if not 200 <= status < 300:
+            _clear_conversation_state(state)
+            self._save_state_file()
+            return
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError):
+            _clear_conversation_state(state)
+            self._save_state_file()
+            return
+        if not _history_contains_message(payload, parent_message_id):
+            _clear_conversation_state(state)
+            self._save_state_file()
+            return
+        state.needs_validation = False
+        self._save_state_file()
+
     def _conversation_state(self, key: str) -> _DeepSeekConversationState:
         with self._conversation_states_lock:
             state = self._conversation_states.get(key)
@@ -419,6 +507,7 @@ class DeepSeekHarnessProvider:
             return
         with self._conversation_states_lock:
             self._conversation_states.pop(key, None)
+        self._save_state_file()
 
     def _history_turn(
         self,
@@ -991,6 +1080,82 @@ def _deepseek_control_signature(payload: Mapping[str, Any]) -> str:
 
 def _starts_with(values: tuple[str, ...], prefix: tuple[str, ...]) -> bool:
     return len(values) >= len(prefix) and values[:len(prefix)] == prefix
+
+
+def _conversation_state_to_json(state: _DeepSeekConversationState) -> dict[str, object]:
+    return {
+        "session_id": state.session_id,
+        "parent_message_id": state.parent_message_id,
+        "represented_items": list(state.represented_items),
+        "control_signature": state.control_signature,
+        "last_response_id": state.last_response_id,
+    }
+
+
+def _conversation_state_from_json(value: object) -> _DeepSeekConversationState | None:
+    if not isinstance(value, Mapping):
+        return None
+    session_id = value.get("session_id")
+    parent_message_id = value.get("parent_message_id")
+    represented_items = value.get("represented_items")
+    control_signature = value.get("control_signature")
+    last_response_id = value.get("last_response_id")
+    if not isinstance(session_id, str) or not session_id:
+        return None
+    if not isinstance(parent_message_id, (str, int)) or isinstance(parent_message_id, bool):
+        return None
+    if not isinstance(represented_items, list) or not all(
+        isinstance(item, str) for item in represented_items
+    ):
+        return None
+    if control_signature is not None and not isinstance(control_signature, str):
+        return None
+    if last_response_id is not None and not isinstance(last_response_id, str):
+        return None
+    return _DeepSeekConversationState(
+        session_id=session_id,
+        parent_message_id=parent_message_id,
+        represented_items=tuple(represented_items),
+        control_signature=control_signature,
+        last_response_id=last_response_id,
+        needs_validation=True,
+    )
+
+
+def _clear_conversation_state(state: _DeepSeekConversationState) -> None:
+    state.session_id = None
+    state.parent_message_id = None
+    state.represented_items = ()
+    state.control_signature = None
+    state.last_response_id = None
+    state.needs_validation = False
+
+
+def _history_contains_message(payload: object, message_id: str | int) -> bool:
+    if not isinstance(payload, Mapping):
+        return False
+    data = payload.get("data") if isinstance(payload.get("data"), Mapping) else payload
+    if isinstance(data, Mapping) and isinstance(data.get("biz_data"), Mapping):
+        biz = data["biz_data"]
+    elif isinstance(data, Mapping) and isinstance(data.get("bizData"), Mapping):
+        biz = data["bizData"]
+    else:
+        biz = data
+    if not isinstance(biz, Mapping):
+        return False
+    messages = biz.get("chat_messages")
+    if not isinstance(messages, list):
+        messages = biz.get("chatMessages")
+    if not isinstance(messages, list):
+        return False
+    expected = str(message_id)
+    for message in messages:
+        if not isinstance(message, Mapping):
+            continue
+        current = message.get("message_id", message.get("id", message.get("uuid")))
+        if current is not None and str(current) == expected:
+            return True
+    return False
 
 
 def _deepseek_conversation_key(payload: Mapping[str, Any]) -> str | None:

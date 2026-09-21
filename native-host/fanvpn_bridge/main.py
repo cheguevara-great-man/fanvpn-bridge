@@ -73,6 +73,7 @@ def run(config_path: Path) -> int:
         bridge_url=f"http://{config.listen_host}:{config.listen_port}",
         pow_solver=dispatcher.solve_deepseek_pow,
         timeout_seconds=config.protocol.request_timeout_seconds,
+        state_path=cache_base / "deepseek-conversations.json",
     )
     dispatcher.start()
     routes = RouteTable(config.routes)
