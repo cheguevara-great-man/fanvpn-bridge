@@ -772,14 +772,6 @@ class DeepSeekHarnessProvider:
             normalized.append(message)
             if str(message_id) == expected:
                 selected = message
-        if selected is None and normalized:
-            for message in reversed(normalized):
-                role = str(message.get("message_role", message.get("role", ""))).lower()
-                if role != "user":
-                    selected = message
-                    break
-            if selected is None:
-                selected = normalized[-1]
         if selected is None:
             return None
 

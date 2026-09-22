@@ -1009,6 +1009,32 @@ class DeepSeekHarnessTests(unittest.TestCase):
         self.assertFalse(streaming)
         self.assertEqual(response["output"][0]["content"][0]["text"], "final answer")
 
+    def test_history_turn_does_not_fall_back_to_stale_assistant_message(self) -> None:
+        class FakeProvider(DeepSeekHarnessProvider):
+            def __init__(self):
+                super().__init__(pow_solver=lambda _challenge: 1)
+
+            def _request(self, method, upstream_path, body, headers):
+                assert method == "GET"
+                assert upstream_path.startswith("/api/v0/chat/history_messages?")
+                return 200, {}, json.dumps({
+                    "data": {
+                        "biz_data": {
+                            "chat_messages": [{
+                                "message_id": 174,
+                                "role": "ASSISTANT",
+                                "fragments": [{
+                                    "type": "RESPONSE",
+                                    "content": '<exec_command>{"cmd":"OLD"}</exec_command>',
+                                }],
+                            }]
+                        }
+                    }
+                }).encode()
+
+        provider = FakeProvider()
+        self.assertIsNone(provider._history_turn("session-1", 200))
+
     def test_provider_waits_for_history_when_stream_finishes_before_visible_answer(self) -> None:
         class FakeProvider(DeepSeekHarnessProvider):
             def __init__(self):
