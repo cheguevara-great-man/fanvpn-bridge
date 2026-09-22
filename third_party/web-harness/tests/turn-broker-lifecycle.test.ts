@@ -192,6 +192,30 @@ test("settled replay sessions expire from their last use instead of their creati
   sessions.clear();
 });
 
+test("retained conversation heads survive idle pruning and remain reusable", async () => {
+  const sessions = new ChatGptTurnSessions(-1);
+  const start = () => ({
+    mode: "read-only" as const,
+    browser: Promise.resolve("done"),
+    physicalSettlement: Promise.resolve(),
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    conversationKey: "retained-conversation",
+    cancel() {},
+  });
+  const first = sessions.getOrCreate("first", start);
+  await first.browserOutcome;
+  sessions.activeCount(); // Prunes sessions even without a new turn.
+  expect(sessions.findConversationHead("retained-conversation")).toBe(first);
+  expect(sessions.getOrCreate("first", start)).toBe(first);
+  const next = sessions.getOrCreate("next", start);
+  await next.browserOutcome;
+  sessions.activeCount();
+  expect(sessions.find("first")).toBeUndefined();
+  expect(sessions.findConversationHead("retained-conversation")).toBe(next);
+  sessions.clear();
+});
+
 test("turn broker creates its private runtime directory on a cold start", async () => {
   const root = mkdtempSync(join(tmpdir(), "cgw-broker-"));
   const socketPath = defaultBrokerEndpoint(root);

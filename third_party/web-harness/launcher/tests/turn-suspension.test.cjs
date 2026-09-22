@@ -34,7 +34,7 @@ test("a suspension re-baselines running leases and restores an unfinished bootst
   assert.deepEqual(refreshed, ["aaa", "bbb"]);
   assert.equal(running.lastHeartbeatAt, 1_000_000);
   assert.equal(booting.bootstrapDeadlineAt, 1_120_000);
-  // A retained tab holds no live helper; its idle TTL keeps counting through a sleep.
+  // A retained tab holds no live helper and does not need a lease refresh.
   assert.equal(retained.lastHeartbeatAt, 5);
 });
 

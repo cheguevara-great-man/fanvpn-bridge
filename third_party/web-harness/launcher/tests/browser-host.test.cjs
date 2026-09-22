@@ -2434,12 +2434,14 @@ test("a completed keyed turn is retained for thirty minutes and preserves its ac
   assert.equal(fixture.turnTabs.has(tab.id), true);
 });
 
-test("a retained browser tab expires at thirty minutes", () => {
+for (const interactionMode of ["manual", "connector"]) {
+test(`a retained ${interactionMode} browser tab survives prolonged inactivity`, () => {
   const removed = [];
   const tab = {
     id: "tab-expired",
     traceId: "trace_expired",
     status: "ready",
+    interactionMode,
     lastHeartbeatAt: 100,
   };
   const fixture = {
@@ -2451,11 +2453,12 @@ test("a retained browser tab expires at thirty minutes", () => {
     },
   };
 
-  BrowserHost.prototype.reapExpiredTurnTabs.call(fixture, 100 + (30 * 60 * 1000));
+  BrowserHost.prototype.reapExpiredTurnTabs.call(fixture, 100 + (365 * 24 * 60 * 60 * 1000));
 
-  assert.deepEqual(removed, [[tab.id, false]]);
-  assert.equal(fixture.turnTabs.size, 0);
+  assert.deepEqual(removed, []);
+  assert.equal(fixture.turnTabs.size, 1);
 });
+}
 
 test("a completed connector turn without binding is released instead of retained", async () => {
   let closed = false;

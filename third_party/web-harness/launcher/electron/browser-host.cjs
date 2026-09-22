@@ -43,7 +43,6 @@ const HIDDEN_TURN_VIEWPORT = Object.freeze({ width: 800, height: 600 });
 const TURN_HEARTBEAT_SWEEP_MS = 5_000;
 const TURN_HEARTBEAT_TIMEOUT_MS = 60_000;
 const TURN_TAB_BOOTSTRAP_TIMEOUT_MS = 120_000;
-const RETAINED_TURN_TAB_TTL_MS = 30 * 60 * 1000;
 const BROWSER_NAVIGATION_TIMEOUT_MS = 60_000;
 const CHATGPT_AUTH_SESSION_TIMEOUT_MS = 5_000;
 const WINDOW_VISIBILITY_EVENTS = ["show", "hide", "minimize", "restore"];
@@ -1347,13 +1346,9 @@ class BrowserHost {
       return;
     }
     for (const tab of [...this.turnTabs.values()]) {
+      // Retained conversations remain available regardless of idle duration.
+      if (tab.status === "ready") continue;
       if (tab.interactionMode === "manual") {
-        if (tab.status === "ready") {
-          if (now - (tab.lastHeartbeatAt ?? 0) < RETAINED_TURN_TAB_TTL_MS) continue;
-          this.logger.info("browser.retained_tab_expired", { tabId: tab.id, traceId: tab.traceId });
-          this.removeTurnTab(tab, false);
-          continue;
-        }
         if (tab.status === "running" && !processRunning(tab.helperPid)) {
           this.logger.warn("browser.manual_orphan_turn_reaped", {
             tabId: tab.id,
@@ -1364,12 +1359,6 @@ class BrowserHost {
           this.signalManualTerminal(tab, "failed");
           this.removeTurnTab(tab, true);
         }
-        continue;
-      }
-      if (tab.status === "ready") {
-        if (now - (tab.lastHeartbeatAt ?? 0) < RETAINED_TURN_TAB_TTL_MS) continue;
-        this.logger.info("browser.retained_tab_expired", { tabId: tab.id, traceId: tab.traceId });
-        this.removeTurnTab(tab, false);
         continue;
       }
       if (tab.status !== "running") continue;

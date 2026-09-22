@@ -792,6 +792,9 @@ export class ChatGptTurnSessions {
     const cutoff = Date.now() - this.ttlMs;
     for (const [key, session] of this.entries) {
       if (session.isActive() || session.lastUsedAt() >= cutoff) continue;
+      // Keep the continuation state for the retained page for as long as it exists.
+      const conversationKey = session.conversationKey();
+      if (conversationKey && this.conversationHeads.get(conversationKey) === session) continue;
       session.cancel();
       this.entries.delete(key);
       this.forgetConversationHead(session);
