@@ -6,7 +6,7 @@ $parseErrors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile(
     [IO.Path]::GetFullPath($source), [ref]$tokens, [ref]$parseErrors)
 if ($parseErrors.Count) { throw "$parseErrors" }
-foreach ($name in @('Get-SlotProcesses', 'Stop-OldSlotProcesses', 'Restore-DirectProxy', 'Get-PortOwner')) {
+foreach ($name in @('Get-SlotProcesses', 'Stop-DirectProxyBeforeUpdate', 'Stop-OldSlotProcesses', 'Restore-DirectProxy', 'Get-PortOwner')) {
     $node = $ast.Find({ param($n)
         $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name
     }, $true)
@@ -28,10 +28,17 @@ function Stop-BridgeProcess {
     $script:stopped += $ProcessInfo.ProcessId
     $script:fakeProcesses = @($script:fakeProcesses | Where-Object ProcessId -ne $ProcessInfo.ProcessId)
 }
+$directPidPath = 'C:\bridge-test\direct-proxy.pid'
+$directProxyWasRunning = $false
+Stop-DirectProxyBeforeUpdate
+if (($stopped -join ',') -ne '2') { throw 'Must stop server-network proxy before build/smoke.' }
+if (-not $directProxyWasRunning) { throw 'Must remember to restore server-network mode after update.' }
+if (($fakeProcesses.ProcessId -join ',') -ne '1,3,4,5') { throw 'Pre-smoke cleanup must leave Native Hosts and unrelated processes running.' }
+
+$script:stopped = @()
 $directProxyWasRunning = $false
 Stop-OldSlotProcesses "$slotBBuild\browser-ai-bridge.exe"
-if (($stopped -join ',') -ne '1,2,3') { throw 'Must stop every old-slot role, and only the old slot.' }
-if (-not $directProxyWasRunning) { throw 'Must detect untracked proxy without a PID file.' }
+if (($stopped -join ',') -ne '1,3') { throw 'Must stop every remaining old-slot role, and only the old slot.' }
 if (($fakeProcesses.ProcessId -join ',') -ne '4,5') { throw 'New slot and unrelated install must survive.' }
 
 # A process that failed to exit must prevent a successful handover.
@@ -54,4 +61,4 @@ $directProxyWasRunning = $true
 $rejected = $false
 try { Restore-DirectProxy } catch { $rejected = $_.Exception.Message -match 'still owned' }
 if (-not $rejected -or $started) { throw 'Must reject occupied proxy port without launching.' }
-Write-Host 'PASS: all old-slot roles stopped, untracked proxy found, unrelated processes preserved, incomplete cleanup and occupied port rejected.'
+Write-Host 'PASS: proxy stops before smoke, old-slot cleanup is scoped, unrelated processes survive, and incomplete cleanup/occupied ports are rejected.'

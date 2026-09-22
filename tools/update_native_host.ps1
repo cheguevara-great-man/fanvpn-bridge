@@ -51,6 +51,29 @@ function Get-PortOwner {
         Select-Object -ExpandProperty OwningProcess -Unique)
 }
 
+function Stop-DirectProxyBeforeUpdate {
+    $proxyProcesses = @(Get-SlotProcesses | Where-Object {
+        $_.CommandLine -match '(?i)(^|\s)--forward-proxy(\s|$)'
+    })
+    if ($proxyProcesses.Count -eq 0) {
+        Remove-Item -LiteralPath $directPidPath -Force -ErrorAction SilentlyContinue
+        return
+    }
+
+    $script:directProxyWasRunning = $true
+    foreach ($proxyProcess in $proxyProcesses) {
+        Stop-BridgeProcess $proxyProcess
+        Write-Host "Temporarily stopped server-network proxy PID $($proxyProcess.ProcessId) before Native Host update."
+    }
+    Remove-Item -LiteralPath $directPidPath -Force -ErrorAction SilentlyContinue
+
+    if (@(Get-SlotProcesses | Where-Object {
+        $_.CommandLine -match '(?i)(^|\s)--forward-proxy(\s|$)'
+    }).Count -gt 0) {
+        throw 'Server-network proxy is still running; refusing to start the Native Host smoke test.'
+    }
+}
+
 function Stop-OldSlotProcesses {
     param([string]$TargetExecutable)
     $oldProcesses = @(Get-SlotProcesses | Where-Object { $_.ExecutablePath -ine $TargetExecutable })
@@ -187,12 +210,11 @@ if (-not $PSCmdlet.ShouldProcess($targetBuild, $operation)) {
     return
 }
 
-# Discover actual processes, including proxies missing from the PID file.
-# Keep the active slot available during the build; only release the target slot.
-$slotProcesses = @(Get-SlotProcesses)
-$directProxyWasRunning = @($slotProcesses | Where-Object {
-    $_.CommandLine -match '(?i)(^|\s)--forward-proxy(\s|$)'
-}).Count -gt 0
+# Restore the previous update order: stop server-network mode before build/smoke,
+# then restore it from the registered slot after a successful handover or failure.
+# Discover the actual process instead of relying only on the PID file so an
+# untracked proxy cannot survive into the smoke test.
+Stop-DirectProxyBeforeUpdate
 
 if (-not $Python) {
     $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
