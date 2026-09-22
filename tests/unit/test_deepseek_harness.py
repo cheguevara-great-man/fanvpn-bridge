@@ -83,6 +83,9 @@ class DeepSeekHarnessTests(unittest.TestCase):
         self.assertIn("<apply_patch>\n*** Begin Patch", prompt)
         self.assertIn("raw freeform tool input", prompt)
         self.assertIn("Do NOT JSON-encode it", prompt)
+        self.assertIn("use exec_command for shell, PowerShell, Python, or other script execution", prompt)
+        self.assertIn("use apply_patch for substantial file-content edits or creation", prompt)
+        self.assertIn("Do NOT embed large literal file contents inside exec_command JSON", prompt)
         self.assertIn("Parameters JSON Schema", prompt)
         self.assertIn("This direct per-tool XML format is the only valid tool-call syntax", prompt)
         self.assertIn("JSON string values MUST use valid JSON escaping", prompt)
@@ -92,39 +95,48 @@ class DeepSeekHarnessTests(unittest.TestCase):
         self.assertNotIn("<codex_tool_call>", prompt)
         self.assertIn("Do not wrap arguments in `name`, `arguments`, or `tool`", prompt)
 
-    def test_continuation_prompt_repeats_short_valid_tool_tag_reminder(self) -> None:
-        prompt = _responses_to_deepseek_prompt(
-            {
-                "instructions": "Follow the repository rules.",
-                "input": [{"type": "message", "role": "user", "content": "continue"}],
-                "tools": [
-                    {
-                        "type": "function",
-                        "name": "exec_command",
-                        "description": "Run a command",
-                        "parameters": {"type": "object", "properties": {"cmd": {"type": "string"}}},
-                    },
-                    {
-                        "type": "function",
-                        "name": "write_stdin",
-                        "description": "Continue a command",
-                        "parameters": {"type": "object", "properties": {"session_id": {"type": "integer"}}},
-                    },
-                ],
-            },
-            include_control=False,
-        )
+    def test_continuation_prompt_repeats_full_tool_protocol(self) -> None:
+        payload = {
+            "instructions": "Follow the repository rules.",
+            "input": [{"type": "message", "role": "user", "content": "continue"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "exec_command",
+                    "description": "Run a command",
+                    "parameters": {"type": "object", "properties": {"cmd": {"type": "string"}}},
+                },
+                {
+                    "type": "function",
+                    "name": "write_stdin",
+                    "description": "Continue a command",
+                    "parameters": {"type": "object", "properties": {"session_id": {"type": "integer"}}},
+                },
+            ],
+        }
+        prompt = _responses_to_deepseek_prompt(payload, include_control=False)
+        initial_prompt = _responses_to_deepseek_prompt(payload, include_control=True)
         self.assertIn("USER:\ncontinue", prompt)
-        self.assertIn("CODEX TOOL FORMAT REMINDER", prompt)
-        self.assertIn('<exec_command>{"cmd":"Get-Content a.txt"}</exec_command>', prompt)
-        self.assertIn('<write_stdin>{"session_id":1}</write_stdin>', prompt)
-        self.assertIn("Complete valid tool-call examples this turn", prompt)
+        self.assertIn("CODEX TOOL PROTOCOL", prompt)
+        self.assertIn("### Tool exec_command", prompt)
+        self.assertIn("### Tool write_stdin", prompt)
+        self.assertIn("<exec_command>\n", prompt)
+        self.assertIn('"cmd":"Get-Content a.txt"', prompt)
+        self.assertIn("<write_stdin>\n", prompt)
+        self.assertIn("use exec_command for shell, PowerShell, Python, or other script execution", prompt)
+        self.assertIn("use apply_patch for substantial file-content edits or creation", prompt)
+        self.assertIn("Do NOT embed large literal file contents inside exec_command JSON", prompt)
         self.assertIn("JSON string values MUST use valid JSON escaping", prompt)
         self.assertIn('escape embedded double quotes as \\\" and backslashes as \\\\', prompt)
         self.assertIn("Every opening tag MUST have exactly one matching closing tag", prompt)
         self.assertIn("Never switch to a different tool-call syntax or closing delimiter", prompt)
-        self.assertNotIn("Parameters JSON Schema", prompt)
+        self.assertIn("Parameters JSON Schema", prompt)
         self.assertNotIn("Follow the repository rules.", prompt)
+        protocol_marker = "CODEX TOOL PROTOCOL:\n"
+        self.assertEqual(
+            initial_prompt[initial_prompt.index(protocol_marker):],
+            prompt[prompt.index(protocol_marker):],
+        )
 
     def test_prompt_omits_image_base64_from_tool_results(self) -> None:
         payload = "data:image/png;base64," + ("A" * 100_000)
@@ -874,7 +886,8 @@ class DeepSeekHarnessTests(unittest.TestCase):
         self.assertIsNone(completions[0]["parent_message_id"])
         self.assertEqual(completions[1]["parent_message_id"], "message-bad")
         self.assertIn("TOOL CALL FORMAT ERROR", completions[1]["prompt"])
-        self.assertIn('<exec_command>{"cmd":"Get-Content a.txt"}</exec_command>', completions[1]["prompt"])
+        self.assertIn("### Tool exec_command", completions[1]["prompt"])
+        self.assertIn("<exec_command>\n{\"cmd\":\"Get-Content a.txt\"}\n</exec_command>", completions[1]["prompt"])
         self.assertIn("This is the only valid tool-call format", completions[1]["prompt"])
         self.assertNotIn("invalid JSON arguments", completions[1]["prompt"])
         self.assertNotIn("codex_tool_call", completions[1]["prompt"])

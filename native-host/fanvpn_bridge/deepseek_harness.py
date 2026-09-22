@@ -1589,21 +1589,8 @@ def _responses_to_deepseek_prompt(
         sections.append("CONVERSATION:\n" + "\n\n".join(conversation))
 
     tools = _deepseek_tool_definitions(payload)
-    if tools and include_control:
-        tag_map = _tool_tag_map(str(tool["name"]) for tool in tools)
-        tool_sections = [
-            _render_tool_prompt(tool, tag_map[str(tool["name"])])
-            for tool in tools
-        ]
-        sections.append(
-            "CODEX TOOL PROTOCOL:\n"
-            "Codex, not you, executes tools. Each available tool has its own direct XML tag. "
-            "Structured tools use JSON bodies; freeform tools use raw text bodies.\n"
-            f"{_tool_format_requirements()}\n\n"
-            + "\n\n".join(tool_sections)
-        )
-    elif tools:
-        sections.append(_tool_format_reminder(tools))
+    if tools:
+        sections.append(_tool_protocol_prompt(tools))
     return "\n\n".join(sections).strip()
 
 
@@ -2003,6 +1990,9 @@ def _tool_format_requirements() -> str:
         "When a tool is required, output only one or more direct tool blocks and no prose outside them. "
         "The XML tag name itself selects the tool. Structured tools MUST contain exactly one valid JSON object containing only that tool's arguments. "
         "Freeform tools MUST contain raw tool input and MUST NOT JSON-encode that input.\n"
+        "Tool selection: use exec_command for shell, PowerShell, Python, or other script execution, including reads/searches, git, builds, and tests. "
+        "When apply_patch is available, use apply_patch for substantial file-content edits or creation involving Markdown, source code, or other large literal text. "
+        "Do NOT embed large literal file contents inside exec_command JSON merely to write or rewrite a file; put that content in apply_patch's raw freeform body instead.\n"
         "For structured tools, JSON string values MUST use valid JSON escaping: escape embedded double quotes as \\\" and backslashes as \\\\ when needed. "
         "For Windows paths inside structured JSON, prefer forward slashes or correctly escaped backslashes.\n"
         "Use the exact opening and closing tag shown for that tool. Every opening tag MUST have exactly one matching closing tag; "
@@ -2015,31 +2005,23 @@ def _tool_format_requirements() -> str:
     )
 
 
-def _tool_format_reminder(tools: list[Mapping[str, object]]) -> str:
+def _tool_protocol_prompt(tools: list[Mapping[str, object]]) -> str:
     tag_map = _tool_tag_map(str(tool.get("name") or "tool") for tool in tools)
-    examples: list[str] = []
-    for tool in tools:
-        name = str(tool.get("name") or "tool")
-        tag = tag_map[name]
-        if tool.get("freeform") is True:
-            example = "*** Begin Patch\n*** End Patch" if name == "apply_patch" else "RAW TOOL INPUT"
-            examples.append(f"<{tag}>{example}</{tag}>")
-        else:
-            parameters = tool.get("parameters") if isinstance(tool.get("parameters"), dict) else {"type": "object"}
-            example = _schema_example(parameters)
-            if not isinstance(example, dict):
-                example = {}
-            examples.append(
-                f"<{tag}>{json.dumps(example, ensure_ascii=False, separators=(',', ':'))}</{tag}>"
-            )
-    valid_examples = "\n".join(examples)
+    tool_sections = [
+        _render_tool_prompt(tool, tag_map[str(tool.get("name") or "tool")])
+        for tool in tools
+    ]
     return (
-        "CODEX TOOL FORMAT REMINDER:\n"
-        "If a tool is required, output ONLY direct tool XML blocks using the exact complete examples below as the format.\n"
-        "Complete valid tool-call examples this turn:\n"
-        f"{valid_examples}\n"
-        f"{_tool_format_requirements()}"
+        "CODEX TOOL PROTOCOL:\n"
+        "Codex, not you, executes tools. Each available tool has its own direct XML tag. "
+        "Structured tools use JSON bodies; freeform tools use raw text bodies.\n"
+        f"{_tool_format_requirements()}\n\n"
+        + "\n\n".join(tool_sections)
     )
+
+
+def _tool_format_reminder(tools: list[Mapping[str, object]]) -> str:
+    return _tool_protocol_prompt(tools)
 
 
 def _tool_call_recovery_prompt(tools: list[Mapping[str, object]]) -> str:
