@@ -92,9 +92,10 @@ class _DeepSeekImage:
 class _DeepSeekLiveResponse:
     """Translate ordinary DeepSeek answer deltas into Responses SSE events.
 
-    Direct tool calls deliberately stay buffered. Their first non-whitespace
-    character must be ``<`` under our tool protocol, so ordinary prose can be
-    streamed without leaking a half-written tool block to Codex.
+    Tool-enabled turns deliberately stay buffered until the complete DeepSeek
+    answer can be classified. A model may emit prose before a direct tool block,
+    and streaming that prose would make the later invalid mixed tool response
+    impossible to retract or recover safely.
     """
 
     def __init__(self, model: str, has_tools: bool, emit: Callable[[bytes], None]) -> None:
@@ -108,30 +109,17 @@ class _DeepSeekLiveResponse:
         self.started = False
         self.streamed_this_attempt = False
         self._mode = "undecided"
-        self._pending = ""
         self.final_events: list[bytes] = []
 
     def begin_attempt(self) -> None:
         self.streamed_this_attempt = False
-        self._mode = "streaming" if not self.has_tools else "undecided"
-        self._pending = ""
+        self._mode = "streaming" if not self.has_tools else "buffered"
 
     def on_answer_delta(self, delta: str) -> None:
         if not delta:
             return
         if self._mode == "buffered":
             return
-        if self._mode == "undecided":
-            self._pending += delta
-            stripped = self._pending.lstrip()
-            if not stripped:
-                return
-            if stripped.startswith("<"):
-                self._mode = "buffered"
-                return
-            self._mode = "streaming"
-            delta = self._pending
-            self._pending = ""
         self._start_text()
         self.streamed_this_attempt = True
         self.emit(self._event(

@@ -698,11 +698,6 @@ class DeepSeekHarnessTests(unittest.TestCase):
                 "model": "deepseek-web/chat",
                 "input": "say hello",
                 "stream": True,
-                "tools": [{
-                    "type": "function",
-                    "name": "exec_command",
-                    "parameters": {"type": "object"},
-                }],
             })
             self.assertTrue(streaming)
             self.assertTrue(waiting_for_second_chunk.wait(0.5))
@@ -818,6 +813,103 @@ class DeepSeekHarnessTests(unittest.TestCase):
         completed = next(item for item in decoded if item.get("type") == "response.completed")
         self.assertEqual(completed["response"]["output"][0]["type"], "function_call")
         self.assertEqual(completed["response"]["output"][0]["name"], "exec_command")
+
+    def test_streaming_provider_recovers_prose_before_direct_tool_call(self) -> None:
+        answers = [
+            (
+                "message-mixed",
+                'I will inspect it first.\n\n<exec_command>{"cmd":"Get-Content a.txt"}</exec_command>',
+            ),
+            (
+                "message-good",
+                '<exec_command>{"cmd":"Get-Content a.txt"}</exec_command>',
+            ),
+        ]
+
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, message_id, answer):
+                escaped = json.dumps(answer, ensure_ascii=False)
+                self.payload = (
+                    f'data: {{"p":"response/message_id","v":"{message_id}"}}\n\n'
+                    f'data: {{"p":"response/fragments","o":"APPEND","v":'
+                    f'[{{"type":"RESPONSE","content":{escaped}}}]}}\n\n'
+                    'data: {"p":"response/status","v":"FINISHED"}\n\n'
+                ).encode()
+                self.sent = False
+
+            def getheaders(self):
+                return [("content-type", "text/event-stream")]
+
+            def read1(self, _size):
+                if self.sent:
+                    return b""
+                self.sent = True
+                return self.payload
+
+        class FakeConnection:
+            completion_count = 0
+
+            def __init__(self, *_args, **_kwargs):
+                index = FakeConnection.completion_count
+                FakeConnection.completion_count += 1
+                self.response = FakeResponse(*answers[index])
+
+            def request(self, *_args, **_kwargs):
+                return None
+
+            def getresponse(self):
+                return self.response
+
+            def close(self):
+                return None
+
+        class FakeProvider(DeepSeekHarnessProvider):
+            def _create_session(self):
+                return "session-mixed-tool"
+
+            def _create_pow_challenge(self, _target_path="/api/v0/chat/completion"):
+                return {
+                    "algorithm": "DeepSeekHashV1",
+                    "challenge": "a" * 64,
+                    "salt": "salt",
+                    "difficulty": 1,
+                    "signature": "signature",
+                    "expireAt": 123,
+                }
+
+        provider = FakeProvider(pow_solver=lambda _challenge: 1)
+        with patch("fanvpn_bridge.deepseek_harness.http.client.HTTPConnection", FakeConnection):
+            streaming, response = provider.responses({
+                "model": "deepseek-web/chat",
+                "input": "inspect a.txt",
+                "stream": True,
+                "tools": [{
+                    "type": "function",
+                    "name": "exec_command",
+                    "description": "Run a command",
+                    "parameters": {"type": "object", "properties": {"cmd": {"type": "string"}}},
+                }],
+            })
+            self.assertTrue(streaming)
+            events = list(response)
+
+        decoded = [
+            json.loads(line[6:])
+            for event in events
+            for line in event.decode().splitlines()
+            if line.startswith("data: {")
+        ]
+        self.assertEqual(FakeConnection.completion_count, 2)
+        self.assertFalse(any(item.get("type") == "response.output_text.delta" for item in decoded))
+        completed = next(item for item in decoded if item.get("type") == "response.completed")
+        self.assertEqual(completed["response"]["output"][0]["type"], "function_call")
+        self.assertEqual(completed["response"]["output"][0]["name"], "exec_command")
+        self.assertEqual(
+            json.loads(completed["response"]["output"][0]["arguments"]),
+            {"cmd": "Get-Content a.txt"},
+        )
 
     def test_provider_recovers_invalid_direct_tool_json_with_continuation(self) -> None:
         class FakeProvider(DeepSeekHarnessProvider):
