@@ -14,6 +14,8 @@ export interface CodexParsedRequest {
    * (see src/responses/compaction.ts).
    */
   _compactionRequest?: boolean;
+  /** Native responses/memento and legacy local compaction return assistant text, not a v2 item. */
+  _compactionResponseFormat?: "message";
   /**
    * True when Codex MultiAgent V2 delegated an agent_message as provider-private encrypted_content.
    * ChatGPT Web has no OpenAI backend key for that blob; the Responses HTTP boundary rejects it

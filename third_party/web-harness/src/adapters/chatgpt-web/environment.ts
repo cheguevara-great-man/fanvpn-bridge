@@ -1,7 +1,7 @@
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isReadableCompactionSummaryText, OPAQUE_COMPACTION_NOTE } from "../../responses/compaction";
 import type { CodexContentPart, CodexParsedRequest, CodexTool } from "../../types";
-import { isAcceptedCompactionContinuation } from "./compaction-continuation";
+import { isAcceptedCompactionContinuation, recoverCompactionInstruction } from "./compaction-continuation";
 import { getCodexAuthorityHome } from "../../codex-integration-shared";
 
 export type ChatGptSandboxPolicy =
@@ -269,7 +269,7 @@ function latestChatGptTurnUserRevision(parsed: CodexParsedRequest, expectedTurnI
     const revision = userRevision(input[index], expectedTurnId, metadata);
     if (revision) return revision;
   }
-  return undefined;
+  return recoverCompactionInstruction(parsed, extractChatGptTurnIdentity(parsed))?.source;
 }
 
 function userRevision(value: unknown, expectedTurnId?: string, metadata?: Record<string, unknown>): ChatGptTurnUserRevision | undefined {
@@ -290,10 +290,13 @@ export function chatGptTurnUserRevisionHistory(parsed: CodexParsedRequest): Chat
   const body = record(parsed._rawBody);
   const turnId = extractChatGptTurnIdentity(parsed).turnId;
   const metadata = clientTurnMetadata(parsed);
-  return (Array.isArray(body?.input) ? body.input : []).flatMap(value => {
+  const revisions = (Array.isArray(body?.input) ? body.input : []).flatMap(value => {
     const revision = userRevision(value, turnId, metadata);
     return revision ? [revision] : [];
   });
+  if (revisions.length > 0) return revisions;
+  const recovered = recoverCompactionInstruction(parsed, extractChatGptTurnIdentity(parsed));
+  return recovered ? [recovered.source] : [];
 }
 
 /** The human instruction summarized by a remote compaction request belongs to an earlier turn. */
@@ -503,7 +506,20 @@ function canonicalMetadataEnvironmentBeforeUser(
   const userTurnId = itemTurnId(user);
   if (userTurnId !== undefined && userTurnId !== metadataTurnId) return undefined;
 
-  let candidateIndex = userIndex - 1;
+  return canonicalMetadataEnvironmentBefore(input, userIndex, metadata, requireMetadataBoundRoots);
+}
+
+/** Read an environment before an authenticated task or completed summary, never from the summary. */
+function canonicalMetadataEnvironmentBefore(
+  input: unknown[],
+  anchorIndex: number,
+  metadata: Record<string, unknown>,
+  requireMetadataBoundRoots = false,
+): string | undefined {
+  const metadataTurnId = typeof metadata.turn_id === "string" ? metadata.turn_id.trim() : "";
+  if (!metadataTurnId || !sandboxTypeFromMetadata(canonicalSandboxMetadata(metadata))) return undefined;
+
+  let candidateIndex = anchorIndex - 1;
   let candidate = record(input[candidateIndex]);
   while (candidate?.type === "message" && candidate.role === "developer") {
     const developerTurnId = itemTurnId(candidate);
@@ -553,6 +569,19 @@ function rawEnvironmentText(parsed: CodexParsedRequest): string | undefined {
     if (isUserOrParentInstruction(item, metadata)) {
       activeUserIndex = index;
       break;
+    }
+  }
+  const checkpoint = activeUserIndex < 0
+    ? recoverCompactionInstruction(parsed, extractChatGptTurnIdentity(parsed)) : undefined;
+  if (checkpoint && metadata) {
+    const laterEnvironment = input.slice(checkpoint.summaryIndex + 1).some(value => {
+      const item = record(value);
+      return item?.type === "message" && item.role === "user"
+        && /<\/?environment_context\b/i.test(rawMessageText(item));
+    });
+    if (!laterEnvironment) {
+      const current = canonicalMetadataEnvironmentBefore(input, checkpoint.summaryIndex, metadata);
+      if (current) return current;
     }
   }
   const turnId = metadata?.turn_id;

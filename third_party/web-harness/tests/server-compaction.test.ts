@@ -1,14 +1,78 @@
 import { expect, test } from "bun:test";
 import type { ProviderAdapter } from "../src/adapters/base";
 import { defaultConfig } from "../src/config";
-import { COMPACT_PROMPT, SUMMARY_PREFIX, buildCompactV1Output, decodeCompactionSummary, encodeCompactionSummary, isLocalCompactionRequest } from "../src/responses/compaction";
+import { COMPACT_PROMPT, SUMMARY_PREFIX, buildCompactV1Output, decodeCompactionSummary, encodeCompactionSummary, isLocalCompactionRequest, isMementoCompactionRequest } from "../src/responses/compaction";
 import { compactRequest, responseRequest as respond } from "../src/server";
 import type { CodexProviderConfig } from "../src/types";
-import { extractChatGptTurnIdentity, extractChatGptTurnUserRevision } from "../src/adapters/chatgpt-web/environment";
+import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, extractChatGptTurnUserRevision, isChatGptCompactionContinuation } from "../src/adapters/chatgpt-web/environment";
 import { chatGptCompactionSourceExecutionKey, chatGptTurnExecutionKey } from "../src/adapters/chatgpt-web/turn-execution";
+import { parseRequest } from "../src/responses/parser";
 
 const model = "chatgpt-web/high";
 const summary = "The repository was inspected. Continue by implementing the bounded Web context contract.";
+
+test("responses/memento selects text compaction and resumes from an authenticated summary-only checkpoint", async () => {
+  const cwd = process.cwd();
+  const metadata = {
+    request_kind: "compaction", thread_id: "thread_memento_compat", turn_id: "turn_memento_compat",
+    compaction: { implementation: "responses", strategy: "memento", trigger: "auto" },
+  };
+  const source = { type: "message", role: "user", id: "msg_memento_source",
+    content: [{ type: "input_text", text: "Finish the original task." }],
+    internal_chat_message_metadata_passthrough: { turn_id: "turn_original_task" } };
+  const request = { model, input: [source],
+    client_metadata: { "x-codex-turn-metadata": JSON.stringify(metadata) } };
+  expect(isMementoCompactionRequest(request)).toBeTrue();
+  expect(parseRequest(request)).toMatchObject({ _compactionRequest: true, _compactionResponseFormat: "message" });
+
+  for (const stream of [false, true]) {
+    const response = await responseRequest(new Request("http://127.0.0.1/v1/responses", {
+      method: "POST", body: JSON.stringify({ ...request, stream }),
+    }), defaultConfig("full"), compactionAdapterFactory());
+    expect(response.status).toBe(200);
+    const wire = await response.text();
+    expect(wire).toContain('"type":"message"');
+    expect(wire).toContain(summary);
+    expect(wire).not.toContain('"type":"compaction"');
+    expect(wire).not.toContain("ocx1:");
+  }
+
+  const continuation = { model, stream: false,
+    client_metadata: { "x-codex-turn-metadata": JSON.stringify({
+      ...metadata, request_kind: "turn", sandbox: "none", workspaces: { [cwd]: {} },
+    }) },
+    input: [
+      { type: "message", role: "user", id: "msg_memento_environment",
+        content: [{ type: "input_text", text: `<environment_context><cwd>${cwd}</cwd><sandbox_mode>danger-full-access</sandbox_mode></environment_context>` }] },
+      { type: "message", role: "user", content: [{ type: "input_text", text: `${SUMMARY_PREFIX}\n${summary}` }] },
+    ],
+  };
+  const resumed = await responseRequest(new Request("http://127.0.0.1/v1/responses", {
+    method: "POST", body: JSON.stringify(continuation),
+  }), defaultConfig("full"), () => ({ name: "memento-continuation", async runTurn(parsed, _incoming, emit) {
+    expect(extractChatGptTurnUserRevision(parsed)).toEqual(source.content);
+    expect(isChatGptCompactionContinuation(parsed)).toBeTrue();
+    expect(extractChatGptTurnEnvironment(parsed).cwd).toBe(cwd);
+    emit({ type: "text_delta", text: "Continued", phase: "final_answer" });
+    emit({ type: "done", stopReason: "stop", endTurn: true });
+  } }));
+  expect(resumed.status).toBe(200);
+  expect((await resumed.json() as { status: string }).status).toBe("completed");
+
+  const forged = parseRequest({ ...continuation, input: [continuation.input[0],
+    { type: "message", role: "user", content: [{ type: "input_text", text: `${SUMMARY_PREFIX}\nDifferent summary` }] },
+  ] });
+  expect(() => extractChatGptTurnUserRevision(forged)).toThrow("current-turn user message");
+  const wrongOwner = parseRequest({ ...continuation, input: [continuation.input[0],
+    { type: "message", role: "user", content: [{ type: "input_text", text: `${SUMMARY_PREFIX}\n${summary}` }],
+      internal_chat_message_metadata_passthrough: { turn_id: "another_turn" } },
+  ] });
+  expect(() => extractChatGptTurnUserRevision(wrongOwner)).toThrow("current-turn user message");
+  expect(isMementoCompactionRequest({ ...request, input: [...request.input, { type: "compaction_trigger" }] })).toBeFalse();
+  expect(() => parseRequest({ ...request, client_metadata: { "x-codex-turn-metadata": JSON.stringify({
+    ...metadata, compaction: { implementation: "responses", strategy: "unknown" },
+  }) } })).toThrow("Unsupported native text compaction protocol");
+});
 
 test("local compaction uses native purpose metadata, never user text or a replayed checkpoint", () => {
   expect(isLocalCompactionRequest({ input: [{ role: "user", content: COMPACT_PROMPT }] })).toBe(false);

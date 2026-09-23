@@ -492,7 +492,10 @@ export async function responseRequest(
     parsed = parseRequest(expanded);
     // Local Codex compaction carries a normal user checkpoint instruction, not a v2 trigger.
     // Activate the existing handoff lifecycle before model routing and execution-key selection.
-    if (isLocalCompactionRequest(expanded)) parsed._compactionRequest = true;
+    if (isLocalCompactionRequest(expanded)) {
+      parsed._compactionRequest = true;
+      parsed._compactionResponseFormat = "message";
+    }
     route = routeChatGptWebRequest(parsed, config);
     const identity = extractChatGptTurnIdentity(parsed);
     if (identity.threadId && identity.turnId) {
@@ -518,7 +521,7 @@ export async function responseRequest(
   }
 
   const compaction = parsed._compactionRequest === true;
-  const localCompaction = compaction && isLocalCompactionRequest(expanded);
+  const localCompaction = compaction && parsed._compactionResponseFormat === "message";
   const remoteCompaction = compaction && !localCompaction;
   const rememberCompletedResponse = (response: Record<string, unknown>): void => {
     if (!compaction) {

@@ -3904,13 +3904,18 @@ export class ChatGptBrowserWorker {
           && style.opacity !== "0";
       };
 
-      // ChatGPT uses the same Markdown renderer for intermediate commentary and for the final
-      // answer. Older responses nested commentary in the streaming-status container. Pro can also
+      // The current renderer uses .markdown; ChatGPT's DIL renderer instead uses a build-specific
+      // class containing _DilResponseRoot. Scope that fallback to assistant-owned PUIK content so
+      // user text and unrelated widgets cannot become answer roots. A nested legacy root is read
+      // once, through its outermost matching container.
+      const answerRootSelector = '.markdown, [data-message-author-role="assistant"] .puik-root.not-markdown > [class*="_DilResponseRoot"]';
+      // Both renderers can carry intermediate commentary as well as final answers. Older responses
+      // nested commentary in the streaming-status container. Pro can also
       // render a completed commentary Markdown root immediately before that live status container.
       // Final-answer Markdown follows the live status instead, so DOM order remains the semantic
       // boundary without relying on localized labels such as "Pro thinking".
-      const allMarkdownRoots = [...root.querySelectorAll<HTMLElement>(".markdown")]
-        .filter(candidate => !candidate.parentElement?.closest(".markdown"))
+      const allMarkdownRoots = [...root.querySelectorAll<HTMLElement>(answerRootSelector)]
+        .filter(candidate => !candidate.parentElement?.closest(answerRootSelector))
         .filter(renderedInDom);
       const streamingStatusContainers = [...root.querySelectorAll<HTMLElement>("[data-streaming-response-status]")]
         .filter(renderedInDom);

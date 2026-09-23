@@ -17,6 +17,31 @@
 
 export const BRIDGE_COMPACTION_PREFIX = "ocx1:";
 
+/** New Codex local compaction returns an assistant summary, not a remote encrypted item. */
+export function isMementoCompactionRequest(body: unknown): boolean {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+  const raw = body as Record<string, unknown>;
+  const client = raw.client_metadata;
+  if (!client || typeof client !== "object" || Array.isArray(client)) return false;
+  let metadata: unknown = (client as Record<string, unknown>)["x-codex-turn-metadata"];
+  if (typeof metadata === "string") {
+    try { metadata = JSON.parse(metadata); } catch { return false; }
+  }
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return false;
+  const request = metadata as Record<string, unknown>;
+  if (request.request_kind !== "compaction") return false;
+  // Remote v2's explicit trigger takes precedence over native metadata.
+  if (Array.isArray(raw.input) && raw.input.some(item => item?.type === "compaction_trigger")) return false;
+  if (request.compaction === undefined) return false; // older local-compaction metadata
+  const protocol = request.compaction;
+  if (!protocol || typeof protocol !== "object" || Array.isArray(protocol)
+    || (protocol as Record<string, unknown>).implementation !== "responses"
+    || (protocol as Record<string, unknown>).strategy !== "memento") {
+    throw new Error("Unsupported native text compaction protocol; expected responses/memento");
+  }
+  return true;
+}
+
 /** Codex local compaction uses /responses and declares its purpose in native metadata. */
 export function isLocalCompactionRequest(body: unknown): boolean {
   if (!body || typeof body !== "object") return false;
