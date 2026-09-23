@@ -4918,7 +4918,10 @@ export class ChatGptBrowserWorker {
       let capturedResponse = false;
       const sentAt = Date.now();
       const visibleTrace = new ChatGptVisibleTraceTracker();
-      const markdownBuffer = new ChatGptMarkdownBuffer();
+      // ChatGPT can rewrite an earlier DOM block while the turn is still running.
+      // Commit the final answer only after the completion fence accepts the page;
+      // commentary and heartbeats still stream while the browser works.
+      const markdownBuffer = new ChatGptMarkdownBuffer(undefined, 750, true);
       const checkpointStream = turn.captureLunaCheckpoint
         ? new ChatGptLunaCheckpointStream()
         : undefined;
