@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { bridgeToResponsesSSE } from "../src/bridge";
+import { bridgeToResponsesSSE, buildResponseJSON } from "../src/bridge";
 import type { AdapterEvent } from "../src/types";
 
 async function* completedEvents(chunks = 1): AsyncGenerator<AdapterEvent> {
@@ -27,6 +27,43 @@ test("Responses SSE completes through the Windows push stream", async () => {
 
   expect(body).toContain("event: response.completed");
   expect(body).toEndWith("data: [DONE]\n\n");
+});
+
+test("Responses SSE streams a provisional delta but commits the authoritative final answer", async () => {
+  async function* revisedAnswer(): AsyncGenerator<AdapterEvent> {
+    yield { type: "text_delta", text: "Old answer", phase: "final_answer" };
+    yield { type: "done", endTurn: true, finalText: "New answer" };
+  }
+  const body = await new Response(bridgeToResponsesSSE(revisedAnswer(), "chatgpt-web/test")).text();
+  const events = body.split("\n\n").flatMap(frame => {
+    const match = /^event: ([^\n]+)\ndata: ([^\n]+)$/m.exec(frame);
+    return match ? [{ type: match[1], data: JSON.parse(match[2]!) }] : [];
+  });
+  expect(events.find(event => event.type === "response.output_text.delta")?.data.delta).toBe("Old answer");
+  expect(events.find(event => event.type === "response.output_text.done")?.data.text).toBe("New answer");
+  expect(events.find(event => event.type === "response.content_part.done")?.data.part.text).toBe("New answer");
+  expect(events.find(event => event.type === "response.output_item.done")?.data.item.content[0].text).toBe("New answer");
+  expect(events.find(event => event.type === "response.completed")?.data.response.output[0].content[0].text).toBe("New answer");
+});
+
+test("non-streaming Responses also commits the authoritative final answer", () => {
+  const response = buildResponseJSON([
+    { type: "text_delta", text: "Old answer", phase: "final_answer" },
+    { type: "done", endTurn: true, finalText: "New answer" },
+  ], "chatgpt-web/test") as { output: Array<{ content?: Array<{ text: string }> }> };
+  expect(response.output[0]?.content?.[0]?.text).toBe("New answer");
+});
+
+test("compaction keeps revised final text inside its synthetic item", async () => {
+  async function* revisedSummary(): AsyncGenerator<AdapterEvent> {
+    yield { type: "text_delta", text: "Old summary", phase: "final_answer" };
+    yield { type: "done", endTurn: true, finalText: "New summary" };
+  }
+  const stream = bridgeToResponsesSSE(revisedSummary(), "chatgpt-web/test", undefined, undefined, undefined, undefined, 2_000, { compaction: true });
+  const body = await new Response(stream).text();
+  expect(body).toContain("event: response.completed");
+  expect(body).toContain('"type":"compaction"');
+  expect(body).not.toContain('"type":"message"');
 });
 
 test("Darwin SSE remains decodable through Bun.serve under sustained chunking", async () => {

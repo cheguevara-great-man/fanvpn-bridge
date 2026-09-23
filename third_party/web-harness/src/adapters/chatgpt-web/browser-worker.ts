@@ -3138,7 +3138,7 @@ export class ChatGptBrowserWorker {
     }
     return `ChatGPT connector menu opened but exposed no row named ${JSON.stringify(this.config.appName)}`
       + ` after ${triggerAttempts} complete mention trigger attempt(s)`
-      + `; create a connector with that exact name before retrying`;
+      + `; verify that connector is available in this account and the menu is fully loaded before retrying`;
   }
 
   private async clearChatGptComposerState(page: Page): Promise<void> {
@@ -4918,16 +4918,24 @@ export class ChatGptBrowserWorker {
       let capturedResponse = false;
       const sentAt = Date.now();
       const visibleTrace = new ChatGptVisibleTraceTracker();
-      // ChatGPT can rewrite an earlier DOM block while the turn is still running.
-      // Commit the final answer only after the completion fence accepts the page;
-      // commentary and heartbeats still stream while the browser works.
-      const markdownBuffer = new ChatGptMarkdownBuffer(undefined, 750, true);
+      // The live DOM is provisional: ChatGPT can rewrite even an earlier, stable block.
+      // Stream stable blocks for responsiveness, but keep an independent projection of
+      // the final DOM so a rewrite cannot poison the authoritative completed answer.
+      const finalMarkdownBuffer = new ChatGptMarkdownBuffer(undefined, 750, true);
+      const markdownBuffer = turn.captureLunaCheckpoint
+        ? finalMarkdownBuffer
+        : new ChatGptMarkdownBuffer();
+      let provisionalStreamConsistent = true;
+      let emittedFinalAnswer = false;
       const checkpointStream = turn.captureLunaCheckpoint
         ? new ChatGptLunaCheckpointStream()
         : undefined;
       const emitMarkdownDelta = (delta: string): void => {
         const visible = checkpointStream ? checkpointStream.push(delta) : delta;
-        if (visible) turn.onTextDelta(visible);
+        if (visible) {
+          emittedFinalAnswer = true;
+          turn.onTextDelta(visible);
+        }
       };
       const throwMarkdownConsistencyError = (error: unknown): never => {
         if (!(error instanceof ChatGptMarkdownConsistencyError)) throw error;
@@ -5069,7 +5077,16 @@ export class ChatGptBrowserWorker {
           }
           const textDelta = (() => {
             try {
-              return markdownBuffer.observe(snapshot.markdownSegments);
+              if (markdownBuffer === finalMarkdownBuffer) {
+                return finalMarkdownBuffer.observe(snapshot.markdownSegments);
+              }
+              finalMarkdownBuffer.observe(snapshot.markdownSegments);
+              if (!provisionalStreamConsistent) return "";
+              const delta = markdownBuffer.observe(snapshot.markdownSegments);
+              if (markdownBuffer.currentSnapshotIsConsistent()) return delta;
+              provisionalStreamConsistent = false;
+              console.warn(`[chatgpt-web] browser turn ${turn.traceId} revised provisional Markdown; final text will reconcile it`);
+              return "";
             } catch (error) {
               return throwMarkdownConsistencyError(error);
             }
@@ -5126,7 +5143,7 @@ export class ChatGptBrowserWorker {
             }
             const final = (() => {
               try {
-                return markdownBuffer.finish();
+                return finalMarkdownBuffer.finish();
               } catch (error) {
                 return throwMarkdownConsistencyError(error);
               }
@@ -5134,7 +5151,20 @@ export class ChatGptBrowserWorker {
             if (!final.markdown && snapshot.visibleText) {
               throw new Error("ChatGPT completed with visible text that could not be serialized as Markdown");
             }
-            if (final.delta) emitMarkdownDelta(final.delta);
+            if (markdownBuffer === finalMarkdownBuffer) {
+              if (final.delta) emitMarkdownDelta(final.delta);
+            } else {
+              if (provisionalStreamConsistent) {
+                try {
+                  const remaining = markdownBuffer.finish().delta;
+                  if (remaining) emitMarkdownDelta(remaining);
+                } catch (error) {
+                  if (!(error instanceof ChatGptMarkdownConsistencyError)) throw error;
+                  provisionalStreamConsistent = false;
+                }
+              }
+              if (!emittedFinalAnswer && final.markdown) emitMarkdownDelta(final.markdown);
+            }
             if (checkpointStream) {
               const completed = checkpointStream.finishOptional(snapshot.visibleText);
               if (completed.visibleRemainder) turn.onTextDelta(completed.visibleRemainder);

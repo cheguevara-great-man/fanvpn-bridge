@@ -583,6 +583,14 @@ export function bridgeToResponsesSSE(
               break;
             }
             case "done": {
+              if (options?.compaction && event.finalText !== undefined) compactionText = event.finalText;
+              if (!options?.compaction && event.finalText !== undefined) {
+                const priorFinal = finishedItems.some(item => item.type === "message" && item.phase === "final_answer");
+                if (priorFinal || (event.finalText && currentMsg?.phase !== "final_answer")) {
+                  throw new Error("Cannot reconcile a final answer after its streamed message was closed");
+                }
+                if (currentMsg?.phase === "final_answer") currentMsg.text = event.finalText;
+              }
               if (currentMsg) closeCurrentMessage();
               if (currentReasoning) closeCurrentReasoning();
               if (currentRawReasoning) closeCurrentRawReasoning();
@@ -1032,6 +1040,14 @@ export function buildResponseJSON(
         if (e.providerState) options?.onProviderState?.(e.providerState);
         break;
       case "done":
+        if (options?.compaction && e.finalText !== undefined) compactionText = e.finalText;
+        if (!options?.compaction && e.finalText !== undefined) {
+          const priorFinal = output.some(item => item.type === "message" && item.phase === "final_answer");
+          if (priorFinal || (e.finalText && currentTextPhase !== "final_answer")) {
+            throw new Error("Cannot reconcile a final answer after its streamed message was closed");
+          }
+          if (currentTextPhase === "final_answer") currentText = e.finalText;
+        }
         usage = e.usage;
         endTurn = e.endTurn;
         if (e.providerState) options?.onProviderState?.(e.providerState);

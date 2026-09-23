@@ -198,6 +198,8 @@ export type AdapterEvent =
   | { type: "assistant_boundary" }
   | {
       type: "done";
+      /** Authoritative final-answer text when provisional streamed deltas were revised. */
+      finalText?: string;
       usage?: CodexUsage;
       stopReason?: string;
       endTurn?: boolean;

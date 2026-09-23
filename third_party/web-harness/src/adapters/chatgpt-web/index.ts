@@ -260,7 +260,7 @@ function emitToolBatch(requests: BrokerToolRequest[], usage: CodexUsage, emit: (
 
 function emitBrowserCompletion(outcome: ChatGptBrowserOutcome, usage: CodexUsage, emit: (event: AdapterEvent) => void): void {
   if (outcome.type === "error") throw outcome.error;
-  emit({ type: "done", stopReason: "stop", endTurn: true, usage });
+  emit({ type: "done", stopReason: "stop", endTurn: true, usage, finalText: outcome.answer });
 }
 
 function emitTraceEvents(trace: ChatGptTraceEvent[], emit: (event: AdapterEvent) => void): void {
@@ -1179,8 +1179,11 @@ export function createChatGptWebAdapter(
                   emitRoundBatch(buffer => emitTextDeltas(completedTextDeltas, buffer));
                 }
               }
-              if (session.runtime.text.value() !== settled.answer) {
-                throw new Error("ChatGPT browser Markdown stream did not reproduce the completed answer");
+              // A live preview may differ from the final DOM, but a nonempty final answer
+              // with no browser text at all is not a revision. In particular, a compaction
+              // handoff source can settle without ever having emitted an answer.
+              if (!session.runtime.text.value() && settled.answer) {
+                throw new Error("ChatGPT browser completed without emitting its final answer");
               }
               structuredOutputValidator?.(settled.answer);
               if (bufferStructuredOutput) {
@@ -1288,8 +1291,8 @@ export function createChatGptWebAdapter(
                 session.setFinalEvents(session.roundEvents(roundKey));
                 if (turnToken) await broker.revoke(turnToken);
                 if (completedOutcome.type === "error") throw completedOutcome.error;
-                if (session.runtime.text.value() !== completedOutcome.answer) {
-                  throw new Error("ChatGPT browser Markdown stream did not reproduce the completed answer");
+                if (!session.runtime.text.value() && completedOutcome.answer) {
+                  throw new Error("ChatGPT browser completed without emitting its final answer");
                 }
                 structuredOutputValidator?.(completedOutcome.answer);
                 if (bufferStructuredOutput) {

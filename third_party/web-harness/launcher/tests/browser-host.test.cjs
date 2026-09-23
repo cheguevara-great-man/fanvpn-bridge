@@ -2505,7 +2505,7 @@ test("a completed connector turn without binding is released instead of retained
   assert.equal(closed, true);
 });
 
-test("failed and aborted browser turns release their tab slots", async () => {
+test("failed browser turns remain inspectable while aborted turns release their slots", async () => {
   for (const status of ["failed", "aborted"]) {
     let closed = false;
     const tab = {
@@ -2543,10 +2543,10 @@ test("failed and aborted browser turns release their tab slots", async () => {
       `turn ${status}`,
     );
 
-    assert.equal(fixture.turnTabs.size, 0);
-    assert.equal(fixture.selectedTabId, "home");
+    assert.equal(fixture.turnTabs.size, status === "failed" ? 1 : 0);
+    assert.equal(fixture.selectedTabId, status === "failed" ? tab.id : "home");
     assert.equal(tab.status, status === "aborted" ? "aborted" : "error");
-    assert.equal(closed, true);
+    assert.equal(closed, status === "aborted");
   }
 });
 
@@ -2705,6 +2705,20 @@ test("terminal Zero Risk tabs are reclaimed before retained conversations", () =
 
   assert.equal(fixture.evictOldestReclaimableTurnTab(), true);
   assert.equal(fixture.turnTabs.has("manual-timeout"), false);
+  assert.equal(fixture.turnTabs.has("manual-retained"), true);
+});
+
+test("a failed Automatic inspection tab is reclaimed before a retained conversation", () => {
+  const { fixture } = manualTurnFixture();
+  fixture.turnTabs.set("automatic-failed", {
+    id: "automatic-failed", interactionMode: "automatic", status: "error", lastHeartbeatAt: 1,
+  });
+  fixture.turnTabs.set("manual-retained", {
+    id: "manual-retained", interactionMode: "manual", status: "ready", lastHeartbeatAt: 0,
+  });
+
+  assert.equal(fixture.evictOldestReclaimableTurnTab(), true);
+  assert.equal(fixture.turnTabs.has("automatic-failed"), false);
   assert.equal(fixture.turnTabs.has("manual-retained"), true);
 });
 

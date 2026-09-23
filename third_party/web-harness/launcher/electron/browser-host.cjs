@@ -701,13 +701,14 @@ class BrowserHost {
   }
 
   evictOldestReclaimableTurnTab() {
-    const terminalManual = [...this.turnTabs.values()]
-      .filter(tab => tab.interactionMode === "manual"
-        && tab.status === "error"
-        && ["timed-out", "failed", "cancelled"].includes(tab.manualState))
+    const terminal = [...this.turnTabs.values()]
+      .filter(tab => tab.status === "error"
+        && (tab.interactionMode === "automatic"
+          || (tab.interactionMode === "manual"
+            && ["timed-out", "failed", "cancelled"].includes(tab.manualState))))
       .sort((left, right) => (left.lastHeartbeatAt ?? 0) - (right.lastHeartbeatAt ?? 0))[0];
-    if (terminalManual) {
-      this.removeTurnTab(terminalManual, false);
+    if (terminal) {
+      this.removeTurnTab(terminal, false);
       return true;
     }
     return BrowserHost.prototype.evictOldestRetainedTurnTab.call(this);
@@ -2323,6 +2324,16 @@ class BrowserHost {
       tab.lastHeartbeatAt = Date.now();
       if (hideAfterTurn && !this.activeTraceId) this.hide();
       this.logger.info("browser.tab_retained", { tabId: tab.id, traceId });
+      this.publishState?.(this.snapshot());
+      this.writeDescriptor();
+      return { cancelledByUser };
+    }
+    if (status === "failed") {
+      // Keep the failed page available for inspection. It is deliberately not "ready":
+      // after submission, its conversation may contain an answer Codex never accepted.
+      // A later turn must not silently append to that uncertain history.
+      tab.lastHeartbeatAt = Date.now();
+      this.logger.info("browser.tab_failed_retained_for_inspection", { tabId: tab.id, traceId });
       this.publishState?.(this.snapshot());
       this.writeDescriptor();
       return { cancelledByUser };

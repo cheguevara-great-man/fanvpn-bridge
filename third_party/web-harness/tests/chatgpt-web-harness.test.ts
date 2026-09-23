@@ -1760,6 +1760,45 @@ describe("ChatGPT outer-native harness v4", () => {
     expect(buffer.finish().delta).toBe("");
   });
 
+  test("keeps an authoritative projection when a previously streamed DOM block is rewritten", () => {
+    const preview = new ChatGptMarkdownBuffer(undefined, 0);
+    const authoritative = new ChatGptMarkdownBuffer(undefined, 0, true);
+    const old = { key: "0:p", tag: "p", sourceStart: 0, sourceEnd: 10,
+      html: "<p>Old answer</p>", text: "Old answer", streamable: true };
+    const revised = { ...old, html: "<p>New answer</p>", text: "New answer" };
+    authoritative.observe([old], 0);
+    expect(preview.observe([old], 0)).toBe("Old answer");
+    authoritative.observe([revised], 1000);
+    expect(preview.observe([revised], 1000)).toBe("");
+    expect(preview.currentSnapshotIsConsistent()).toBeFalse();
+    expect(authoritative.finish().markdown).toBe("New answer");
+  });
+
+  test("passes a revised browser answer as the authoritative completion without discarding its live preview", async () => {
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web",
+      baseUrl: `browser://chatgpt-revised-answer-${Date.now()}`,
+      chatgptWeb: { localToolsEnabled: false, solAvailable: true, proAvailable: true },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run.bind(worker);
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+      turn.onTextDelta("Old answer");
+      return "New answer";
+    };
+    try {
+      const events: AdapterEvent[] = [];
+      await createChatGptWebAdapter(provider).runTurn!(
+        rawWireRequest(environmentXml), { headers: new Headers() }, event => events.push(event),
+      );
+      expect(events.some(event => event.type === "text_delta"
+        && event.phase === "final_answer" && event.text === "Old answer")).toBeTrue();
+      expect(events.at(-1)).toMatchObject({ type: "done", finalText: "New answer" });
+    } finally {
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    }
+  });
+
   test("retains virtualized prefixes while replacing a deferred suffix and its obsolete blocks", () => {
     const buffer = new ChatGptMarkdownBuffer(undefined, 0, true);
     const block = (start: number, end: number, text: string) => ({
