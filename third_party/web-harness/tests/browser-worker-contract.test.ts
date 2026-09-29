@@ -1029,6 +1029,44 @@ test("large Markdown-rich context uses one plain-text editing command before exa
   expect(asserted).toBe(prompt);
 });
 
+test("retained prompt attachment reuses its composer locator and still reads back the full text", async () => {
+  const prompt = "中文说明\n```ts\nconst value = `literal`;\n```";
+  const calls: string[] = [];
+  let composerLookups = 0;
+  const composer = {
+    fill: async (value: string) => { expect(value).toBe(""); calls.push("clear"); },
+    focus: async () => { calls.push("focus"); },
+    evaluate: async (_fn: unknown, value?: string) => {
+      if (value !== undefined) {
+        expect(value).toBe(prompt);
+        calls.push("insert");
+        return true;
+      }
+      calls.push("readback");
+      return prompt;
+    },
+  };
+  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+    activeComposer: async () => { composerLookups += 1; return composer; },
+  }) as ChatGptBrowserWorker;
+  const attachPrompt = (ChatGptBrowserWorker.prototype as unknown as {
+    attachPrompt(
+      page: Page,
+      prompt: string,
+      localTools: boolean,
+      captureDiagnostic?: unknown,
+      abortSignal?: AbortSignal,
+      catalogRefreshAvailable?: boolean,
+      connectorAttemptBudget?: unknown,
+      reuseConnector?: boolean,
+    ): Promise<void>;
+  }).attachPrompt;
+
+  await attachPrompt.call(worker, {} as Page, prompt, true, undefined, undefined, false, undefined, true);
+  expect(composerLookups).toBe(1);
+  expect(calls).toEqual(["clear", "focus", "focus", "insert", "readback"]);
+});
+
 test("plain-text editing command fails closed when the focused composer rejects it", async () => {
   const insertPromptText = (ChatGptBrowserWorker.prototype as unknown as {
     insertPromptText(page: unknown, text: string, abortSignal?: AbortSignal): Promise<void>;

@@ -3039,9 +3039,9 @@ export class ChatGptBrowserWorker {
     };
   }
 
-  private async attachedPromptText(page: Page, abortSignal?: AbortSignal): Promise<string> {
-    const composer = await this.activeComposer(page, 30_000, abortSignal);
-    return composer.evaluate(element => {
+  private async attachedPromptText(page: Page, abortSignal?: AbortSignal, composer?: Locator): Promise<string> {
+    const activeComposer = composer ?? await this.activeComposer(page, 30_000, abortSignal);
+    return activeComposer.evaluate(element => {
       const clone = element.cloneNode(true) as HTMLElement;
       clone.querySelectorAll(
         '[data-id^="plugin:"][data-keyword], [data-inline-selection-pill-cursor-target]',
@@ -3058,12 +3058,13 @@ export class ChatGptBrowserWorker {
     page: Page,
     prompt: string,
     abortSignal?: AbortSignal,
+    composer?: Locator,
   ): Promise<void> {
     const deadline = Date.now() + 10_000;
     let observed = "";
     while (Date.now() < deadline) {
       throwIfPromptAttachmentAborted(abortSignal);
-      observed = await this.attachedPromptText(page, abortSignal);
+      observed = await this.attachedPromptText(page, abortSignal, composer);
       throwIfPromptAttachmentAborted(abortSignal);
       if (this.promptTextEquivalent(prompt, observed)) return;
       await withBrowserTurnAbort(
@@ -3393,13 +3394,21 @@ export class ChatGptBrowserWorker {
     connectorAttemptBudget?: ChatGptConnectorAttemptBudget,
     reuseConnector = false,
     requireThink = false,
+    traceId?: string,
   ): Promise<void> {
     throwIfPromptAttachmentAborted(abortSignal);
     const connectorMode = chatGptConnectorAttachmentMode(localTools, reuseConnector);
+    const startedAt = performance.now();
+    const logPhase = (phase: string): void => {
+      if (traceId) {
+        console.info(`[chatgpt-web] browser turn ${traceId} prompt_attachment phase=${phase} elapsedMs=${Math.round(performance.now() - startedAt)}`);
+      }
+    };
     let composerMutationStarted = false;
     try {
       if (connectorMode !== "mention") {
         const composer = await this.activeComposer(page, 30_000, abortSignal);
+        logPhase("composer_ready");
         // Playwright's multiline fill maps through an input action that ChatGPT's Lexical editor can
         // collapse to the first paragraph on the launcher-owned Electron surface. Clear separately,
         // then transport the complete text through the browser's plain-text editing command.
@@ -3409,8 +3418,11 @@ export class ChatGptBrowserWorker {
         if (requireThink) {
           await setChatGptThinkMode(composer.locator("xpath=ancestor::form[1]"), true, captureDiagnostic, abortSignal);
         }
-        await this.insertPromptText(page, prompt, abortSignal);
-        await this.assertPromptAttached(page, prompt, abortSignal);
+        logPhase("composer_prepared");
+        await this.insertPromptText(page, prompt, abortSignal, composer);
+        logPhase("text_inserted");
+        await this.assertPromptAttached(page, prompt, abortSignal, composer);
+        logPhase("text_verified");
         return;
       }
       const selectedComposer = await this.selectConnector(
@@ -3420,6 +3432,7 @@ export class ChatGptBrowserWorker {
         connectorAttemptBudget,
         abortSignal,
       );
+      logPhase("connector_selected");
       // selectConnector owns and rolls back every mutation until it returns. From this point the
       // attachment owns the selected pill and prompt text as one transaction.
       composerMutationStarted = true;
@@ -3431,8 +3444,10 @@ export class ChatGptBrowserWorker {
         signal: abortSignal,
         timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
       });
-      await this.insertPromptText(page, ` ${prompt}`, abortSignal);
-      await this.assertPromptAttached(page, prompt, abortSignal);
+      await this.insertPromptText(page, ` ${prompt}`, abortSignal, selectedComposer);
+      logPhase("text_inserted");
+      await this.assertPromptAttached(page, prompt, abortSignal, selectedComposer);
+      logPhase("text_verified");
     } catch (error) {
       if (!composerMutationStarted || error instanceof ChatGptPersistentBrowserStateError) throw error;
       try {
@@ -3698,6 +3713,7 @@ export class ChatGptBrowserWorker {
     connectorAttemptBudget?: ChatGptConnectorAttemptBudget,
     reuseConnector = false,
     requireThink = false,
+    traceId?: string,
   ): Promise<void> {
     let retryAvailable = compaction;
     for (;;) {
@@ -3712,6 +3728,7 @@ export class ChatGptBrowserWorker {
           connectorAttemptBudget,
           reuseConnector,
           requireThink,
+          traceId,
         );
         return;
       } catch (error) {
@@ -3730,16 +3747,16 @@ export class ChatGptBrowserWorker {
     }
   }
 
-  private async insertPromptText(page: Page, text: string, abortSignal?: AbortSignal): Promise<void> {
+  private async insertPromptText(page: Page, text: string, abortSignal?: AbortSignal, composer?: Locator): Promise<void> {
     throwIfPromptAttachmentAborted(abortSignal);
-    const composer = await this.activeComposer(page, 30_000, abortSignal);
-    await composer.focus({ signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
+    const activeComposer = composer ?? await this.activeComposer(page, 30_000, abortSignal);
+    await activeComposer.focus({ signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
     // CDP Input.insertText is interpreted as live typing by ChatGPT's Lexical plugins. On a large
     // JSON transport it can turn literal Markdown backticks into rich code nodes, remove the
     // delimiters from textContent, and leave the next insertion outside the intended block. The
     // browser's plain-text editing command updates the same focused contenteditable atomically
     // without running those Markdown shortcuts. Exact readback below remains the authority.
-    const inserted = await composer.evaluate(insertPlainTextIntoComposer, text, {
+    const inserted = await activeComposer.evaluate(insertPlainTextIntoComposer, text, {
       timeout: 20_000,
       signal: abortSignal,
     });
@@ -4835,6 +4852,7 @@ export class ChatGptBrowserWorker {
                 connectorAttemptBudget,
                 reuseConversation,
                 mode.thinkEnabled,
+                turn.traceId,
               );
             },
             chatGptSuspensionClock,
