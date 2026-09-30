@@ -6,10 +6,21 @@ export const CHATGPT_COMPOSER_SELECTOR = [
   '[data-testid="prompt-textarea"]',
   "#prompt-textarea",
   '[contenteditable="true"][data-lexical-editor="true"]',
+  '[contenteditable="true"][data-composer-markdown][role="textbox"]',
 ].join(", ");
+export const CHATGPT_SELECTED_CONNECTOR_SELECTOR = [
+  '[data-id^="plugin:"][data-keyword]',
+  '[app-mention-path^="app://"][app-mention-display-name]',
+].join(", ");
+export const CHATGPT_CONTEXT_MENU_ROW_SELECTOR = [
+  '.__menu-item[tabindex="0"]',
+  '[data-mention-list-scroll-area] button[data-list-navigation-item="true"]',
+].join(", ");
+export const CHATGPT_SEND_BUTTON_SELECTOR = 'button[data-testid="send-button"], [data-composer-body] button[type="submit"]';
 export const CHATGPT_EFFORT_CONTROL_SELECTOR = [
   'button[aria-haspopup="menu"][data-tone="neutral"]',
   'button[data-testid="model-switcher-dropdown-button"][aria-haspopup="menu"]',
+  'button[data-codex-intelligence-trigger="true"][aria-haspopup="menu"]',
 ].join(", ");
 export const CHATGPT_EFFORT_MENU_SELECTOR = [
   '[data-testid="composer-intelligence-picker-content"]:has([role="menuitemradio"], [data-model-reasoning-effort-slider])',
@@ -17,20 +28,33 @@ export const CHATGPT_EFFORT_MENU_SELECTOR = [
   '[role="group"]:has([role="menuitemradio"], [data-model-reasoning-effort-slider])',
 ].join(", ");
 export const CHATGPT_EFFORT_ITEM_SELECTOR = '[role="menuitemradio"]';
-export const CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR = '[data-model-reasoning-effort-slider]';
-export const CHATGPT_EFFORT_SLIDER_SELECTOR = '[data-model-reasoning-effort-slider] [role="slider"]';
+export const CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR = '[data-model-reasoning-effort-slider], [data-reasoning-slider="true"]';
+export const CHATGPT_EFFORT_SLIDER_SELECTOR = '[data-model-reasoning-effort-slider] [role="slider"], [data-reasoning-slider="true"] [role="slider"]';
 export const CHATGPT_EFFORT_SLIDER_MAX_OPTIONS = 5;
-export const CHATGPT_STOP_BUTTON_SELECTOR = '[data-testid="stop-button"]';
-export const CHATGPT_COMPLETION_ACTION_SELECTOR = 'button[data-testid="copy-turn-action-button"]';
+export const CHATGPT_STOP_BUTTON_SELECTOR = [
+  '[data-testid="stop-button"]',
+  '[data-composer-body] button[aria-label="Stop"]',
+  '[data-composer-body] button[aria-label="Stop streaming"]',
+  '[data-composer-body] button[aria-label="停止"]',
+  '[data-composer-body] button[aria-label="停止流式传输"]',
+].join(", ");
+export const CHATGPT_COMPLETION_ACTION_SELECTOR = [
+  'button[data-testid="copy-turn-action-button"]',
+  '.turn-action-controls button[aria-label="Copy"]',
+  '.turn-action-controls button[aria-label="复制"]',
+  '.turn-action-controls button[aria-label="複製"]',
+].join(", ");
 export const CHATGPT_ASSISTANT_TURN_SELECTOR = [
   '[data-testid^="conversation-turn-"][data-turn="assistant"]',
   '[data-testid^="conversation-turn-"][data-message-author-role="assistant"]',
   '[data-testid^="conversation-turn-"]:has([data-message-author-role="assistant"])',
+  '[data-turn-key]:has([data-chatgpt-search-unit-key$=":assistant"])',
 ].join(", ");
 export const CHATGPT_USER_TURN_SELECTOR = [
   '[data-testid^="conversation-turn-"][data-turn="user"]',
   '[data-testid^="conversation-turn-"][data-message-author-role="user"]',
   '[data-testid^="conversation-turn-"]:has([data-message-author-role="user"])',
+  '[data-turn-key]:has([data-chatgpt-search-unit-key$=":user"])',
 ].join(", ");
 
 export interface ChatGptEffortSliderState {

@@ -9,7 +9,7 @@ import { ensureChatGptPersonalizedConnectorAccess } from "../src/adapters/chatgp
 import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { CHATGPT_CONNECTOR_NAME, DEV_CHATGPT_CONNECTOR_NAME, defaultChromeExecutable, legacyChatGptConnectorMigrationMessage } from "../src/config";
-import { parseChatGptEffortSliderState } from "../src/chatgpt-session";
+import { CHATGPT_SELECTED_CONNECTOR_SELECTOR, CHATGPT_SEND_BUTTON_SELECTOR, parseChatGptEffortSliderState } from "../src/chatgpt-session";
 import { ChatGptExternalTurnProgress, chatGptExternalToolCallsAreInFlight } from "../src/adapters/chatgpt-web/turn-progress";
 import type { CodexProviderConfig } from "../src/types";
 import { compileChatGptWebPrompt, formatChatGptWebMultipartCommit, formatChatGptWebMultipartStage } from "../src/adapters/chatgpt-web/prompt";
@@ -514,7 +514,7 @@ test("an accepted Full-mode send survives one stalled DOM probe and a later MCP 
     press: async () => { sendPresses += 1; },
   };
   const composer = {
-    locator: () => ({ getByTestId: () => sendButton }),
+    locator: () => ({ locator: () => sendButton }),
   };
   worker.activeComposer = async () => composer;
 
@@ -636,7 +636,7 @@ test("Bigger Context send activation keeps the outer stage budget instead of res
     },
   };
   worker.activeComposer = async () => ({
-    locator: () => ({ getByTestId: () => sendButton }),
+    locator: () => ({ locator: () => sendButton }),
   });
   worker.waitForSubmissionAcceptedWithRecovery = async () => "user_turn";
 
@@ -999,6 +999,7 @@ test("large Markdown-rich context uses one plain-text editing command before exa
   const calls: Array<[string, unknown?]> = [];
   let asserted = "";
   const composer = {
+    getAttribute: async () => null,
     fill: async (value: string) => { calls.push(["fill", value]); },
     focus: async () => { calls.push(["focus"]); },
     evaluate: async (fn: unknown, value: string, options: unknown) => {
@@ -1034,6 +1035,7 @@ test("retained prompt attachment reuses its composer locator and still reads bac
   const calls: string[] = [];
   let composerLookups = 0;
   const composer = {
+    getAttribute: async () => null,
     fill: async (value: string) => { expect(value).toBe(""); calls.push("clear"); },
     focus: async () => { calls.push("focus"); },
     evaluate: async (_fn: unknown, value?: string) => {
@@ -1176,7 +1178,7 @@ test("connector selection re-resolves the active composer after ChatGPT replaces
   };
   const selectedComposer = {
     locator: (selector: string) => {
-      expect(selector).toBe('[data-id^="plugin:"][data-keyword]');
+      expect(selector).toBe(CHATGPT_SELECTED_CONNECTOR_SELECTOR);
       return {
         filter: (options: { hasText: string; visible: boolean }) => {
           expect(options).toEqual({ hasText: "Codex Native2", visible: true });
@@ -1186,6 +1188,7 @@ test("connector selection re-resolves the active composer after ChatGPT replaces
     },
   };
   const initialComposer = {
+    getAttribute: async () => null,
     fill: async (value: string) => { calls.push(["fill", value]); },
     focus: async () => { calls.push(["focus"]); },
     pressSequentially: async (value: string, options: { delay: number; signal?: AbortSignal; timeout: number }) => {
@@ -1263,6 +1266,7 @@ test("connector selection moves highlight to the exact hidden-viewport row befor
       : appResult,
   };
   const initialComposer = {
+    getAttribute: async () => null,
     fill: async () => {},
     focus: async () => {},
     pressSequentially: async () => {},
@@ -1342,6 +1346,7 @@ test("connector selection retriggers the complete mention after a fresh-page hyd
     locator: () => ({ filter: () => selectedConnector }),
   };
   const initialComposer = {
+    getAttribute: async () => null,
     fill: async () => { calls.push("clear"); },
     focus: async (_options?: { signal?: AbortSignal }) => { calls.push("focus"); },
     pressSequentially: async (value: string) => {
@@ -1415,6 +1420,7 @@ test("connector verification preserves the host-refreshed catalog evidence", asy
     filter: (options: { has?: unknown; visible?: boolean }) => options.visible ? visibleRows : appResult,
   };
   const initialComposer = {
+    getAttribute: async () => null,
     fill: async () => { calls.push("clear"); },
     focus: async () => { calls.push("focus"); },
     pressSequentially: async () => { calls.push("type"); },
@@ -1647,6 +1653,7 @@ test("connector catalog refresh stays fail-closed for absent, legacy, and exact 
       return await selectConnector.call({
         config: { appName: CHATGPT_CONNECTOR_NAME },
         activeComposer: async () => ({
+          getAttribute: async () => null,
           fill: async () => {},
           focus: async () => {},
           pressSequentially: async () => {},
@@ -1719,6 +1726,7 @@ test("tool-capable prompts use the shared Playwright connector selection before 
     },
   };
   const initialComposer = {
+    getAttribute: async () => null,
     fill: async (value: string, options?: { signal?: AbortSignal }) => {
       expect(options?.signal).toBeDefined();
       calls.push(["fill", value]);
@@ -1811,6 +1819,7 @@ test("an aborted connector proof clears its mention before the preflight release
     filter: () => appResult,
   };
   const composer = {
+    getAttribute: async () => null,
     fill: async (_value: string, { signal }: { signal?: AbortSignal }) => {
       expect(signal).toBeDefined();
       fillSignals.push(signal!);
@@ -1875,6 +1884,7 @@ test("a lost connector mention cannot be used as evidence to change personalizat
   let cleanupCalls = 0;
   let stateReads = 0;
   const composer = {
+    getAttribute: async () => null,
     fill: async () => {}, focus: async () => {}, pressSequentially: async () => {},
     evaluate: async () => ({ text: "", focused: false }),
   };
@@ -1917,6 +1927,7 @@ test("an aborted real connector selection clears the typed mention before return
   };
   const menuRows = { filter: () => appResult };
   const composer = {
+    getAttribute: async () => null,
     fill: async (value: string, { signal }: { signal?: AbortSignal }) => {
       expect(signal).toBeDefined();
       composerText = value;
@@ -2011,6 +2022,7 @@ test("an abort after connector activation removes the selected pill before retur
   };
   const menuRows = { filter: () => appResult };
   const composer = {
+    getAttribute: async () => null,
     fill: async (value: string) => {
       composerText = value;
       if (controller.signal.aborted) connectorSelected = false;
@@ -2115,6 +2127,7 @@ test("retained tool turns insert into the connector-bound composer without selec
 
   const calls: string[] = [];
   const composer = {
+    getAttribute: async () => null,
     fill: async (value: string) => { expect(value).toBe(""); calls.push("fill"); },
     focus: async () => { calls.push("focus"); },
   };
@@ -2147,8 +2160,8 @@ test("image attachment readiness uses exact file tiles and not localized remove-
         },
       };
     },
-    getByTestId: (testId: string) => {
-      expect(testId).toBe("send-button");
+    locator: (selector: string) => {
+      expect(selector).toBe(CHATGPT_SEND_BUTTON_SELECTOR);
       return send;
     },
   };
@@ -2257,6 +2270,7 @@ function thinkSlashFixture() {
     filter: () => composer, first: () => composer, locator: () => composerForm,
     evaluate: async () => ({ text: state.draft.trim(), connectors: [...state.connectors] }),
     focus: async () => {},
+    getAttribute: async () => null,
     fill: async (text: string) => { state.draft = text; state.connectors = []; },
     pressSequentially: async (text: string) => { state.commands.push(text); state.draft += text; },
     press: async (key: string) => {

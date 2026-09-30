@@ -60,6 +60,23 @@ async function snapshot(html: string): Promise<Snapshot> {
 const toolbar = '<button data-testid="copy-turn-action-button"></button>';
 const legacy = `<section id="turn"><div data-message-author-role="assistant"><div class="markdown"><p>ANSWER</p></div></div>${toolbar}</section>`;
 const dil = `<section id="turn"><div data-message-author-role="assistant"><div class="puik-root not-prose not-markdown"><div class="hash_DilResponseRoot"><p>ANSWER</p></div></div></div>${toolbar}</section>`;
+const current = '<section id="turn" data-turn-key="user-message-id">'
+  + '<div data-chatgpt-search-unit-key="fallback-turn-0:0:user"><div class="markdown" data-markdown-text-style="user-message"><p>USER</p></div>'
+  + '<div class="turn-action-controls"><button aria-label="复制消息"></button></div></div>'
+  + '<div data-chatgpt-search-unit-key="fallback-turn-0:2:assistant"><div data-markdown-text-style="assistant-message"><p>ANSWER</p></div></div>'
+  + '<div class="turn-action-controls"><button aria-label="复制"></button></div></section>';
+
+test("current answer renderer is assistant-owned and its own completion toolbar is required", async () => {
+  const response = await snapshot(current);
+  expect(response.visibleText).toBe("ANSWER");
+  expect(response.completionActionVisible).toBeTrue();
+  const streaming = await snapshot(current.replace('<button aria-label="复制"></button>', ""));
+  expect(streaming.visibleText).toBe("ANSWER");
+  expect(streaming.completionActionVisible).toBeFalse();
+  const buffer = new ChatGptMarkdownBuffer();
+  buffer.observe(response.markdownSegments, 0);
+  expect(buffer.finish().markdown).toBe("ANSWER");
+});
 
 test("both ChatGPT answer renderers produce one final answer", async () => {
   for (const html of [legacy, dil, dil.replace("hash_DilResponseRoot", "changed_DilResponseRoot"),

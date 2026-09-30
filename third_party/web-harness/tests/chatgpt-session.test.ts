@@ -5,6 +5,9 @@ import {
   CHATGPT_EFFORT_CONTROL_SELECTOR,
   CHATGPT_EFFORT_MENU_SELECTOR,
   CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR,
+  CHATGPT_EFFORT_SLIDER_SELECTOR,
+  CHATGPT_SEND_BUTTON_SELECTOR,
+  CHATGPT_STOP_BUTTON_SELECTOR,
   activateChatGptEffortMenu,
   detectChatGptAccountCapabilities,
 } from "../src/chatgpt-session";
@@ -13,17 +16,56 @@ test("composer and effort selectors exclude unrelated editable fields and menu b
   const { createDocument } = require("@mixmark-io/domino") as { createDocument(html: string): Document };
   const document = createDocument(`<body><form>
     <div contenteditable="true" id="unrelated-editor"></div>
+    <div contenteditable="true" role="textbox" id="unrelated-textbox"></div>
+    <div contenteditable="false" data-composer-markdown role="textbox" id="readonly-markdown"></div>
     <textarea placeholder="Search" id="search"></textarea>
     <button aria-haspopup="menu" id="attachments"></button>
     <div data-testid="prompt-textarea" id="composer-testid"></div>
     <div id="prompt-textarea"></div>
     <div contenteditable="true" data-lexical-editor="true" id="composer-lexical"></div>
+    <div contenteditable="true" data-composer-markdown role="textbox" id="composer-prosemirror"></div>
     <button aria-haspopup="menu" data-tone="neutral" id="effort"></button>
     <button aria-haspopup="menu" data-testid="model-switcher-dropdown-button" id="model"></button>
+    <button aria-haspopup="menu" data-codex-intelligence-trigger="true" id="model-current"></button>
   </form></body>`);
   const matches = (selector: string) => Array.from(document.querySelectorAll(selector)).map(element => element.id);
-  expect(matches(CHATGPT_COMPOSER_SELECTOR)).toEqual(["composer-testid", "prompt-textarea", "composer-lexical"]);
-  expect(matches(CHATGPT_EFFORT_CONTROL_SELECTOR)).toEqual(["effort", "model"]);
+  expect(matches(CHATGPT_COMPOSER_SELECTOR)).toEqual(["composer-testid", "prompt-textarea", "composer-lexical", "composer-prosemirror"]);
+  expect(matches(CHATGPT_EFFORT_CONTROL_SELECTOR)).toEqual(["effort", "model", "model-current"]);
+});
+
+test("effort slider selectors support both composer layouts without unrelated sliders", () => {
+  const { createDocument } = require("@mixmark-io/domino") as { createDocument(html: string): Document };
+  const document = createDocument(`<body>
+    <div data-model-reasoning-effort-slider id="legacy"><span role="slider" id="legacy-slider"></span></div>
+    <div data-reasoning-slider="true" id="current"><span role="slider" id="current-slider"></span></div>
+    <div data-reasoning-slider="false" id="disabled"><span role="slider" id="disabled-slider"></span></div>
+    <div><span role="slider" id="unrelated-slider"></span></div>
+  </body>`);
+  const matches = (selector: string) => Array.from(document.querySelectorAll(selector)).map(element => element.id);
+  expect(matches(CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR)).toEqual(["legacy", "current"]);
+  expect(matches(CHATGPT_EFFORT_SLIDER_SELECTOR)).toEqual(["legacy-slider", "current-slider"]);
+});
+
+test("send selector supports both composer layouts and excludes other submit buttons", () => {
+  const { createDocument } = require("@mixmark-io/domino") as { createDocument(html: string): Document };
+  const document = createDocument(`<body>
+    <button data-testid="send-button" id="legacy-send"></button>
+    <form><div data-composer-body><button type="submit" id="current-send"></button><button type="button" id="context"></button></div></form>
+    <form><button type="submit" id="unrelated-submit"></button></form>
+  </body>`);
+  expect(Array.from(document.querySelectorAll(CHATGPT_SEND_BUTTON_SELECTOR)).map(element => element.id)).toEqual(["legacy-send", "current-send"]);
+});
+
+test("stop selector supports the current localized control without matching unrelated buttons", () => {
+  const { createDocument } = require("@mixmark-io/domino") as { createDocument(html: string): Document };
+  const document = createDocument(`<body>
+    <button data-testid="stop-button" id="legacy-stop"></button>
+    <div data-composer-body><button type="button" aria-label="停止" id="current-stop"></button></div>
+    <button aria-label="停止" id="unrelated-stop"></button>
+    <div data-composer-body><button type="submit" aria-label="发送" id="send"></button></div>
+  </body>`);
+  expect(Array.from(document.querySelectorAll(CHATGPT_STOP_BUTTON_SELECTOR)).map(element => element.id))
+    .toEqual(["legacy-stop", "current-stop"]);
 });
 
 test("effort activation binds the owned menu after the control opens", async () => {
