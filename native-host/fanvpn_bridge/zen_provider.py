@@ -210,9 +210,6 @@ def _to_chat_request(
     if isinstance(instructions, str) and instructions.strip():
         messages.append({"role": "system", "content": instructions})
 
-    custom_tools = _custom_tool_names(payload)
-    pending_calls: dict[str, dict[str, Any]] = {}
-
     for item in _prompt_input_items(payload):
         item_type = str(item.get("type") or "")
         if item_type == "message" or "role" in item:
@@ -235,29 +232,25 @@ def _to_chat_request(
             else:
                 raw_arguments = item.get("arguments")
                 arguments = _decode_arguments(raw_arguments)
-            pending_calls[call_id] = {"name": name, "arguments": arguments}
-            messages.append({
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [{
-                    "id": call_id,
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "arguments": json.dumps(arguments, ensure_ascii=False, separators=(",", ":")),
-                    },
-                }],
-            })
+            call = {
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": json.dumps(arguments, ensure_ascii=False, separators=(",", ":")),
+                },
+            }
+            # Responses represents parallel calls as individual items, while
+            # Chat Completions requires one assistant batch before its results.
+            if messages and messages[-1].get("tool_calls"):
+                messages[-1]["tool_calls"].append(call)
+            else:
+                messages.append({"role": "assistant", "content": None, "tool_calls": [call]})
             continue
         if item_type == "function_call_output" or item_type == "custom_tool_call_output":
             call_id = str(item.get("call_id") or item.get("id") or "")
             text = _tool_result_text(item)
-            if call_id in pending_calls and pending_calls[call_id]["name"] in custom_tools:
-                # A custom tool's result is reported as a plain user message
-                # because the wire form was a single-string function.
-                messages.append({"role": "user", "content": text})
-            else:
-                messages.append({"role": "tool", "tool_call_id": call_id, "content": text})
+            messages.append({"role": "tool", "tool_call_id": call_id, "content": text})
             continue
         if item_type == "reasoning":
             continue
@@ -303,8 +296,9 @@ class _ZenStreamTranslator:
     until ``finish_reason`` keeps the emitted event ordering deterministic.
     """
 
-    def __init__(self, model_slug: str) -> None:
+    def __init__(self, model_slug: str, custom_tools: set[str]) -> None:
         self.model = model_slug
+        self.custom_tools = custom_tools
         self.events: list[bytes] = []
         self.response_id = "resp_" + uuid.uuid4().hex
         self.message_id = "msg_" + uuid.uuid4().hex
@@ -446,30 +440,47 @@ class _ZenStreamTranslator:
                 continue
             index = len(self.output)
             call_id = call["id"] or ("call_" + uuid.uuid4().hex)
-            item_id = "fc_" + uuid.uuid4().hex
+            is_custom = name in self.custom_tools
+            value = call["arguments"] or "{}"
+            if is_custom:
+                try:
+                    decoded = json.loads(value)
+                except json.JSONDecodeError as exc:
+                    raise ZenProviderError(
+                        f"Zen returned invalid JSON arguments for custom tool {name}",
+                        code="zen_custom_tool_invalid",
+                    ) from exc
+                if not isinstance(decoded, Mapping) or not isinstance(decoded.get("input"), str):
+                    raise ZenProviderError(
+                        f"Zen custom tool {name} requires a string input argument",
+                        code="zen_custom_tool_invalid",
+                    )
+                value = decoded["input"]
+            field = "input" if is_custom else "arguments"
+            event_prefix = "response.custom_tool_call_input" if is_custom else "response.function_call_arguments"
+            item_id = ("ctc_" if is_custom else "fc_") + uuid.uuid4().hex
             item = {
                 "id": item_id,
-                "type": "function_call",
+                "type": "custom_tool_call" if is_custom else "function_call",
                 "status": "in_progress",
                 "call_id": call_id,
                 "name": name,
-                "arguments": "",
+                field: "",
             }
             self._emit("response.output_item.added", output_index=index, item=item)
-            arguments = call["arguments"] or "{}"
             self._emit(
-                "response.function_call_arguments.delta",
+                event_prefix + ".delta",
                 item_id=item_id,
                 output_index=index,
-                delta=arguments,
+                delta=value,
             )
             self._emit(
-                "response.function_call_arguments.done",
+                event_prefix + ".done",
                 item_id=item_id,
                 output_index=index,
-                arguments=arguments,
+                **{field: value},
             )
-            completed = {**item, "status": "completed", "arguments": arguments}
+            completed = {**item, "status": "completed", field: value}
             self._emit("response.output_item.done", output_index=index, item=completed)
             self.output.append(completed)
         self._emit(
@@ -574,7 +585,7 @@ class ZenProvider:
         if wants_stream:
             return True, self._stream(payload, model_id, slug)
         raw = self._post(_to_chat_request(payload, model_id, stream=False))
-        translator = _ZenStreamTranslator(slug)
+        translator = _ZenStreamTranslator(slug, _custom_tool_names(payload))
         translator.start()
         translator.on_chunk(_decode_chat_completion(raw))
         translator.finish()
@@ -582,12 +593,14 @@ class ZenProvider:
 
     def _stream(self, payload: Mapping[str, Any], model_id: str, slug: str) -> Iterator[bytes]:
         raw = self._post(_to_chat_request(payload, model_id, stream=True), accept="text/event-stream")
-        translator = _ZenStreamTranslator(slug)
+        translator = _ZenStreamTranslator(slug, _custom_tool_names(payload))
         translator.start()
         for chunk in _parse_chat_stream(raw):
             translator.on_chunk(chunk)
         translator.finish()
-        yield from translator.events
+        # Upstream is already fully buffered. Prepare it before the HTTP layer
+        # commits SSE headers so failures remain proper HTTP error responses.
+        return iter(translator.events)
 
     def _post(self, body: Mapping[str, Any], *, accept: str = "application/json") -> bytes:
         request = urllib.request.Request(

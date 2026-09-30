@@ -18,6 +18,7 @@ from fanvpn_bridge.hybrid_route import HybridRouteStore
 from fanvpn_bridge.product_cache import ProductResponseCache
 from fanvpn_bridge.routing import RouteTable
 from fanvpn_bridge.subagent_policy import SubagentPolicyConfig, SubagentPolicyStore
+from fanvpn_bridge.zen_provider import ZenProvider, ZenProviderError
 from tests.helpers import FakeExtension, channel_pair
 
 
@@ -224,6 +225,31 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
         result = (response.status, dict(response.getheaders()), payload)
         connection.close()
         return result
+
+    def test_zen_stream_upstream_error_returns_readable_http_error_before_headers(self) -> None:
+        self.server.zen_provider = ZenProvider()
+        body = json.dumps({"model": "zen/space-bunny-free", "stream": True, "input": "hi"}).encode()
+        for path in ("/zen/v1/responses", "/hybrid/v1/responses"):
+            with self.subTest(path=path):
+                with patch.object(ZenProvider, "_post", side_effect=ZenProviderError(
+                    "Upstream rejected tool history", status=400, code="zen_upstream_failed",
+                )):
+                    status, headers, payload = self.request("POST", path, body, {"Content-Type": "application/json"})
+                self.assertEqual(status, 400)
+                self.assertIn("application/json", headers["Content-Type"])
+                self.assertNotIn("Transfer-Encoding", headers)
+                self.assertEqual(json.loads(payload)["error"]["code"], "zen_upstream_failed")
+
+    def test_zen_stream_success_completes_chunked_body(self) -> None:
+        self.server.zen_provider = ZenProvider()
+        raw = b'data: {"choices":[{"delta":{"content":"OK"}}]}\n\ndata: [DONE]\n\n'
+        body = json.dumps({"model": "zen/space-bunny-free", "stream": True, "input": "hi"}).encode()
+        with patch.object(ZenProvider, "_post", return_value=raw):
+            status, headers, payload = self.request("POST", "/hybrid/v1/responses", body, {"Content-Type": "application/json"})
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Transfer-Encoding"], "chunked")
+        self.assertIn(b"event: response.completed", payload)
+        self.assertTrue(payload.endswith(b"data: [DONE]\n\n"))
 
     def test_health_reports_connected_offscreen_executor(self) -> None:
         status, _headers, payload = self.request("GET", "/__bridge/health")

@@ -264,9 +264,33 @@ class ZenRequestTranslationTests(unittest.TestCase):
         )
         function = body["tools"][0]["function"]
         self.assertEqual(function["parameters"]["required"], ["input"])
-        # A custom tool's result has no tool-role slot upstream, so it is
-        # reported as ordinary user text.
-        self.assertEqual([message["role"] for message in body["messages"]], ["assistant", "user"])
+        self.assertEqual([message["role"] for message in body["messages"]], ["assistant", "tool"])
+        self.assertEqual(body["messages"][1]["tool_call_id"], "call_2")
+        self.assertEqual(body["messages"][1]["content"], "applied")
+        self.assertEqual(json.loads(body["messages"][0]["tool_calls"][0]["function"]["arguments"]), {"input": "raw diff"})
+
+    def test_parallel_mixed_tool_history_is_one_batch_even_without_current_tools(self) -> None:
+        body = _to_chat_request(
+            {"input": [
+                {"type": "message", "role": "user", "content": "check"},
+                {"type": "function_call", "call_id": "f1", "name": "calc", "arguments": "{}"},
+                {"type": "reasoning", "summary": []},
+                {"type": "custom_tool_call", "call_id": "c1", "name": "exec", "input": "noop"},
+                {"type": "function_call_output", "call_id": "f1", "output": "42"},
+                {"type": "custom_tool_call_output", "call_id": "c1", "output": "OK"},
+                {"type": "message", "role": "assistant", "content": "done"},
+                {"type": "message", "role": "user", "content": "continue"},
+                {"type": "custom_tool_call", "call_id": "c2", "name": "exec", "input": "next"},
+                {"type": "custom_tool_call_output", "call_id": "c2", "output": "OK"},
+            ]},
+            "space-bunny-free",
+            stream=True,
+        )
+        messages = body["messages"]
+        self.assertEqual([m["role"] for m in messages], ["user", "assistant", "tool", "tool", "assistant", "user", "assistant", "tool"])
+        self.assertEqual([call["id"] for call in messages[1]["tool_calls"]], ["f1", "c1"])
+        self.assertEqual([m["tool_call_id"] for m in messages if m["role"] == "tool"], ["f1", "c1", "c2"])
+        self.assertEqual([call["id"] for call in messages[6]["tool_calls"]], ["c2"])
 
     def test_reasoning_effort_and_stream_flag_are_forwarded(self) -> None:
         body = _to_chat_request(
@@ -452,6 +476,71 @@ class ZenProviderTests(unittest.TestCase):
         )
         self.assertEqual(events[-1], b"data: [DONE]\n\n")
 
+    def test_custom_tool_roundtrip_preserves_raw_input_across_multiple_turns(self) -> None:
+        raw_input = '*** Begin Patch\n*** Add File: note.md\n+# 中文 "引号" \\ 路径\n+```python\n+print("你好")\n+```\n*** End Patch'
+        for streaming in (False, True):
+            with self.subTest(streaming=streaming):
+                payload = {
+                    "model": "zen/space-bunny-free", "stream": streaming,
+                    "input": [{"type": "message", "role": "user", "content": "test"}],
+                    "tools": [{"type": "custom", "name": "apply_patch"}],
+                }
+                provider = ZenProvider()
+                for turn in range(3):
+                    call_id = f"call_{turn}"
+                    arguments = json.dumps({"input": raw_input}, ensure_ascii=False)
+                    chunks = [
+                        {"choices": [{"delta": {"tool_calls": [{
+                            "index": 0, "id": call_id,
+                            "function": {"name": "apply_patch", "arguments": arguments[:17]},
+                        }]}}]},
+                        {"choices": [{"delta": {"tool_calls": [{
+                            "index": 0, "function": {"arguments": arguments[17:]},
+                        }]}}]},
+                    ]
+                    if streaming:
+                        raw = b"".join(b"data: " + json.dumps(c, ensure_ascii=False).encode("utf-8") + b"\n\n" for c in chunks)
+                        raw += b"data: [DONE]\n\n"
+                    else:
+                        raw = json.dumps({"choices": [{"message": {"tool_calls": [{
+                            "id": call_id, "function": {"name": "apply_patch", "arguments": arguments},
+                        }]}}]}).encode("utf-8")
+                    with patch.object(ZenProvider, "_post", return_value=raw) as post:
+                        _, result = provider.responses(payload)
+                    sent = post.call_args[0][0]["messages"]
+                    self.assertEqual(len([m for m in sent if m["role"] == "tool"]), turn)
+                    for index, message in enumerate(sent):
+                        if message["role"] == "tool":
+                            self.assertEqual(message["tool_call_id"], sent[index - 1]["tool_calls"][0]["id"])
+                    if streaming:
+                        events = [json.loads(line[6:]) for event in result for line in event.decode("utf-8").splitlines() if line.startswith("data: {")]
+                        delta = next(e for e in events if e["type"] == "response.custom_tool_call_input.delta")
+                        done = next(e for e in events if e["type"] == "response.custom_tool_call_input.done")
+                        self.assertEqual(delta["delta"], raw_input)
+                        self.assertEqual(done["input"], raw_input)
+                        self.assertFalse(any(e["type"].startswith("response.function_call_arguments") for e in events))
+                        result = events[-1]["response"]
+                    call = result["output"][0]
+                    self.assertEqual(call["type"], "custom_tool_call")
+                    self.assertEqual(call["call_id"], call_id)
+                    self.assertEqual(call["input"], raw_input)
+                    self.assertNotIn("arguments", call)
+                    payload["input"].extend([call, {"type": "custom_tool_call_output", "call_id": call_id, "output": "applied"}])
+
+    def test_invalid_custom_tool_arguments_are_rejected_without_repair(self) -> None:
+        for streaming in (False, True):
+            for arguments in ('{broken', '{}', '{"input":42}', '[]'):
+                with self.subTest(streaming=streaming, arguments=arguments):
+                    call = {"index": 0, "id": "bad", "function": {"name": "exec", "arguments": arguments}}
+                    if streaming:
+                        raw = b"data: " + json.dumps({"choices": [{"delta": {"tool_calls": [call]}}]}).encode() + b"\n\ndata: [DONE]\n\n"
+                    else:
+                        raw = json.dumps({"choices": [{"message": {"tool_calls": [call]}}]}).encode()
+                    with patch.object(ZenProvider, "_post", return_value=raw):
+                        with self.assertRaises(ZenProviderError) as caught:
+                            ZenProvider().responses({"model": "zen/space-bunny-free", "stream": streaming, "tools": [{"type": "custom", "name": "exec"}]})
+                    self.assertEqual(caught.exception.code, "zen_custom_tool_invalid")
+
     def test_compaction_summarizes_history_through_the_model(self) -> None:
         provider = ZenProvider()
         payload = {
@@ -478,13 +567,15 @@ class ZenProviderTests(unittest.TestCase):
         error = urllib.error.HTTPError(
             "https://opencode.ai/zen/v1/chat/completions", 400, "Bad Request", {}, io.BytesIO(b'{"error":"nope"}')
         )
-        with patch("fanvpn_bridge.zen_provider.urllib.request.urlopen", side_effect=error):
-            with self.assertRaises(ZenProviderError) as caught:
-                provider.responses(
-                    {"model": "zen/space-bunny-free", "input": [{"type": "message", "role": "user", "content": "hi"}]}
-                )
-        self.assertEqual(caught.exception.status, 400)
-        self.assertEqual(caught.exception.code, "zen_upstream_failed")
+        for streaming in (False, True):
+            with self.subTest(streaming=streaming):
+                with patch("fanvpn_bridge.zen_provider.urllib.request.urlopen", side_effect=error):
+                    with self.assertRaises(ZenProviderError) as caught:
+                        provider.responses(
+                            {"model": "zen/space-bunny-free", "stream": streaming, "input": [{"type": "message", "role": "user", "content": "hi"}]}
+                        )
+                self.assertEqual(caught.exception.status, 400)
+                self.assertEqual(caught.exception.code, "zen_upstream_failed")
 
 
 if __name__ == "__main__":
