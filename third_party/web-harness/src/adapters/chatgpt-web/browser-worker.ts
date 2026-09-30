@@ -3018,6 +3018,16 @@ export class ChatGptBrowserWorker {
         locator: observationPage.locator(`[data-turn-id=${JSON.stringify(identity)}], [data-turn-key=${JSON.stringify(identity)}]`),
         acceptedTurnIdentities: state.turnIdentities,
       };
+      // The current UI can expose only thinking/tool activity until the final assistant
+      // subtree appears. A visible stop control proves generation is still running;
+      // start the missing-response grace after that evidence ceases, not after the
+      // last tool result. Explicit turn deadlines and cancellation still apply above.
+      if (state.visibleStopButtonCount > 0) {
+        responseDeadline = Math.min(
+          deadline ?? Number.POSITIVE_INFINITY,
+          Date.now() + graceMs,
+        );
+      }
       // A delayed renderer wake can cross the grace while the assistant appears. Only a fresh
       // observation can prove it is still missing; the explicit turn deadline remains above.
       if (Date.now() >= responseDeadline

@@ -888,6 +888,79 @@ test("missing-assistant expiry checks fresh DOM after a delayed wake while prese
   }
 });
 
+test("missing-assistant grace follows visible generation without waiving deadlines or cancellation", async () => {
+  type Baseline = { initialTurnIdentities: string[]; domCache: Record<string, unknown> };
+  const hiddenLocator = {
+    filter() { return this; },
+    last() { return this; },
+    isVisible: async () => false,
+  };
+  const assistantLocator = { id: "new-assistant" };
+  const page = {
+    isClosed: () => false,
+    locator: (selector: string) => selector.startsWith("[data-turn-id=") ? assistantLocator : hiddenLocator,
+  } as unknown as Page;
+  const realDateNow = Date.now;
+  try {
+    for (const scenario of ["final-answer", "stopped-without-answer", "deadline", "cancelled"] as const) {
+      // No assistant subtree during several minutes of generation, even with no recent MCP activity.
+      const observations = [
+        { at: 1_000, running: true },
+        { at: 61_001, running: true },
+        { at: 181_001, running: true },
+        { at: 181_251, running: false },
+        { at: 241_000, running: false },
+        { at: 241_001, running: false },
+      ];
+      let index = 0;
+      let scans = 0;
+      Date.now = () => observations[index]!.at;
+      const abort = new AbortController();
+      const worker = Object.create(ChatGptBrowserWorker.prototype) as {
+        waitForNewAssistantTurn(page: Page, baseline: Baseline, deadline?: number, signal?: AbortSignal): Promise<{
+          identity: string; locator: unknown;
+        }>;
+        submissionDomState(): Promise<unknown>;
+        waitForTurnDomOrExternalProgress(): Promise<void>;
+      };
+      worker.submissionDomState = async () => {
+        scans += 1;
+        const answered = scenario === "final-answer" && index === 4;
+        return {
+          turnIdentities: ["old-assistant", ...(answered ? ["new-assistant"] : [])],
+          userIdentities: [],
+          responseIdentities: ["old-assistant", ...(answered ? ["new-assistant"] : [])],
+          visibleStopButtonCount: observations[index]!.running ? 1 : 0,
+        };
+      };
+      worker.waitForTurnDomOrExternalProgress = async () => {
+        index += 1;
+        if (index >= observations.length) throw new Error("missing assistant outlived its stopped-generation grace");
+        if (scenario === "cancelled" && index === 2) abort.abort();
+      };
+      const result = worker.waitForNewAssistantTurn(
+        page,
+        { initialTurnIdentities: ["old-assistant"], domCache: {} },
+        scenario === "deadline" ? 181_000 : undefined,
+        abort.signal,
+      );
+      if (scenario === "final-answer") {
+        await expect(result).resolves.toMatchObject({ identity: "new-assistant", locator: assistantLocator });
+        expect(scans).toBe(5);
+      } else {
+        await expect(result).rejects.toThrow(scenario === "deadline"
+          ? "ChatGPT web turn timed out"
+          : scenario === "cancelled"
+            ? "ChatGPT web turn aborted"
+            : "ChatGPT accepted the message but did not expose its assistant turn in the DOM");
+        expect(scans).toBe(scenario === "stopped-without-answer" ? 6 : 2);
+      }
+    }
+  } finally {
+    Date.now = realDateNow;
+  }
+});
+
 test("a failed stale-browser disconnect prevents the replacement connection", async () => {
   let replacementAttempts = 0;
   const disconnectFailure = new Error("stale CDP transport did not close");
