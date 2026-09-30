@@ -7,6 +7,7 @@ import {
   CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR,
   CHATGPT_EFFORT_SLIDER_SELECTOR,
   CHATGPT_SEND_BUTTON_SELECTOR,
+  CHATGPT_IMAGE_UPLOAD_SELECTOR,
   CHATGPT_STOP_BUTTON_SELECTOR,
   activateChatGptEffortMenu,
   detectChatGptAccountCapabilities,
@@ -54,6 +55,19 @@ test("send selector supports both composer layouts and excludes other submit but
     <form><button type="submit" id="unrelated-submit"></button></form>
   </body>`);
   expect(Array.from(document.querySelectorAll(CHATGPT_SEND_BUTTON_SELECTOR)).map(element => element.id)).toEqual(["legacy-send", "current-send"]);
+});
+
+test("image upload selector supports legacy and current inputs without selecting video or generic uploads", () => {
+  const { createDocument } = require("@mixmark-io/domino") as { createDocument(html: string): Document };
+  const document = createDocument(`<body>
+    <input type="file" data-testid="upload-photos-input" id="legacy">
+    <input type="file" accept="image/*" id="current">
+    <input type="file" accept="image/*,video/*" id="video">
+    <input type="file" aria-label="Attach files" id="generic">
+    <input type="text" accept="image/*" id="not-a-file">
+  </body>`);
+  expect(Array.from(document.querySelectorAll(CHATGPT_IMAGE_UPLOAD_SELECTOR)).map(element => element.id))
+    .toEqual(["legacy", "current"]);
 });
 
 test("stop selector supports the current localized control without matching unrelated buttons", () => {

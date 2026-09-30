@@ -1622,7 +1622,7 @@ test("an uninitialized browser surface is reaped instead of remaining as a gray 
 
   assert.equal(fixture.turnTabs.size, 0);
   assert.equal(fixture.selectedTabId, "home");
-  assert.equal(fixture.closedTurnOwners.get(tab.traceId), tab.helperPid);
+  assert.deepEqual(fixture.closedTurnOwners.get(tab.traceId), { helperPid: tab.helperPid, surfaceId: tab.surfaceId });
   assert.deepEqual(closed, ["view", "contents"]);
   assert.deepEqual(warnings, [["browser.orphan_turn_reaped", {
     tabId: tab.id,
@@ -1974,6 +1974,214 @@ test("a stale helper cannot end a replacement turn with the same trace id", asyn
   );
 });
 
+function automaticRetryFixture() {
+  const traceId = "trace_retained_failure_retry";
+  const events = [];
+  const makeTab = (id, helperPid, status) => ({
+    id,
+    surfaceId: `surface-${id}`,
+    traceId,
+    helperPid,
+    status,
+    interactionMode: "automatic",
+    conversationKey: "e".repeat(64),
+    connectorIdentity: "Codex Native2",
+    connectorBound: true,
+    bootstrapReady: true,
+    lastHeartbeatAt: 1,
+    view: { webContents: {
+      isDestroyed: () => false,
+      setBackgroundThrottling: value => events.push([id, "throttle", value]),
+      close: () => events.push([id, "close"]),
+    } },
+  });
+  const failed = makeTab("failed", -111, "error");
+  const active = makeTab("active", process.pid, "running");
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    manualOperation: null,
+    turnTabs: new Map([[failed.id, failed], [active.id, active]]),
+    closedTurnOwners: new Map(),
+    userCancelledTurnOwners: new Map(),
+    selectedTabId: active.id,
+    window: { contentView: { removeChildView() {} } },
+    syncViewVisibility() {},
+    syncPowerSaveBlocker() {},
+    snapshot: () => ({ tabs: [] }),
+    publishState() {},
+    writeDescriptor() {},
+    cancelTurn: async trace => events.push(["cancel", trace]),
+    logger: { info() {}, warn() {} },
+    createTurnTab: async () => assert.fail("must not allocate another tab while this retry is running"),
+  });
+  return { fixture, failed, active, events, makeTab };
+}
+
+test("a retained failed tab does not shadow begin, heartbeat or completion of an active retry", async () => {
+  const { fixture, failed, active, events } = automaticRetryFixture();
+  const lease = await fixture.beginTurn(
+    active.traceId, false, active.helperPid, active.conversationKey, active.connectorIdentity,
+  );
+  assert.equal(lease.tabId, active.id);
+  assert.equal(fixture.turnTabs.size, 2);
+  fixture.heartbeatTurn(active.traceId, active.helperPid, true);
+  assert.ok(active.lastHeartbeatAt > 1);
+  assert.equal(active.deviceEmulationDirty, true);
+  assert.equal(failed.lastHeartbeatAt, 1);
+  assert.equal(failed.deviceEmulationDirty, undefined);
+  await fixture.endTurn(active.traceId, active.helperPid, "completed", false, undefined, true, true);
+  assert.equal(active.status, "ready");
+  assert.equal(failed.status, "error");
+  assert.ok(fixture.turnTabs.has(failed.id));
+  assert.equal(events.some(event => event[0] === failed.id), false);
+});
+
+test("an old failed helper cannot heartbeat, end or steal the new retry's lease", async () => {
+  const { fixture, failed, active } = automaticRetryFixture();
+  assert.throws(() => fixture.heartbeatTurn(active.traceId, failed.helperPid), /helper ownership mismatch/);
+  await assert.rejects(
+    fixture.endTurn(active.traceId, failed.helperPid, "failed", false), /helper ownership mismatch/,
+  );
+  await assert.rejects(
+    fixture.beginTurn(active.traceId, false, failed.helperPid, active.conversationKey, active.connectorIdentity),
+    /owned by another helper process/,
+  );
+  assert.equal(active.status, "running");
+  assert.equal(active.lastHeartbeatAt, 1);
+});
+
+test("automatic retry ownership fails closed if the same trace has two running pages", async () => {
+  const { fixture, active, makeTab } = automaticRetryFixture();
+  const duplicate = makeTab("duplicate", active.helperPid, "running");
+  fixture.turnTabs.set(duplicate.id, duplicate);
+  assert.throws(() => fixture.heartbeatTurn(active.traceId, active.helperPid), /multiple running browser tabs/);
+  await assert.rejects(fixture.endTurn(active.traceId, active.helperPid, "failed", false), /multiple running browser tabs/);
+  await assert.rejects(
+    fixture.beginTurn(active.traceId, false, active.helperPid, active.conversationKey, active.connectorIdentity),
+    /multiple running browser tabs/,
+  );
+  assert.equal(active.status, "running");
+  assert.equal(duplicate.status, "running");
+});
+
+test("terminal retry notifications target the latest failed page, not the first retained failure", async () => {
+  const { fixture, failed, active } = automaticRetryFixture();
+  active.status = "error";
+  await fixture.endTurn(active.traceId, active.helperPid, "failed", false, "latest upload failed");
+  assert.equal(active.message, "latest upload failed");
+  assert.equal(failed.message, undefined);
+  assert.equal(failed.lastHeartbeatAt, 1);
+  assert.throws(() => fixture.heartbeatTurn(active.traceId, active.helperPid), /no longer running/);
+});
+
+test("closing an old failed page does not cancel the running retry with the same trace", async () => {
+  const { fixture, failed, active, events } = automaticRetryFixture();
+  await fixture.closeTab(failed.id);
+  assert.ok(fixture.turnTabs.has(active.id));
+  assert.equal(active.status, "running");
+  assert.equal(fixture.userCancelledTurnOwners.size, 0);
+  assert.equal(events.some(event => event[0] === "cancel"), false);
+});
+
+test("a cancelled retry acknowledges late notifications despite its older retained failed page", async () => {
+  const { fixture, failed, active, events } = automaticRetryFixture();
+  await fixture.closeTab(active.id);
+  assert.deepEqual(events.find(event => event[0] === "cancel"), ["cancel", active.traceId]);
+  assert.ok(fixture.turnTabs.has(failed.id));
+  assert.throws(() => fixture.heartbeatTurn(active.traceId, active.helperPid), /already released/);
+  assert.deepEqual(await fixture.endTurn(active.traceId, active.helperPid, "aborted", false), { cancelledByUser: true });
+  assert.equal(fixture.closedTurnOwners.has(active.traceId), false);
+  assert.equal(failed.status, "error");
+  await assert.rejects(
+    fixture.beginTurn(active.traceId, false, active.helperPid, active.conversationKey, active.connectorIdentity),
+    error => error.code === "turn_cancelled",
+  );
+});
+
+test("a renewed retry lease survives reaping even when an older failure has the same trace", () => {
+  const { fixture, failed, active } = automaticRetryFixture();
+  fixture.heartbeatTurn(active.traceId, active.helperPid);
+  fixture.reapExpiredTurnTabs(Date.now());
+  assert.ok(fixture.turnTabs.has(active.id));
+  assert.ok(fixture.turnTabs.has(failed.id));
+});
+
+test("retry metadata checks apply to the running owner rather than an older inspected failure", async () => {
+  const { fixture, failed, active } = automaticRetryFixture();
+  failed.conversationKey = "f".repeat(64);
+  const lease = await fixture.beginTurn(
+    active.traceId, false, active.helperPid, active.conversationKey, active.connectorIdentity,
+  );
+  assert.equal(lease.tabId, active.id);
+  await assert.rejects(
+    fixture.beginTurn(active.traceId, false, active.helperPid, failed.conversationKey, active.connectorIdentity),
+    /conversation metadata does not match/,
+  );
+});
+
+test("surface-bound notifications cannot affect a newer retry owned by the same helper process", async () => {
+  const { fixture, failed, active } = automaticRetryFixture();
+  failed.helperPid = active.helperPid;
+  assert.throws(
+    () => fixture.heartbeatTurn(active.traceId, active.helperPid, true, failed.surfaceId),
+    /no longer running/,
+  );
+  await fixture.endTurn(active.traceId, active.helperPid, "failed", false, "old error", false, false, failed.surfaceId);
+  assert.equal(active.status, "running");
+  assert.equal(active.lastHeartbeatAt, 1);
+  assert.equal(active.deviceEmulationDirty, undefined);
+  fixture.heartbeatTurn(active.traceId, active.helperPid, true, active.surfaceId);
+  assert.ok(active.lastHeartbeatAt > 1);
+  assert.equal(active.deviceEmulationDirty, true);
+});
+
+test("an unknown surface never falls back to another page with the same trace and helper", async () => {
+  const { fixture, active } = automaticRetryFixture();
+  assert.throws(
+    () => fixture.heartbeatTurn(active.traceId, active.helperPid, false, "missing-surface"),
+    /no browser tab owns/,
+  );
+  await assert.rejects(
+    fixture.endTurn(active.traceId, active.helperPid, "failed", false, undefined, false, false, "missing-surface"),
+    /no browser tab owns/,
+  );
+  assert.equal(active.status, "running");
+  assert.equal(active.lastHeartbeatAt, 1);
+});
+
+test("a surface-bound cancelled retry retains its acknowledgement when an unrelated late end arrives", async () => {
+  const { fixture, failed, active } = automaticRetryFixture();
+  failed.helperPid = active.helperPid;
+  await fixture.closeTab(active.id);
+  await fixture.endTurn(failed.traceId, failed.helperPid, "failed", false, "old notification", false, false, failed.surfaceId);
+  assert.ok(fixture.closedTurnOwners.has(active.traceId));
+  assert.throws(
+    () => fixture.heartbeatTurn(active.traceId, active.helperPid, false, active.surfaceId),
+    /already released/,
+  );
+  assert.deepEqual(
+    await fixture.endTurn(active.traceId, active.helperPid, "aborted", false, undefined, false, false, active.surfaceId),
+    { cancelledByUser: true },
+  );
+  assert.equal(fixture.closedTurnOwners.has(active.traceId), false);
+});
+
+test("repeated end notifications cannot downgrade or release a completed retained conversation", async () => {
+  const { fixture, failed, active, events } = automaticRetryFixture();
+  // Retained conversation reuse can make the newest lease belong to an earlier-created tab.
+  fixture.turnTabs = new Map([[active.id, active], [failed.id, failed]]);
+  await fixture.endTurn(active.traceId, active.helperPid, "completed", false, undefined, true, true, active.surfaceId);
+  const heartbeat = active.lastHeartbeatAt;
+  const eventCount = events.length;
+  for (const status of ["failed", "aborted", "completed"]) {
+    await fixture.endTurn(active.traceId, active.helperPid, status, false, "late notification", false, false, active.surfaceId);
+  }
+  assert.ok(fixture.turnTabs.has(active.id));
+  assert.equal(active.status, "ready");
+  assert.equal(active.message, "Task completed");
+  assert.equal(active.lastHeartbeatAt, heartbeat);
+  assert.equal(events.length, eventCount);
+});
+
 test("closing a running browser tab reports terminal user cancellation to its helper", async () => {
   const closed = [];
   const tab = {
@@ -2002,7 +2210,7 @@ test("closing a running browser tab reports terminal user cancellation to its he
   await BrowserHost.prototype.closeTab.call(fixture, tab.id);
 
   assert.deepEqual(closed, ["cancel:trace_running", "view", "contents"]);
-  assert.equal(fixture.closedTurnOwners.get("trace_running"), 333);
+  assert.deepEqual(fixture.closedTurnOwners.get("trace_running"), { helperPid: 333, surfaceId: tab.surfaceId });
   assert.equal(fixture.userCancelledTurnOwners.get("trace_running"), 333);
   assert.equal(fixture.selectedTabId, "home");
   await assert.rejects(

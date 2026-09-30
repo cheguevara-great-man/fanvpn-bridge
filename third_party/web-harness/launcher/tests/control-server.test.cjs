@@ -138,11 +138,46 @@ test("browser control server authenticates and owns turn visibility", async () =
         "Codex Native2",
         true,
       ],
-      ["heartbeat", "abcdef123456", process.pid, true],
-      ["end", "abcdef123456", process.pid, "completed", true, undefined, true, true],
+      ["heartbeat", "abcdef123456", process.pid, true, undefined],
+      ["end", "abcdef123456", process.pid, "completed", true, undefined, true, true, undefined],
     ]);
     assert.equal(logs.some(([, event]) => event === "browser.turn_started"), true);
     assert.equal(logs.some(([, event]) => event === "browser.turn_ended"), true);
+  } finally {
+    await server.close();
+  }
+});
+
+test("automatic control forwards exact surface ownership and rejects invalid surface ids", async () => {
+  const calls = [];
+  const surfaceId = "s".repeat(32);
+  const server = await new BrowserControlServer({
+    logger: { info() {}, warn() {}, error() {} },
+    getBrowserHost: () => ({
+      heartbeatTurn: (...args) => calls.push(["heartbeat", ...args]),
+      endTurn: (...args) => { calls.push(["end", ...args]); return { cancelledByUser: false }; },
+    }),
+    getPreferences: () => ({}),
+  }).start();
+  const descriptor = server.descriptor();
+  const send = (phase, ownership) => fetch(`${descriptor.endpoint}/v1/turn/${phase}`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${descriptor.token}`, "content-type": "application/json" },
+    body: JSON.stringify({ traceId: "surface123456", helperPid: process.pid, status: "failed", surfaceId: ownership }),
+  });
+  try {
+    assert.equal((await send("heartbeat", surfaceId)).status, 200);
+    assert.equal((await send("end", surfaceId)).status, 200);
+    assert.deepEqual(calls, [
+      ["heartbeat", "surface123456", process.pid, false, surfaceId],
+      ["end", "surface123456", process.pid, "failed", false, undefined, false, false, surfaceId],
+    ]);
+    for (const invalid of ["", "short", 123, null, "s".repeat(31) + "/"]) {
+      for (const phase of ["heartbeat", "end"]) {
+        assert.equal((await send(phase, invalid)).status, 400);
+      }
+    }
+    assert.equal(calls.length, 2);
   } finally {
     await server.close();
   }

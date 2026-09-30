@@ -22,6 +22,7 @@ import {
   waitForLauncherManualTerminal,
 } from "../src/launcher-browser-host";
 import type { Browser, BrowserContext, Page } from "playwright-core";
+import { ChatGptBrowserWorker, type BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
 
 const roots: string[] = [];
 
@@ -126,18 +127,21 @@ test("launcher turn control sends authenticated lifecycle events", async () => {
       phase: "heartbeat",
       traceId: "abc123def456",
       helperPid: process.pid,
+      surfaceId: "launcher_surface_id_0123456789AB",
       refreshViewport: true,
     });
     expect(received.body).toEqual({
       phase: "heartbeat",
       traceId: "abc123def456",
       helperPid: process.pid,
+      surfaceId: "launcher_surface_id_0123456789AB",
       refreshViewport: true,
     });
     await expect(notifyLauncherTurn(path, {
       phase: "end",
       traceId: "abc123def456",
       helperPid: process.pid,
+      surfaceId: "launcher_surface_id_0123456789AB",
       status: "completed",
       retain: true,
       connectorBound: true,
@@ -146,6 +150,7 @@ test("launcher turn control sends authenticated lifecycle events", async () => {
       phase: "end",
       traceId: "abc123def456",
       helperPid: process.pid,
+      surfaceId: "launcher_surface_id_0123456789AB",
       status: "completed",
       retain: true,
       connectorBound: true,
@@ -154,6 +159,53 @@ test("launcher turn control sends authenticated lifecycle events", async () => {
     await new Promise<void>(resolve => server.close(() => resolve()));
   }
 });
+
+test("the browser worker binds its real heartbeat and end request to the leased surface", async () => {
+  const surfaceId = "launcher_surface_id_0123456789AB";
+  const received: Array<Record<string, unknown>> = [];
+  let heartbeatReceived!: () => void;
+  const heartbeat = new Promise<void>(resolve => { heartbeatReceived = resolve; });
+  const server = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    received.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify(request.url === "/v1/turn/start"
+      ? { surfaceId, reused: false, connectorBound: false }
+      : request.url === "/v1/turn/end" ? { cancelledByUser: false } : { ok: true }));
+    if (request.url === "/v1/turn/heartbeat") heartbeatReceived();
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test server has no port");
+    const path = descriptorFile(`http://127.0.0.1:${address.port}`);
+    const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+      config: { browserHost: "launcher", browserHostDescriptorPath: path },
+      runBrowserTurn: async (_turn: BrowserTurn, leasedSurfaceId: string) => {
+        expect(leasedSurfaceId).toBe(surfaceId);
+        await heartbeat;
+        return "completed response";
+      },
+    }) as { runExclusive(turn: BrowserTurn): Promise<string> };
+    const turn: BrowserTurn = {
+      traceId: "surface_binding_123456",
+      modelId: "gpt-6-sol",
+      capabilities: { localToolsEnabled: false, solAvailable: true, proAvailable: false },
+      prepare: async () => ({ text: "test", images: [], release() {} }),
+      onTextDelta() {},
+    };
+    await expect(worker.runExclusive(turn)).resolves.toBe("completed response");
+    expect(received.map(activity => activity.phase)).toEqual(["start", "heartbeat", "end"]);
+    for (const activity of received.slice(1)) {
+      expect(activity.surfaceId).toBe(surfaceId);
+      expect(activity.traceId).toBe(turn.traceId);
+      expect(activity.helperPid).toBe(process.pid);
+    }
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+}, 20_000);
 
 test("launcher retained-conversation release uses its authenticated exact-key endpoint", async () => {
   let received: { url?: string; authorization?: string; body?: unknown } = {};

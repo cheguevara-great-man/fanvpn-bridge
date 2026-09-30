@@ -383,6 +383,7 @@ export type LauncherTurnActivity =
       phase: "heartbeat";
       traceId: string;
       helperPid: number;
+      surfaceId?: string;
       /** Re-establish the launcher's hidden viewport after the caller closes its CDP session. */
       refreshViewport?: boolean;
     }
@@ -390,6 +391,7 @@ export type LauncherTurnActivity =
       phase: "end";
       traceId: string;
       helperPid: number;
+      surfaceId?: string;
       status: "completed" | "failed" | "aborted";
       message?: string;
       retain?: boolean;

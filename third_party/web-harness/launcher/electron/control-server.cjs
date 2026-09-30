@@ -152,6 +152,10 @@ class BrowserControlServer {
       if (!Number.isInteger(body.helperPid) || body.helperPid < 1) {
         throw new Error("browser helper pid is invalid");
       }
+      if (body.surfaceId !== undefined
+        && (typeof body.surfaceId !== "string" || !/^[A-Za-z0-9_-]{32}$/.test(body.surfaceId))) {
+        throw new Error("surfaceId is invalid");
+      }
       if (body.conversationKey !== undefined && !/^[a-f0-9]{64}$/.test(body.conversationKey)) {
         throw new Error("conversationKey is invalid");
       }
@@ -299,7 +303,7 @@ class BrowserControlServer {
         writeJson(response, 200, { ok: true, ...lease });
         return;
       } else if (request.url === "/v1/turn/heartbeat") {
-        host.heartbeatTurn(body.traceId, body.helperPid, body.refreshViewport === true);
+        host.heartbeatTurn(body.traceId, body.helperPid, body.refreshViewport === true, body.surfaceId);
         this.logger.debug?.("browser.turn_heartbeat", { traceId: body.traceId });
         writeJson(response, 200, { ok: true });
         return;
@@ -313,6 +317,7 @@ class BrowserControlServer {
           body.message,
           body.retain === true,
           body.connectorBound === true,
+          body.surfaceId,
         );
         this.logger.info("browser.turn_ended", { traceId: body.traceId, status: body.status });
         writeJson(response, 200, { ok: true, ...release });

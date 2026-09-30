@@ -17,6 +17,10 @@ export const CHATGPT_CONTEXT_MENU_ROW_SELECTOR = [
   '[data-mention-list-scroll-area] button[data-list-navigation-item="true"]',
 ].join(", ");
 export const CHATGPT_SEND_BUTTON_SELECTOR = 'button[data-testid="send-button"], [data-composer-body] button[type="submit"]';
+export const CHATGPT_IMAGE_UPLOAD_SELECTOR = [
+  'input[data-testid="upload-photos-input"]',
+  'input[type="file"][accept="image/*"]',
+].join(", ");
 export const CHATGPT_EFFORT_CONTROL_SELECTOR = [
   'button[aria-haspopup="menu"][data-tone="neutral"]',
   'button[data-testid="model-switcher-dropdown-button"][aria-haspopup="menu"]',

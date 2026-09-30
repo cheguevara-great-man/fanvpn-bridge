@@ -61,6 +61,7 @@ import {
   CHATGPT_SELECTED_CONNECTOR_SELECTOR,
   CHATGPT_CONTEXT_MENU_ROW_SELECTOR,
   CHATGPT_SEND_BUTTON_SELECTOR,
+  CHATGPT_IMAGE_UPLOAD_SELECTOR,
   CHATGPT_EFFORT_CONTROL_SELECTOR,
   CHATGPT_EFFORT_ITEM_SELECTOR,
   CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR,
@@ -3874,20 +3875,29 @@ export class ChatGptBrowserWorker {
     return { effort: mode.displayLabel, response: CHATGPT_SMOKE_EXPECTED };
   }
 
-  private async attachFiles(page: Page, prompt: CompiledChatGptWebPrompt): Promise<void> {
+  private async attachFiles(page: Page, prompt: CompiledChatGptWebPrompt, signal?: AbortSignal): Promise<void> {
     const files = chatGptPromptFilePayloads(prompt);
     if (files.length === 0) return;
-    const composer = await this.activeComposer(page);
+    throwIfPromptAttachmentAborted(signal);
+    const composer = await this.activeComposer(page, 30_000, signal);
     const composerForm = composer.locator("xpath=ancestor::form[1]");
-    const input = page.locator('input[data-testid="upload-photos-input"]');
-    await input.waitFor({ state: "attached", timeout: 20_000 });
-    await input.setInputFiles(files);
+    const input = composerForm.locator(CHATGPT_IMAGE_UPLOAD_SELECTOR);
+    await input.waitFor({ state: "attached", timeout: 20_000, signal });
+    await input.setInputFiles(files, { timeout: 20_000, signal });
     try {
-      await Promise.all(files.map(file => (
-        composerForm.getByRole("group", { name: file.name, exact: true })
-          .waitFor({ state: "visible", timeout: 60_000 })
-      )));
+      await Promise.all(files.map(async file => {
+        // The new composer exposes image tiles as buttons rather than groups. A thumbnail
+        // appears before the upload completes, so it alone is not proof of a ready attachment.
+        const tile = composerForm.getByRole("group", { name: file.name, exact: true })
+          .or(composerForm.getByRole("button", { name: file.name, exact: true }));
+        await tile.waitFor({ state: "visible", timeout: 60_000, signal });
+        await tile.locator('[role="progressbar"]').waitFor({ state: "hidden", timeout: 60_000, signal });
+        if (await tile.locator('[role="alert"]').count() > 0) {
+          throw new Error("ChatGPT reported an attachment upload error");
+        }
+      }));
     } catch {
+      throwIfPromptAttachmentAborted(signal);
       const alerts = (await page.locator('[role="alert"]').allInnerTexts().catch(() => []))
         .map(text => text.replace(/\s+/g, " ").trim())
         .filter(Boolean);
@@ -3899,8 +3909,9 @@ export class ChatGptBrowserWorker {
     const send = composerForm.locator(CHATGPT_SEND_BUTTON_SELECTOR);
     const deadline = Date.now() + 60_000;
     while (Date.now() < deadline) {
+      throwIfPromptAttachmentAborted(signal);
       if (await send.isEnabled().catch(() => false)) return;
-      await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
+      await withBrowserTurnAbort(new Promise(resolveSleep => setTimeout(resolveSleep, 100)), signal);
     }
     throw new Error("ChatGPT accepted the prompt attachments but did not make the message ready to send");
   }
@@ -4451,6 +4462,7 @@ export class ChatGptBrowserWorker {
         phase: "heartbeat",
         traceId: turn.traceId,
         helperPid: process.pid,
+        surfaceId,
       }, LAUNCHER_TURN_HEARTBEAT_TIMEOUT_MS).catch(error => {
         const now = Date.now();
         if (now - lastHeartbeatFailureAt < 30_000) return;
@@ -4491,6 +4503,7 @@ export class ChatGptBrowserWorker {
           phase: "end",
           traceId: turn.traceId,
           helperPid: process.pid,
+          surfaceId,
           status: terminal,
           ...(terminalMessage ? { message: terminalMessage } : {}),
           ...(terminal === "completed" && turn.retainConversation ? { retain: true } : {}),
@@ -4670,6 +4683,7 @@ export class ChatGptBrowserWorker {
                   phase: "heartbeat",
                   traceId: turn.traceId,
                   helperPid: process.pid,
+                  surfaceId: launcherSurfaceId,
                   refreshViewport: true,
                 });
                 const rebound = await connectLauncherBrowserHost(
@@ -4948,8 +4962,8 @@ export class ChatGptBrowserWorker {
         }
       }
       await diagnostics.capture(page, "prompt-attachment-complete");
-      await this.runStage(turn.traceId, "file_attachment", browserStageTimeouts.fileAttachment, () => (
-        this.attachFiles(page, prepared)
+      await this.runStage(turn.traceId, "file_attachment", browserStageTimeouts.fileAttachment, (stageSignal) => (
+        this.attachFiles(page, prepared, turn.abortSignal ? AbortSignal.any([stageSignal, turn.abortSignal]) : stageSignal)
       ));
       await diagnostics.capture(page, "file-attachment-complete");
       const completionTracker = new ChatGptCompletionTracker();

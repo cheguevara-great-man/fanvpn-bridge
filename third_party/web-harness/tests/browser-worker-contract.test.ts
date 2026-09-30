@@ -9,7 +9,7 @@ import { ensureChatGptPersonalizedConnectorAccess } from "../src/adapters/chatgp
 import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { CHATGPT_CONNECTOR_NAME, DEV_CHATGPT_CONNECTOR_NAME, defaultChromeExecutable, legacyChatGptConnectorMigrationMessage } from "../src/config";
-import { CHATGPT_SELECTED_CONNECTOR_SELECTOR, CHATGPT_SEND_BUTTON_SELECTOR, parseChatGptEffortSliderState } from "../src/chatgpt-session";
+import { CHATGPT_IMAGE_UPLOAD_SELECTOR, CHATGPT_SELECTED_CONNECTOR_SELECTOR, CHATGPT_SEND_BUTTON_SELECTOR, parseChatGptEffortSliderState } from "../src/chatgpt-session";
 import { ChatGptExternalTurnProgress, chatGptExternalToolCallsAreInFlight } from "../src/adapters/chatgpt-web/turn-progress";
 import type { CodexProviderConfig } from "../src/types";
 import { compileChatGptWebPrompt, formatChatGptWebMultipartCommit, formatChatGptWebMultipartStage } from "../src/adapters/chatgpt-web/prompt";
@@ -2213,27 +2213,68 @@ test("retained tool turns insert into the connector-bound composer without selec
   expect(calls).toEqual(["fill", "focus", "insert", "assert"]);
 });
 
-test("image attachment readiness uses exact file tiles and not localized remove-button text", async () => {
+function imageAttachmentFixture(options: {
+  tileRole?: "group" | "button";
+  duplicateTile?: boolean;
+  inputError?: Error;
+  tileError?: Error;
+  uploadError?: boolean;
+  waitForUpload?: (signal?: AbortSignal) => Promise<void>;
+  sendEnabled?: boolean;
+} = {}) {
   const imageUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
   const calls: Array<[string, string?]> = [];
+  const tileRole = options.tileRole ?? "group";
   const send = {
     isEnabled: async () => {
       calls.push(["sendEnabled"]);
-      return true;
+      return options.sendEnabled ?? true;
+    },
+  };
+  const input = {
+    waitFor: async (state: { state: string; timeout: number }) => {
+      expect(state).toMatchObject({ state: "attached", timeout: 20_000 });
+      calls.push(["inputReady"]);
+      if (options.inputError) throw options.inputError;
+    },
+    setInputFiles: async (files: Array<{ name: string }>) => {
+      calls.push(["setFiles", files.map(file => file.name).join(",")]);
     },
   };
   const composerForm = {
-    getByRole: (role: string, options: { name: string; exact: boolean }) => {
-      expect(role).toBe("group");
-      expect(options).toEqual({ name: "codex-input-image-1.png", exact: true });
+    getByRole: (role: string, query: { name: string; exact: boolean }) => {
+      expect(["group", "button"]).toContain(role);
+      expect(query.exact).toBe(true);
+      expect(query.name).toMatch(/^codex-input-image-\d+\.png$/);
       return {
-        waitFor: async (state: { state: string; timeout: number }) => {
-          expect(state).toEqual({ state: "visible", timeout: 60_000 });
-          calls.push(["fileTile", options.name]);
+        role,
+        or: (other: { role: string }) => {
+          expect([role, other.role]).toEqual(["group", "button"]);
+          expect([role, other.role].filter(candidate => candidate === tileRole)).toHaveLength(1);
+          return {
+            waitFor: async (state: { state: string; timeout: number }) => {
+              expect(state).toMatchObject({ state: "visible", timeout: 60_000 });
+              if (options.tileError) throw options.tileError;
+              if (options.duplicateTile) throw new Error("strict mode violation: duplicate attachment tiles");
+              calls.push(["fileTile", query.name]);
+            },
+            locator: (selector: string) => {
+              if (selector === '[role="progressbar"]') {
+                return { waitFor: async (state: { state: string; timeout: number; signal?: AbortSignal }) => {
+                  expect(state).toMatchObject({ state: "hidden", timeout: 60_000 });
+                  await options.waitForUpload?.(state.signal);
+                  calls.push(["uploadComplete", query.name]);
+                } };
+              }
+              expect(selector).toBe('[role="alert"]');
+              return { count: async () => options.uploadError ? 1 : 0 };
+            },
+          };
         },
       };
     },
     locator: (selector: string) => {
+      if (selector === CHATGPT_IMAGE_UPLOAD_SELECTOR) return input;
       expect(selector).toBe(CHATGPT_SEND_BUTTON_SELECTOR);
       return send;
     },
@@ -2244,38 +2285,97 @@ test("image attachment readiness uses exact file tiles and not localized remove-
       return composerForm;
     },
   };
-  const input = {
-    waitFor: async (state: { state: string; timeout: number }) => {
-      expect(state).toEqual({ state: "attached", timeout: 20_000 });
-      calls.push(["inputReady"]);
-    },
-    setInputFiles: async (files: Array<{ name: string }>) => {
-      calls.push(["setFiles", files.map(file => file.name).join(",")]);
-    },
-  };
   const page = {
     locator: (selector: string) => {
-      if (selector === 'input[data-testid="upload-photos-input"]') return input;
       if (selector === '[role="alert"]') {
-        return { allInnerTexts: async () => [] };
+        return { allInnerTexts: async () => ["Upload failed"] };
       }
-      return { last: () => composer };
+      throw new Error(`Unexpected page-wide attachment selector: ${selector}`);
     },
   };
   const attachFiles = (ChatGptBrowserWorker.prototype as unknown as {
-    attachFiles(page: unknown, prompt: unknown): Promise<void>;
+    attachFiles(page: unknown, prompt: unknown, signal?: AbortSignal): Promise<void>;
   }).attachFiles;
+  return {
+    calls,
+    run: (imageCount = 1, signal?: AbortSignal) => attachFiles.call(
+      { activeComposer: async () => composer }, page,
+      { images: Array.from({ length: imageCount }, (_, index) => ({ ref: `codex-input-image-${index + 1}`, imageUrl })) },
+      signal,
+    ),
+  };
+}
 
-  await attachFiles.call({ activeComposer: async () => composer }, page, {
-    images: [{ ref: "codex-input-image-1", imageUrl }],
-  });
-
+test.each(["group", "button"] as const)("image attachment readiness supports %s tiles with exact names", async tileRole => {
+  const { calls, run } = imageAttachmentFixture({ tileRole });
+  await run();
   expect(calls).toEqual([
     ["inputReady"],
     ["setFiles", "codex-input-image-1.png"],
     ["fileTile", "codex-input-image-1.png"],
+    ["uploadComplete", "codex-input-image-1.png"],
     ["sendEnabled"],
   ]);
+});
+
+test("text-only prompts do not touch the image upload controls", async () => {
+  const { calls, run } = imageAttachmentFixture();
+  await run(0);
+  expect(calls).toEqual([]);
+});
+
+test("every image upload must finish before the composer can be ready to send", async () => {
+  let finishUpload!: () => void;
+  const uploading = new Promise<void>(resolve => { finishUpload = resolve; });
+  const { calls, run } = imageAttachmentFixture({ waitForUpload: () => uploading });
+  const completion = run(2);
+  // Let the input and both tiles resolve, while the uploads remain in progress.
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(calls.filter(call => call[0] === "fileTile")).toHaveLength(2);
+  expect(calls.some(call => call[0] === "sendEnabled")).toBe(false);
+  finishUpload();
+  await completion;
+  expect(calls.filter(call => call[0] === "uploadComplete")).toHaveLength(2);
+  expect(calls.at(-1)).toEqual(["sendEnabled"]);
+});
+
+test.each([
+  { duplicateTile: true },
+  { tileError: new Error("missing file tile") },
+  { uploadError: true },
+])("missing, ambiguous and rejected image tiles fail without enabling submission (%j)", async options => {
+  const { calls, run } = imageAttachmentFixture(options);
+  await expect(run()).rejects.toThrow("ChatGPT did not accept all prompt attachments: Upload failed");
+  expect(calls.some(call => call[0] === "sendEnabled")).toBe(false);
+});
+
+test("missing or ambiguous upload inputs fail before any files are attached", async () => {
+  const { calls, run } = imageAttachmentFixture({ inputError: new Error("input unavailable") });
+  await expect(run()).rejects.toThrow("input unavailable");
+  expect(calls).toEqual([["inputReady"]]);
+});
+
+test("cancelling an image upload preserves AbortError rather than reporting a malformed attachment", async () => {
+  const controller = new AbortController();
+  const { calls, run } = imageAttachmentFixture({
+    waitForUpload: async signal => {
+      expect(signal).toBe(controller.signal);
+      controller.abort();
+      throw new DOMException("cancelled", "AbortError");
+    },
+  });
+  await expect(run(1, controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+  expect(calls.some(call => call[0] === "sendEnabled")).toBe(false);
+});
+
+test("cancelling after upload does not leave the send-readiness loop running", async () => {
+  const controller = new AbortController();
+  const { calls, run } = imageAttachmentFixture({ sendEnabled: false });
+  const completion = run(1, controller.signal);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  controller.abort();
+  await expect(completion).rejects.toMatchObject({ name: "AbortError" });
+  expect(calls.filter(call => call[0] === "sendEnabled")).toHaveLength(1);
 });
 
 test("effort slider ARIA state fails closed on malformed and unsupported ranges", () => {

@@ -88,6 +88,21 @@ const CHATGPT_VIEWPORT_CSS = `
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
+function turnTabForTrace(turnTabs, traceId, surfaceId) {
+  const matches = [...turnTabs.values()].filter(tab => tab.traceId === traceId);
+  if (surfaceId !== undefined) {
+    const owned = matches.filter(tab => tab.surfaceId === surfaceId);
+    if (owned.length > 1) throw new Error(`Browser surface ${surfaceId} owns multiple browser tabs`);
+    return owned[0];
+  }
+  const running = matches.filter(tab => tab.status === "running");
+  if (running.length > 1) {
+    throw new Error(`Browser turn ${traceId} owns multiple running browser tabs`);
+  }
+  // Failed pages stay available for inspection. They must not shadow a retry's active lease.
+  return running[0] || matches.at(-1);
+}
+
 function javaScriptLiteral(value) {
   return JSON.stringify(value).replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
 }
@@ -1287,12 +1302,16 @@ class BrowserHost {
     this.publishState?.(this.snapshot());
   }
 
-  heartbeatTurn(traceId, helperPid, refreshViewport = false) {
+  heartbeatTurn(traceId, helperPid, refreshViewport = false, surfaceId) {
     if (typeof refreshViewport !== "boolean") throw new Error("refreshViewport is invalid");
-    const tab = [...this.turnTabs.values()].find(candidate => candidate.traceId === traceId);
+    const tab = turnTabForTrace(this.turnTabs, traceId, surfaceId);
+    const closed = this.closedTurnOwners.get(traceId);
+    if ((!tab || (surfaceId === undefined && tab.status !== "running"))
+      && closed?.helperPid === helperPid
+      && (surfaceId === undefined || closed.surfaceId === surfaceId)) {
+      throw new Error(`Browser turn ${traceId} was already released`);
+    }
     if (!tab) {
-      const closedOwner = this.closedTurnOwners.get(traceId);
-      if (closedOwner === helperPid) throw new Error(`Browser turn ${traceId} was already released`);
       throw new Error(`Browser turn ownership mismatch: no browser tab owns ${traceId}`);
     }
     if (tab.helperPid !== helperPid) {
@@ -1517,7 +1536,7 @@ class BrowserHost {
     }
     this.syncPowerSaveBlocker();
     if (abortRunning && tab.status === "running") {
-      this.closedTurnOwners.set(tab.traceId, tab.helperPid);
+      this.closedTurnOwners.set(tab.traceId, { helperPid: tab.helperPid, surfaceId: tab.surfaceId });
       tab.status = "aborted";
     }
     try { this.window.contentView.removeChildView(tab.view); } catch {}
@@ -2205,7 +2224,7 @@ class BrowserHost {
     if (this.userCancelledTurnOwners.has(traceId)) {
       throw new BrowserTurnCancelledError(traceId);
     }
-    const sameTrace = [...this.turnTabs.values()].find((tab) => tab.traceId === traceId);
+    const sameTrace = turnTabForTrace(this.turnTabs, traceId);
     if (sameTrace && sameTrace.interactionMode !== "automatic") {
       throw new Error(`Browser turn ${traceId} already belongs to Zero Risk interaction`);
     }
@@ -2291,15 +2310,18 @@ class BrowserHost {
     message,
     retain = false,
     connectorBound = false,
+    surfaceId,
   ) {
-    const tab = [...this.turnTabs.values()].find((candidate) => candidate.traceId === traceId);
+    const tab = turnTabForTrace(this.turnTabs, traceId, surfaceId);
+    const closed = this.closedTurnOwners.get(traceId);
+    if ((!tab || (surfaceId === undefined && tab.status !== "running"))
+      && closed?.helperPid === helperPid
+      && (surfaceId === undefined || closed.surfaceId === surfaceId)) {
+      const cancelledByUser = this.userCancelledTurnOwners.get(traceId) === helperPid;
+      this.closedTurnOwners.delete(traceId);
+      return { cancelledByUser };
+    }
     if (!tab) {
-      const closedOwner = this.closedTurnOwners.get(traceId);
-      if (closedOwner === helperPid) {
-        const cancelledByUser = this.userCancelledTurnOwners.get(traceId) === helperPid;
-        this.closedTurnOwners.delete(traceId);
-        return { cancelledByUser };
-      }
       throw new Error(`Browser turn ownership mismatch: no browser tab owns ${traceId}`);
     }
     if (tab.helperPid !== helperPid) {
@@ -2308,6 +2330,9 @@ class BrowserHost {
       );
     }
     const cancelledByUser = this.userCancelledTurnOwners.get(traceId) === helperPid;
+    // A lost control acknowledgement can repeat an end notification. Once retained as
+    // completed, the accepted conversation must not be downgraded or closed by that retry.
+    if (tab.status === "ready") return { cancelledByUser };
     tab.status = status === "completed" ? "ready" : status === "aborted" ? "aborted" : "error";
     this.syncPowerSaveBlocker();
     tab.message = status === "completed" ? "Task completed" : message || `ChatGPT turn ${status}`;
