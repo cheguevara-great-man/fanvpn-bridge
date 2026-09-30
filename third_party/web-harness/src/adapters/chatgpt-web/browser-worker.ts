@@ -4013,8 +4013,33 @@ export class ChatGptBrowserWorker {
         // accessibility labels cannot become consistency fingerprints for untransmitted text.
         // Ordinary code blocks, surrounding prose and the original observed DOM remain intact.
         for (const widget of Array.from(content.querySelectorAll(
-          ".chart-widget-container, [data-code-block-preview-pane], button, script, style, svg, img, picture, source",
+          '.chart-widget-container, [data-code-block-preview-pane], [data-markdown-copy="exclude"], button, script, style, svg, img, picture, source',
         ))) widget.remove();
+        // The current renderer uses marked SPANs for inline code and DIVs containing CODE
+        // (without PRE) for fenced code. Restore semantic tags on this detached copy so
+        // Turndown preserves code whitespace instead of treating a multiline block as inline.
+        const copySourceRange = (source: Element, target: Element): void => {
+          for (const name of ["data-start", "data-end"]) {
+            const value = source.getAttribute(name);
+            if (value !== null) target.setAttribute(name, value);
+          }
+        };
+        for (const inline of Array.from(content.querySelectorAll('span[data-markdown-copy="inline-code"]'))) {
+          const code = content.ownerDocument.createElement("code");
+          code.textContent = inline.textContent;
+          copySourceRange(inline, code);
+          inline.parentNode?.replaceChild(code, inline);
+        }
+        for (const block of Array.from(content.querySelectorAll('[data-markdown-copy="code-block"]'))) {
+          // Legacy PREs already have the semantic shape and are cleaned below.
+          if (block.tagName === "PRE" || block.closest("pre")) continue;
+          const code = block.querySelector("code");
+          if (!code) continue;
+          const pre = content.ownerDocument.createElement("pre");
+          copySourceRange(block, pre);
+          pre.appendChild(code.cloneNode(true));
+          block.parentNode?.replaceChild(pre, block);
+        }
         // ChatGPT wraps ordinary fenced code in renderer chrome whose language/copy/highlighter
         // labels can hydrate after the code itself is already complete. Those labels are UI, not
         // model-authored code, and have caused committed Markdown fingerprints to change late in

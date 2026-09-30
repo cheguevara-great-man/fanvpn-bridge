@@ -106,3 +106,42 @@ test("DIL fallback remains assistant-owned and excludes commentary", async () =>
     + `</div>${toolbar}</section>`);
   expect(commentary.visibleText).toBe("ANSWER");
 });
+
+test("current code renderer preserves inline code, fenced whitespace and literal paths", async () => {
+  const codeText = "VPS Claude Code\n    ↓\nMCP\n\n    Windows\n        claude mcp serve\n";
+  const answer = '<p>Run <span data-markdown-copy="inline-code">claude.exe</span> with '
+    + '<strong><span data-markdown-copy="inline-code">stream-json</span></strong>; open '
+    + '<span data-markdown-copy="inline-code">D:/project/README.md</span>.</p>'
+    + '<div class="CodeBlock"><div data-markdown-copy="code-block" data-start="80" data-end="180">'
+    + '<div data-markdown-copy="exclude"><div>纯文本</div><button>复制代码</button></div>'
+    + `<div class="code-scrollport"><code><span>${codeText}</span></code></div></div></div>`
+    + '<p>After the diagram.</p>';
+  const response = await snapshot(current.replace("<p>ANSWER</p>", answer));
+  const buffer = new ChatGptMarkdownBuffer();
+  buffer.observe(response.markdownSegments, 0);
+  expect(buffer.finish().markdown).toBe(
+    'Run `claude.exe` with **`stream-json`**; open [D:/project/README.md](<D:/project/README.md>).'
+    + `\n\n\`\`\`\n${codeText}\`\`\`\n\nAfter the diagram.`,
+  );
+  const codeSegment = response.markdownSegments.find(segment => segment.html.includes("<pre"))!;
+  expect(codeSegment.html).toContain('data-start="80" data-end="180"');
+  expect(codeSegment.text).toBe(codeText.trim());
+  expect(response.markdownSegments.map(segment => segment.html).join(""))
+    .not.toContain("纯文本");
+});
+
+test("current code chrome hydration cannot change the streamed code projection", async () => {
+  const code = 'printf(&quot;中文&quot;);\n    // keep indentation\n\n```nested fence\nD:/src/main.c';
+  const answer = (label: string) => '<div data-markdown-copy="code-block">'
+    + `<div data-markdown-copy="exclude"><div>${label}</div><button>Copy</button></div>`
+    + `<div><code class="language-c"><span>${code}</span></code></div></div><p>Done.</p>`;
+  const before = await snapshot(current.replace("<p>ANSWER</p>", answer("C")));
+  const after = await snapshot(current.replace("<p>ANSWER</p>", answer("C · Copied")));
+  expect(before.markdownSegments).toEqual(after.markdownSegments);
+  const buffer = new ChatGptMarkdownBuffer();
+  buffer.observe(before.markdownSegments, 0);
+  buffer.observe(after.markdownSegments, 1_000);
+  expect(buffer.finish().markdown).toBe(
+    '````c\nprintf("中文");\n    // keep indentation\n\n```nested fence\nD:/src/main.c\n````\n\nDone.',
+  );
+});
