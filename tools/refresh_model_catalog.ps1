@@ -76,7 +76,7 @@ $availableModelsCachePath = Join-Path ([System.IO.Path]::GetFullPath($CodexHome)
 if ((-not $geminiRefreshSucceeded -or -not $deepSeekRefreshSucceeded -or -not $zenRefreshSucceeded) -and
     (Test-Path -LiteralPath $availableModelsCachePath -PathType Leaf)) {
     try {
-        $cachedAccountModels = @([System.IO.File]::ReadAllText($availableModelsCachePath) | ConvertFrom-Json)
+        $cachedAccountModels = [System.IO.File]::ReadAllText($availableModelsCachePath) | ConvertFrom-Json
         foreach ($cachedModel in $cachedAccountModels) {
             $cachedId = if ($cachedModel -is [string]) { [string]$cachedModel } else { [string]$cachedModel.id }
             if ((-not $geminiRefreshSucceeded -and $cachedId -match '^gemini-[a-z0-9.-]+$') -or

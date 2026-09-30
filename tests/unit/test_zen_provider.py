@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -313,6 +314,37 @@ class ZenStreamParsingTests(unittest.TestCase):
 
 
 class ZenProviderTests(unittest.TestCase):
+    def test_ordinary_model_list_refreshes_stale_cache_and_discovers_new_models(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory) / "zen-models.json"
+            catalog = ZenModelCatalog(cache_path=cache)
+            with patch("fanvpn_bridge.zen_models._fetch_json", side_effect=[
+                _catalog_document({"known": _METADATA}), {"data": [{"id": "known"}]},
+            ]), patch("fanvpn_bridge.zen_models._probe_all", return_value={"known": True}):
+                catalog.refresh(force=True)
+            provider = ZenProvider(catalog=catalog)
+            with patch("fanvpn_bridge.zen_models._fetch_json") as fetch:
+                self.assertEqual([row["id"] for row in provider.models_response()["data"]], ["zen/known"])
+                fetch.assert_not_called()
+            os.utime(cache, (0, 0))
+            with patch("fanvpn_bridge.zen_models._fetch_json", side_effect=[
+                _catalog_document({"known": _METADATA, "new": _METADATA}),
+                {"data": [{"id": "known"}, {"id": "new"}]},
+            ]), patch("fanvpn_bridge.zen_models._probe_all", return_value={"known": True, "new": True}):
+                self.assertEqual({row["id"] for row in provider.models_response()["data"]}, {"zen/known", "zen/new"})
+            self.assertEqual({row["id"] for row in ZenModelCatalog(cache_path=cache).entries()}, {"zen/known", "zen/new"})
+
+    def test_ordinary_stale_refresh_keeps_cached_models_when_catalog_is_offline(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory) / "zen-models.json"
+            catalog = ZenModelCatalog(cache_path=cache)
+            catalog._entries["zen/known"] = {"id": "zen/known"}
+            catalog._save()
+            os.utime(cache, (0, 0))
+            with patch("fanvpn_bridge.zen_models._fetch_json", side_effect=ZenModelError("offline")) as fetch:
+                self.assertEqual(ZenProvider(catalog=catalog).models_response()["data"], [{"id": "zen/known"}])
+                fetch.assert_called_once()
+
     def test_model_list_survives_an_unreachable_catalog(self) -> None:
         provider = ZenProvider(catalog=ZenModelCatalog())
         with patch("fanvpn_bridge.zen_models._fetch_json", side_effect=ZenModelError("offline")):

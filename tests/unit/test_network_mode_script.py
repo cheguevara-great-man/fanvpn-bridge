@@ -21,6 +21,63 @@ class NetworkModeScriptTests(unittest.TestCase):
         self.assertIn("/deepseek-harness/v1/models", launcher)
         self.assertIn("deepSeekRefreshSucceeded", launcher)
 
+    def test_catalog_scripts_include_zen_and_preserve_it_when_refresh_fails(self) -> None:
+        # Execute only catalog collection, avoiding the launcher's process and
+        # configuration changes. Mock providers while exercising real merging.
+        command = r"""
+param($Launcher, $CodexHome, $FailZen)
+$ErrorActionPreference = 'Stop'
+$Mode = 'HybridNative'
+$BridgeBaseUrl = 'http://127.0.0.1:18888'
+function Invoke-RestMethod {
+    param($Uri, $Proxy, $TimeoutSec)
+    if ($Uri -match '/zen/') {
+        if ($FailZen -eq 'true') { throw 'temporary Zen outage' }
+        return @{ data = @(@{ id = 'zen/space-bunny-free'; display_name = 'Zen Bunny'; supported_reasoning_levels = @('high', 'max') }) }
+    }
+    $id = if ($Uri -match '/gemini-account/') { 'gemini-3.8-flash' } else { 'deepseek-web/reasoner' }
+    return @{ data = @(@{ id = $id; supported_reasoning_levels = @('high') }) }
+}
+$source = [IO.File]::ReadAllText($Launcher)
+$isLauncher = $Launcher.EndsWith('start_vscode_network_mode.ps1')
+if ($isLauncher) {
+    $start = $source.IndexOf('        $accountCatalogModels =')
+    $end = $source.IndexOf('        $geminiModelsJson =', $start)
+} else {
+    $start = $source.IndexOf('$geminiJson = $null')
+    $end = $source.IndexOf('if ($accountModels.Count -gt 0)', $start)
+}
+if ($start -lt 0 -or $end -lt 0) { throw 'Catalog collection block not found' }
+. ([scriptblock]::Create($source.Substring($start, $end - $start)))
+$collected = if ($isLauncher) { $accountCatalogModels.ToArray() } else { $accountModels.ToArray() }
+ConvertTo-Json -InputObject @($collected) -Depth 8 -Compress
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / "browser-ai-bridge-gemini-available-models.json").write_text(
+                json.dumps([{"id": "zen/space-bunny-free", "display_name": "Cached Bunny"}]),
+                encoding="utf-8",
+            )
+            for script_name, fail_zen in (
+                (name, failed)
+                for name in ("start_vscode_network_mode.ps1", "refresh_model_catalog.ps1")
+                for failed in (False, True)
+            ):
+                with self.subTest(script=script_name, fail_zen=fail_zen):
+                    launcher = ROOT / "tools" / script_name
+                    result = subprocess.run(
+                        ["powershell", "-NoProfile", "-Command",
+                         "& {" + command + "} '" + str(launcher) + "' '" + str(home)
+                         + "' '" + str(fail_zen).lower() + "'"],
+                        check=True, capture_output=True, text=True,
+                    )
+                    rows = json.loads(result.stdout.strip().splitlines()[-1])
+                    self.assertEqual({row["id"] for row in rows}, {
+                        "gemini-3.8-flash", "deepseek-web/reasoner", "zen/space-bunny-free",
+                    })
+                    bunny = next(row for row in rows if row["id"].startswith("zen/"))
+                    self.assertEqual(bunny["display_name"], "Cached Bunny" if fail_zen else "Zen Bunny")
+
     def run_mode(
         self, codex_home: Path, mode: str, gemini_models_json: str | None = None
     ) -> str:

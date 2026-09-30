@@ -555,16 +555,14 @@ class ZenProvider:
         self._timeout = timeout_seconds
 
     def models_response(self, *, force: bool = False) -> dict[str, object]:
-        entries = self._catalog.entries()
-        # A cold start has no cache yet, and an operator-requested sweep must
-        # bypass the staleness window. Both cases end in a refresh.
-        if force or not entries:
-            try:
-                entries = self._catalog.refresh(force=force)
-            except ZenModelError:
-                # Keep serving the last verified set rather than emptying the
-                # picker because the catalog host is briefly unreachable.
-                entries = self._catalog.entries()
+        try:
+            # The catalog returns fresh cached entries immediately and re-probes
+            # only when they are stale, absent, or explicitly forced.
+            entries = self._catalog.refresh(force=force)
+        except ZenModelError:
+            # Keep serving the last verified set rather than emptying the
+            # picker because the catalog host is briefly unreachable.
+            entries = self._catalog.entries()
         return {"object": "list", "data": entries}
 
     def responses(self, payload: dict[str, Any]) -> tuple[bool, dict[str, Any] | Iterator[bytes]]:
