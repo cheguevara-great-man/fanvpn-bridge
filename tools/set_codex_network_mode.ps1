@@ -144,7 +144,8 @@ function New-GeminiModelCatalog {
         $modelId = if ($_ -is [string]) { [string]$_ } else { [string]$_.id }
         if ((
                 $modelId -match '^gemini-[a-z0-9.-]+$' -or
-                $modelId -match '^deepseek-web/(?:chat|reasoner)$'
+                $modelId -match '^deepseek-web/(?:chat|reasoner)$' -or
+                $modelId -match '^zen/[a-z0-9][a-z0-9.-]*$'
             ) -and
             $modelId -notmatch '(?:^|-)image(?:-|$)' -and
             $modelId -notmatch '(?:^|-)agent(?:-|$)') {
@@ -207,6 +208,7 @@ function New-GeminiModelCatalog {
                 foreach ($officialModel in @($officialCache.models | Where-Object {
                     $_.slug -is [string] -and $_.slug -notmatch '^gemini-' -and
                     $_.slug -notmatch '^deepseek-web/' -and
+                    $_.slug -notmatch '^zen/' -and
                     $_.slug -notmatch '^chatgpt-web/'
                 })) {
                     if (-not $seenOfficialSlugs.Add([string]$officialModel.slug)) { continue }
@@ -234,6 +236,7 @@ function New-GeminiModelCatalog {
         $modelId = $rankedModel.Id
         $metadata = $rankedModel.Metadata
         $isDeepSeekModel = $modelId.StartsWith('deepseek-web/')
+        $isZenModel = $modelId.StartsWith('zen/')
         $displayName = if ($metadata -and $metadata.display_name) {
             [string]$metadata.display_name
         } else {
@@ -250,6 +253,8 @@ function New-GeminiModelCatalog {
         Set-ObjectProperty $model 'display_name' $displayName
         Set-ObjectProperty $model 'description' $(if ($isDeepSeekModel) {
             'DeepSeek Web model through Browser AI Bridge'
+        } elseif ($isZenModel) {
+            'Free OpenCode Zen model reachable without credentials'
         } else {
             'Google account model through Browser AI Bridge'
         })
@@ -262,16 +267,16 @@ function New-GeminiModelCatalog {
         Set-ObjectProperty $model 'default_reasoning_summary' 'none'
         Set-ObjectProperty $model 'prefer_websockets' $false
         Set-ObjectProperty $model 'use_responses_lite' $false
-        $contextWindow = if ($isDeepSeekModel -and $metadata -and $metadata.context_window) {
+        # DeepSeek and Zen both advertise their real window through provider
+        # metadata; the Google aliases below are all one million tokens.
+        $contextWindow = if (($isDeepSeekModel -or $isZenModel) -and $metadata -and $metadata.context_window) {
             [int64]$metadata.context_window
-        } elseif ($isDeepSeekModel) {
-            1000000
         } else {
             1000000
         }
         Set-ObjectProperty $model 'context_window' $contextWindow
         Set-ObjectProperty $model 'max_context_window' $contextWindow
-        if ($isDeepSeekModel) {
+        if ($isDeepSeekModel -or $isZenModel) {
             $autoCompactTokenLimit = if ($metadata -and $metadata.auto_compact_token_limit) {
                 [int64]$metadata.auto_compact_token_limit
             } else {
@@ -285,10 +290,18 @@ function New-GeminiModelCatalog {
             Set-ObjectProperty $model 'auto_compact_token_limit' $autoCompactTokenLimit
             Set-ObjectProperty $model 'effective_context_window_percent' $effectiveContextWindowPercent
         }
+        # Zen advertises a longer ladder than the Google and DeepSeek rows. Codex
+        # silently drops an effort level its build does not recognize, so
+        # advertising the full set is safe and self-limiting.
+        $allowedEfforts = if ($isZenModel) {
+            @('low', 'medium', 'high', 'xhigh', 'max')
+        } else {
+            @('low', 'medium', 'high')
+        }
         $metadataEfforts = @()
         if ($metadata) {
             $metadataEfforts = @($metadata.supported_reasoning_levels | Where-Object {
-                $_ -in @('low', 'medium', 'high')
+                $_ -in $allowedEfforts
             } | Select-Object -Unique)
         }
         if ($metadataEfforts.Count -gt 0) {
@@ -300,6 +313,8 @@ function New-GeminiModelCatalog {
                     'low' { 'Fast responses with lighter reasoning' }
                     'medium' { 'Balanced speed and reasoning' }
                     'high' { 'Deeper reasoning for complex tasks' }
+                    'xhigh' { 'Extra high reasoning depth for complex problems' }
+                    'max' { 'Maximum reasoning depth for the hardest problems' }
                 }
                 [pscustomobject]@{ effort = $_; description = $description }
             })
@@ -335,6 +350,8 @@ function New-GeminiModelCatalog {
             $instructions = [string]$model.model_messages.instructions_template
             $replacement = if ($isDeepSeekModel) {
                 'You are Codex, an agent powered by DeepSeek Web. You remain the coding agent and use the tools supplied by Codex.'
+            } elseif ($isZenModel) {
+                'You are Codex, an agent powered by a free OpenCode Zen model. You remain the coding agent and use the tools supplied by Codex.'
             } else {
                 'You are Codex, an agent powered by Gemini. You remain the coding agent and use the tools supplied by Codex.'
             }
@@ -430,15 +447,22 @@ if (($effectiveMode -eq 'GeminiAccount' -or $isHybrid) -and $GeminiModelsJson) {
         $availableGeminiModels = @(@($parsedGeminiModels) | ForEach-Object {
             if ($_ -is [string] -and (
                 $_ -match '^gemini-[a-z0-9.-]+$' -or
-                ($isHybrid -and $_ -match '^deepseek-web/(?:chat|reasoner)$')
+                ($isHybrid -and $_ -match '^deepseek-web/(?:chat|reasoner)$') -or
+                ($isHybrid -and $_ -match '^zen/[a-z0-9][a-z0-9.-]*$')
             )) {
                 $_
             } elseif ($_.id -is [string] -and (
                 $_.id -match '^gemini-[a-z0-9.-]+$' -or
-                ($isHybrid -and $_.id -match '^deepseek-web/(?:chat|reasoner)$')
+                ($isHybrid -and $_.id -match '^deepseek-web/(?:chat|reasoner)$') -or
+                ($isHybrid -and $_.id -match '^zen/[a-z0-9][a-z0-9.-]*$')
             )) {
+                $allowedEfforts = if ($_.id.StartsWith('zen/')) {
+                    @('low', 'medium', 'high', 'xhigh', 'max')
+                } else {
+                    @('low', 'medium', 'high')
+                }
                 $efforts = @($_.supported_reasoning_levels | Where-Object {
-                    $_ -in @('low', 'medium', 'high')
+                    $_ -in $allowedEfforts
                 } | Select-Object -Unique)
                 if ($efforts.Count -gt 0) {
                     [pscustomobject]@{

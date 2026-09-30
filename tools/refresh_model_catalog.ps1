@@ -17,6 +17,7 @@ $openAIJson = $null
 $accountModels = New-Object System.Collections.Generic.List[object]
 $geminiRefreshSucceeded = $false
 $deepSeekRefreshSucceeded = $false
+$zenRefreshSucceeded = $false
 
 function Get-CodexClientVersion {
     $versions = New-Object System.Collections.Generic.List[version]
@@ -59,19 +60,28 @@ try {
 } catch {
     Write-Warning "DeepSeek Web model refresh failed; keeping the last valid account-model catalog. $($_.Exception.Message)"
 }
+try {
+    $zen = Invoke-RestMethod "$BridgeBaseUrl/zen/v1/models" -Proxy $null -TimeoutSec 90
+    if (-not $zen.data) { throw 'Zen provider returned no anonymously reachable models.' }
+    @($zen.data) | ForEach-Object { $accountModels.Add($_) }
+    $zenRefreshSucceeded = $true
+} catch {
+    Write-Warning "Zen model refresh failed; keeping the last valid Zen catalog. $($_.Exception.Message)"
+}
 
 # Gemini and DeepSeek share the generated account-model catalog. If only one
 # refresh succeeds, keep the other provider's last known entries instead of
 # destructively replacing the cache with a partial list.
 $availableModelsCachePath = Join-Path ([System.IO.Path]::GetFullPath($CodexHome)) 'browser-ai-bridge-gemini-available-models.json'
-if ((-not $geminiRefreshSucceeded -or -not $deepSeekRefreshSucceeded) -and
+if ((-not $geminiRefreshSucceeded -or -not $deepSeekRefreshSucceeded -or -not $zenRefreshSucceeded) -and
     (Test-Path -LiteralPath $availableModelsCachePath -PathType Leaf)) {
     try {
         $cachedAccountModels = @([System.IO.File]::ReadAllText($availableModelsCachePath) | ConvertFrom-Json)
         foreach ($cachedModel in $cachedAccountModels) {
             $cachedId = if ($cachedModel -is [string]) { [string]$cachedModel } else { [string]$cachedModel.id }
             if ((-not $geminiRefreshSucceeded -and $cachedId -match '^gemini-[a-z0-9.-]+$') -or
-                (-not $deepSeekRefreshSucceeded -and $cachedId -match '^deepseek-web/(?:chat|reasoner)$')) {
+                (-not $deepSeekRefreshSucceeded -and $cachedId -match '^deepseek-web/(?:chat|reasoner)$') -or
+                (-not $zenRefreshSucceeded -and $cachedId -match '^zen/')) {
                 $accountModels.Add($cachedModel)
             }
         }

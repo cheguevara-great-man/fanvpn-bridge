@@ -142,6 +142,7 @@ Host 或 Chrome 重启后缓存立即清空。具体边界见[客户端使用](d
 | [客户端使用](docs/USAGE.md) | Codex、Claude Code、CC Switch 和 Gemini 模式 |
 | [Antigravity CLI 浏览器链路](docs/ANTIGRAVITY_CLI.md) | 通过 Chrome 安装并运行官方 Antigravity CLI |
 | [Codex + Gemini 账号](docs/GEMINI_ACCOUNT.md) | Codex 担任 Agent，Google 登录账号只提供 Gemini 模型推理 |
+| [Codex + Zen 免费模型](docs/ZEN_PROVIDER.md) | Codex 担任 Agent，使用免凭证的 OpenCode Zen 免费模型；模型列表自动探测刷新 |
 | [Codex Hybrid](docs/HYBRID_CODEX.md) | 同一模型菜单使用 GPT/Gemini，并配置子 Agent模型策略 |
 | [Codex 服务器中心 API](docs/SERVER_CODEX_EXECUTOR.md) | 集中服务器账号、部署 Server Lite、注册设备、切换链路与排障 |
 | [开发指南](docs/DEVELOPMENT.md) | 目录、测试、构建和开发约束 |

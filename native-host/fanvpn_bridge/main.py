@@ -15,6 +15,8 @@ from .codex_login import CodexLoginError, run_codex_login
 from .dispatcher import NativeDispatcher
 from .device_config import DeviceConfigController
 from .deepseek_harness import DeepSeekHarnessProvider
+from .zen_models import ZenModelCatalog
+from .zen_provider import ZenProvider
 from .errors import BridgeError
 from .framing import FramedMessageChannel
 from .forward_proxy import ForwardProxyError, run_forward_proxy
@@ -75,6 +77,12 @@ def run(config_path: Path) -> int:
         timeout_seconds=config.protocol.request_timeout_seconds,
         state_path=cache_base / "deepseek-conversations.json",
     )
+    # The Zen catalog is probed lazily on the first model-list request so a slow
+    # or unreachable upstream never delays bridge startup.
+    zen_provider = ZenProvider(
+        catalog=ZenModelCatalog(cache_path=cache_base / "zen-models.json"),
+        timeout_seconds=config.protocol.request_timeout_seconds,
+    )
     dispatcher.start()
     routes = RouteTable(config.routes)
     product_cache = ProductResponseCache(
@@ -94,6 +102,7 @@ def run(config_path: Path) -> int:
         usage_reporter=usage_reporter,
         gemini_account=gemini_account,
         deepseek_harness=deepseek_harness,
+        zen_provider=zen_provider,
         subagent_policy=subagent_policy,
         hybrid_route_store=hybrid_route_store,
     )
@@ -116,6 +125,7 @@ def run(config_path: Path) -> int:
             usage_reporter=usage_reporter,
             gemini_account=gemini_account,
             deepseek_harness=deepseek_harness,
+            zen_provider=zen_provider,
             subagent_policy=subagent_policy,
             hybrid_route_store=hybrid_route_store,
         )

@@ -17,7 +17,7 @@ from http.client import HTTPConnection, HTTPSConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable, Iterable, Sequence, cast
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 from urllib.request import getproxies
 
 from .codex_product_auth import CodexProductAuth
@@ -41,6 +41,7 @@ from .diagnostics import (
 )
 from .errors import BridgeError, ErrorCode
 from .deepseek_harness import DeepSeekHarnessError, DeepSeekHarnessProvider, is_deepseek_model
+from .zen_provider import ZenProvider, ZenProviderError, is_zen_model
 from .gemini_account import GeminiAccountError, GeminiAccountProvider
 from .hybrid_route import (
     GPT_ROUTE_BROWSER_FULL,
@@ -161,6 +162,7 @@ class BridgeHTTPServer(ThreadingHTTPServer):
         usage_reporter: UsageReporter | None = None,
         gemini_account: GeminiAccountProvider | None = None,
         deepseek_harness: DeepSeekHarnessProvider | None = None,
+        zen_provider: ZenProvider | None = None,
         subagent_policy: SubagentPolicyStore | None = None,
         hybrid_route_store: HybridRouteStore | None = None,
         product_api_alias: bool = False,
@@ -175,6 +177,7 @@ class BridgeHTTPServer(ThreadingHTTPServer):
         self.usage_reporter = usage_reporter
         self.gemini_account = gemini_account
         self.deepseek_harness = deepseek_harness
+        self.zen_provider = zen_provider
         self.subagent_policy = subagent_policy
         self.hybrid_route_store = hybrid_route_store
         self.product_api_alias = product_api_alias
@@ -273,6 +276,9 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         if not server.product_api_alias and self.path.split("?", 1)[0].startswith("/deepseek-harness/"):
             self._handle_deepseek_harness(server, method, request_id)
             return
+        if not server.product_api_alias and self.path.split("?", 1)[0].startswith("/zen/"):
+            self._handle_zen_provider(server, method, request_id)
+            return
 
         try:
             local_target = self.path
@@ -284,6 +290,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                         models.extend(server.gemini_account.models_response().get("data", []))
                     if server.deepseek_harness is not None:
                         models.extend(server.deepseek_harness.models_response().get("data", []))
+                    if server.zen_provider is not None:
+                        models.extend(server.zen_provider.models_response().get("data", []))
                     self._send_json(200, {"object": "list", "data": models})
                     return
                 if hybrid_path in {"/hybrid/v1/responses", "/hybrid/v1/responses/compact"} and method == "POST":
@@ -313,6 +321,14 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                         return
                     if is_deepseek_model(hybrid_payload.get("model")):
                         self._handle_deepseek_payload(
+                            server,
+                            hybrid_payload,
+                            request_id,
+                            compact=hybrid_path.endswith("/responses/compact"),
+                        )
+                        return
+                    if is_zen_model(hybrid_payload.get("model")):
+                        self._handle_zen_payload(
                             server,
                             hybrid_payload,
                             request_id,
@@ -1367,6 +1383,105 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 {"error": {"message": str(error), "type": error.code, "code": error.code}},
             )
 
+    def _handle_zen_provider(
+        self,
+        server: BridgeHTTPServer,
+        method: str,
+        request_id: str,
+    ) -> None:
+        provider = server.zen_provider
+        if provider is None:
+            self._send_json(503, {"error": {"code": "zen_provider_unavailable"}})
+            return
+        path = self.path.split("?", 1)[0].rstrip("/")
+        try:
+            if path.endswith("/models") and method == "GET":
+                # `?refresh=force` bypasses the catalog's staleness window so an
+                # operator can sweep for new free models without a restart.
+                query = parse_qs(urlsplit(self.path).query)
+                force = query.get("refresh", [""])[-1] == "force"
+                self._send_json(200, provider.models_response(force=force))
+                return
+            if not path.endswith("/responses"):
+                self._discard_small_rejected_body()
+                self._send_json(404, {"error": {"code": "not_found"}})
+                return
+            if method != "POST":
+                self._discard_small_rejected_body()
+                self._send_json(405, {"error": {"code": "method_not_allowed"}})
+                return
+            raw = b"".join(
+                self._request_body(
+                    server.bridge_config.protocol.max_chunk_bytes,
+                    max_body_bytes=server.bridge_config.protocol.max_request_body_bytes,
+                    timeout=server.bridge_config.protocol.request_timeout_seconds,
+                )
+            )
+            try:
+                payload = json.loads(raw.decode("utf-8"))
+            except (UnicodeError, json.JSONDecodeError) as exc:
+                raise ZenProviderError("Responses request must be valid JSON", status=400) from exc
+            if not isinstance(payload, dict):
+                raise ZenProviderError("Responses request must be a JSON object", status=400)
+            self._handle_zen_payload(
+                server,
+                payload,
+                request_id,
+                compact=path.endswith("/responses/compact"),
+            )
+        except ZenProviderError as error:
+            self._send_json(
+                error.status,
+                {"error": {"message": str(error), "type": error.code, "code": error.code}},
+            )
+
+    def _handle_zen_payload(
+        self,
+        server: BridgeHTTPServer,
+        payload: dict[str, object],
+        request_id: str,
+        *,
+        compact: bool = False,
+    ) -> None:
+        provider = server.zen_provider
+        if provider is None:
+            self._send_json(503, {"error": {"code": "zen_provider_unavailable"}})
+            return
+        headers_sent = False
+        try:
+            if compact:
+                self._send_json(200, provider.compact(payload))
+                return
+            streaming, result = provider.responses(payload)
+            if not streaming:
+                self._send_json(200, result)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("X-FanVPN-Bridge", "v2")
+            self.send_header("X-FanVPN-Request-Id", request_id)
+            self.end_headers()
+            headers_sent = True
+            for chunk in cast(Iterable[bytes], result):
+                self._write_chunk(chunk)
+            self._write_chunk(b"")
+        except ZenProviderError as error:
+            if not headers_sent:
+                self._send_json(
+                    error.status,
+                    {"error": {"message": str(error), "type": error.code, "code": error.code}},
+                )
+            else:
+                self.close_connection = True
+            _LOG.warning(
+                "zen_provider_failed request_id=%s code=%s status=%s",
+                request_id,
+                error.code,
+                error.status,
+            )
+
     def _handle_deepseek_payload(
         self,
         server: BridgeHTTPServer,
@@ -1520,6 +1635,7 @@ def create_http_server(
     usage_reporter: UsageReporter | None = None,
     gemini_account: GeminiAccountProvider | None = None,
     deepseek_harness: DeepSeekHarnessProvider | None = None,
+    zen_provider: ZenProvider | None = None,
     subagent_policy: SubagentPolicyStore | None = None,
     hybrid_route_store: HybridRouteStore | None = None,
 ) -> BridgeHTTPServer:
@@ -1536,6 +1652,7 @@ def create_http_server(
         usage_reporter=usage_reporter,
         gemini_account=gemini_account,
         deepseek_harness=deepseek_harness,
+        zen_provider=zen_provider,
         subagent_policy=subagent_policy,
         hybrid_route_store=hybrid_route_store,
         product_api_alias=product_api_alias,
