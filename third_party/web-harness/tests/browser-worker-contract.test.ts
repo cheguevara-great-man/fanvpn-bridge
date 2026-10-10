@@ -16,6 +16,7 @@ import { compileChatGptWebPrompt, formatChatGptWebMultipartCommit, formatChatGpt
 import { estimateCompiledChatGptWebInputTokens } from "../src/adapters/chatgpt-web/input-tokens";
 import { estimateTokens } from "../src/lib/token-estimate";
 import { chatGptHtmlToMarkdown } from "../src/adapters/chatgpt-web/markdown";
+import { CHATGPT_BROWSER_GENERATION_STALL_MS } from "../src/adapters/chatgpt-web/browser-worker";
 
 function personalizedTemporaryChatRole(
   _role: string,
@@ -3624,7 +3625,7 @@ test("browser DOM health fails closed on a vanished or empty ChatGPT response", 
   const missing = new ChatGptTurnDomHealthTracker(1_000, 500);
   const absent = {
     responsePresent: false,
-    running: true,
+    running: false,
     currentText: "",
     completionActionVisible: false,
   };
@@ -3704,7 +3705,7 @@ test("suspending DOM health for proven MCP progress restarts the missing-respons
   const tracker = new ChatGptTurnDomHealthTracker(1_000, 500);
   const absent = {
     responsePresent: false,
-    running: true,
+    running: false,
     currentText: "",
     completionActionVisible: false,
   };
@@ -3729,7 +3730,7 @@ test("clearing the missing-response window preserves whether a response was ever
     currentText: "partial",
     completionActionVisible: false,
   };
-  const absent = { ...present, responsePresent: false, currentText: "" };
+  const absent = { ...present, responsePresent: false, running: false, currentText: "" };
 
   expect(tracker.update(present, 1_000)).toBeUndefined();
   expect(tracker.update(absent, 1_500)).toBeUndefined();
@@ -3800,7 +3801,7 @@ test("live external progress still records that a response DOM was observed", ()
   const tracker = new ChatGptTurnDomHealthTracker(1_000, 500);
   const absent = {
     responsePresent: false,
-    running: true,
+    running: false,
     currentText: "",
     completionActionVisible: false,
   };
@@ -3816,6 +3817,152 @@ test("live external progress still records that a response DOM was observed", ()
   // The turn is reported as vanished rather than never created, so `sawResponse` survived.
   expect(tracker.update(absent, 2_000)).toBeUndefined();
   expect(tracker.update(absent, 3_000)).toContain("response DOM disappeared");
+});
+
+test("a generating response may disappear for over a minute and recover on the same turn", () => {
+  const tracker = new ChatGptTurnDomHealthTracker();
+  const completion = new ChatGptCompletionTracker(1_000);
+  const present = {
+    responsePresent: true,
+    running: true,
+    currentText: "",
+    completionActionVisible: false,
+  };
+  const absent = { ...present, responsePresent: false };
+  expect(tracker.update(present, 0)).toBeUndefined();
+  expect(tracker.update(absent, 10_000)).toBeUndefined();
+  expect(tracker.update(absent, 75_000)).toBeUndefined();
+  expect(completion.update(absent, 75_000)).toBeFalse();
+
+  const recovered = { ...present, running: false, currentText: "final answer", completionActionVisible: true };
+  expect(tracker.update(recovered, 100_000)).toBeUndefined();
+  expect(completion.update(recovered, 100_000)).toBeFalse();
+  expect(completion.update(recovered, 101_000)).toBeTrue();
+});
+
+test("long thinking before any response node exists uses a fresh grace after generation stops", () => {
+  const tracker = new ChatGptTurnDomHealthTracker();
+  const absent = {
+    responsePresent: false,
+    running: true,
+    currentText: "",
+    completionActionVisible: false,
+  };
+  expect(tracker.update(absent, 0)).toBeUndefined();
+  expect(tracker.update(absent, 120_000)).toBeUndefined();
+  const stopped = { ...absent, running: false };
+  expect(tracker.update(stopped, 121_000)).toBeUndefined();
+  expect(tracker.update(stopped, 180_999)).toBeUndefined();
+  expect(tracker.update(stopped, 181_000)).toContain("did not create a response DOM");
+});
+
+test("a frozen generation button cannot keep missing, empty or unchanged responses alive forever", () => {
+  expect(CHATGPT_BROWSER_GENERATION_STALL_MS).toBeGreaterThan(CHATGPT_RESPONSE_DOM_GRACE_MS);
+  for (const response of [
+    { responsePresent: false, currentText: "" },
+    { responsePresent: true, currentText: "" },
+    { responsePresent: true, currentText: "unchanged partial answer" },
+  ]) {
+    const tracker = new ChatGptTurnDomHealthTracker();
+    const frozen = { ...response, running: true, completionActionVisible: false };
+    expect(tracker.update(frozen, 0)).toBeUndefined();
+    expect(tracker.update(frozen, CHATGPT_BROWSER_GENERATION_STALL_MS - 1)).toBeUndefined();
+    expect(tracker.update(frozen, CHATGPT_BROWSER_GENERATION_STALL_MS)).toContain("browser stall limit");
+  }
+});
+
+test("answer, link and reasoning progress refresh silence protection rather than limiting total turn time", () => {
+  for (const progress of [
+    { currentText: "new answer" },
+    { currentHtml: '<p><a href="https://example.com/new">same answer</a></p>' },
+    { currentTrace: [{ kind: "status" as const, text: "checking another source" }] },
+  ]) {
+    const tracker = new ChatGptTurnDomHealthTracker(1_000, 500, 750, 5_000);
+    const initial = {
+      responsePresent: true,
+      running: true,
+      currentText: "same answer",
+      currentHtml: '<p><a href="https://example.com/old">same answer</a></p>',
+      completionActionVisible: false,
+    };
+    expect(tracker.update(initial, 0)).toBeUndefined();
+    const changed = { ...initial, ...progress };
+    expect(tracker.update(changed, 4_999)).toBeUndefined();
+    expect(tracker.update(changed, 9_998)).toBeUndefined();
+    expect(tracker.update(changed, 9_999)).toContain("browser stall limit");
+  }
+});
+
+test("identical remounts, node disappearance and changing UI controls are not generation progress", () => {
+  const tracker = new ChatGptTurnDomHealthTracker(1_000, 500, 750, 5_000);
+  const present = {
+    responsePresent: true,
+    running: true,
+    currentText: "partial",
+    completionActionVisible: false,
+    currentTrace: [{ kind: "status" as const, text: "timer 1", key: "ui-1", uiControl: true }],
+  };
+  expect(tracker.update(present, 0)).toBeUndefined();
+  expect(tracker.update({ ...present, responsePresent: false, currentText: "" }, 2_000)).toBeUndefined();
+  const remounted = {
+    ...present,
+    currentTrace: [{ kind: "status" as const, text: "timer 2", key: "ui-2", uiControl: true }],
+  };
+  expect(tracker.update(remounted, 4_999)).toBeUndefined();
+  expect(tracker.update(remounted, 5_000)).toContain("browser stall limit");
+});
+
+test("MCP suspension does not count toward browser generation silence", () => {
+  for (const skippedDomRead of [false, true]) {
+    const tracker = new ChatGptTurnDomHealthTracker(1_000, 500, 750, 5_000);
+    const absent = {
+      responsePresent: false,
+      running: true,
+      currentText: "",
+      completionActionVisible: false,
+    };
+    expect(tracker.update(absent, 0)).toBeUndefined();
+    if (skippedDomRead) tracker.clearMissingResponse();
+    else expect(tracker.update({ ...absent, externalProgressLive: true }, 20_000)).toBeUndefined();
+    expect(tracker.update(absent, 30_000)).toBeUndefined();
+    expect(tracker.update(absent, 34_999)).toBeUndefined();
+    expect(tracker.update(absent, 35_000)).toContain("browser stall limit");
+  }
+});
+
+test("response rebinding recovers a replacement but never attaches to another user turn", async () => {
+  const baseline = { initialTurnIdentities: ["old-user", "old-answer"], domCache: {} };
+  const binding = {
+    identity: "answer-shell",
+    locator: { count: async () => 0 },
+    acceptedTurnIdentities: [...baseline.initialTurnIdentities, "current-user", "answer-shell"],
+  };
+  let state = {
+    userIdentities: ["current-user"],
+    responseIdentities: ["old-answer", "replacement-answer"],
+    turnIdentities: [...baseline.initialTurnIdentities, "current-user", "replacement-answer"],
+  };
+  const replacementLocator = { count: async () => 1 };
+  const selectors: string[] = [];
+  const page = {
+    locator: (selector: string) => { selectors.push(selector); return replacementLocator; },
+  } as unknown as Page;
+  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+    submissionDomState: async () => state,
+  }) as {
+    reconcileAssistantTurnBinding(page: Page, baseline: unknown, binding: unknown): Promise<{
+      identity: string; locator: unknown; acceptedTurnIdentities: string[];
+    }>;
+  };
+  const rebound = await worker.reconcileAssistantTurnBinding(page, baseline, binding);
+  expect(rebound.identity).toBe("replacement-answer");
+  expect(rebound.locator).toBe(replacementLocator);
+  expect(rebound.acceptedTurnIdentities).toEqual(state.turnIdentities);
+  expect(selectors).toEqual(['[data-turn-id="replacement-answer"], [data-turn-key="replacement-answer"]']);
+
+  state = { ...state, userIdentities: ["current-user", "another-user"] };
+  await expect(worker.reconcileAssistantTurnBinding(page, baseline, binding)).rejects.toThrow("another user turn");
+  expect(selectors).toHaveLength(1);
 });
 
 test("an accepted turn survives internal observation faults instead of being torn down", () => {

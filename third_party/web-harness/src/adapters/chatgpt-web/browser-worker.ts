@@ -125,6 +125,8 @@ export async function closeChatGptBrowserWorkers(): Promise<void> {
 }
 
 export const CHATGPT_RESPONSE_DOM_GRACE_MS = 60_000;
+/** A visible stop button is liveness evidence, but cannot keep a frozen renderer alive forever. */
+export const CHATGPT_BROWSER_GENERATION_STALL_MS = 10 * 60_000;
 /**
  * How long a staged Bigger Context part may take to produce its assistant turn. A staged part is two
  * orders of magnitude larger than an ordinary prompt and ChatGPT reads all of it before answering.
@@ -1469,6 +1471,7 @@ export class ChatGptCompletionTracker {
 export class ChatGptTurnDomHealthTracker {
   private sawResponse = false;
   private missingResponseSince?: number;
+  private generationProgress?: { signature?: string; since: number };
   private emptyCompletionSince?: number;
   private missingCompletionAction?: { text: string; since: number };
 
@@ -1476,10 +1479,11 @@ export class ChatGptTurnDomHealthTracker {
     private readonly missingResponseMs = CHATGPT_RESPONSE_DOM_GRACE_MS,
     private readonly emptyCompletionMs = CHATGPT_EMPTY_RESPONSE_GRACE_MS,
     private readonly missingCompletionActionMs = CHATGPT_COMPLETION_ACTION_GRACE_MS,
+    private readonly generationStallMs = CHATGPT_BROWSER_GENERATION_STALL_MS,
   ) {}
 
   /**
-   * Clears only the missing-response window, leaving `sawResponse` history intact.
+   * Clears missing-response and generation-silence windows, leaving `sawResponse` history intact.
    *
    * Callers use this when proven external progress suspends DOM health checks: the suspended
    * stretch must not be charged against the grace period, or the first observation after it
@@ -1487,12 +1491,15 @@ export class ChatGptTurnDomHealthTracker {
    */
   clearMissingResponse(): void {
     this.missingResponseSince = undefined;
+    this.generationProgress = undefined;
   }
 
   update(state: {
     responsePresent: boolean;
     running: boolean;
     currentText: string;
+    currentHtml?: string;
+    currentTrace?: readonly ChatGptVisibleTraceBlock[];
     completionActionVisible: boolean;
     externalProgressLive?: boolean;
   }, now = Date.now()): string | undefined {
@@ -1502,11 +1509,33 @@ export class ChatGptTurnDomHealthTracker {
       // is still completing disproves all of them, whatever the renderer is currently exposing, so
       // no window may accrue while the model is provably working.
       this.missingResponseSince = undefined;
+      this.generationProgress = undefined;
       this.emptyCompletionSince = undefined;
       this.missingCompletionAction = undefined;
       return undefined;
     }
-    if (state.responsePresent) {
+    if (state.running) {
+      // Text, answer markup (including link destinations), and reasoning/tool trace are progress.
+      // Observer revisions, node identity and the stop button itself are not: React can remount
+      // identical content or keep an animated shell visible while generation is actually stuck.
+      const signature = state.responsePresent ? JSON.stringify([
+        state.currentText,
+        state.currentHtml ?? state.currentText,
+        state.currentTrace?.filter(block => !block.uiControl).map(block => [block.kind, block.text]) ?? [],
+      ]) : undefined;
+      if (!this.generationProgress
+        || (signature !== undefined && signature !== this.generationProgress.signature)) {
+        this.generationProgress = { signature, since: now };
+      }
+      if (now - this.generationProgress.since >= this.generationStallMs) {
+        return "ChatGPT still shows generation in progress but no response or tool progress was observed within the browser stall limit";
+      }
+    } else {
+      this.generationProgress = undefined;
+    }
+    if (state.responsePresent || state.running) {
+      // Failure to locate a bound node is not proof that ChatGPT stopped responding. Continue
+      // same-turn rebinding while generation is visible; if it stops, start a fresh DOM grace.
       this.missingResponseSince = undefined;
     } else {
       this.missingResponseSince ??= now;
@@ -3667,6 +3696,8 @@ export class ChatGptBrowserWorker {
         responsePresent: snapshot.responsePresent,
         running,
         currentText: snapshot.visibleText,
+        currentHtml: snapshot.fullHtml,
+        currentTrace: snapshot.traceBlocks,
         completionActionVisible: snapshot.completionActionVisible,
         externalProgressLive,
       });
@@ -5198,6 +5229,8 @@ export class ChatGptBrowserWorker {
             responsePresent: snapshot.responsePresent,
             running,
             currentText: snapshot.visibleText,
+            currentHtml: snapshot.fullHtml,
+            currentTrace: snapshot.traceBlocks,
             completionActionVisible: snapshot.completionActionVisible,
             externalProgressLive,
           });
