@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { buildResponseJSON } from "../src/bridge";
+import { bridgeToResponsesSSE, buildResponseJSON } from "../src/bridge";
 import { ChatGptWebAdapterError, chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
 import { ChatGptCompletionTracker, chatGptImageFilePayloads, chatGptPromptFilePayloads, chatGptTurnIsComplete } from "../src/adapters/chatgpt-web/browser-worker";
 import { ChatGptBrowserWorker, type BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
@@ -1796,6 +1796,151 @@ describe("ChatGPT outer-native harness v4", () => {
       expect(events.at(-1)).toMatchObject({ type: "done", finalText: "New answer" });
     } finally {
       (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    }
+  });
+
+  async function expectReconciledFinal(events: AdapterEvent[], answer: string): Promise<void> {
+    const response = buildResponseJSON(events, "chatgpt-web/test") as {
+      output: Array<{ type: string; phase?: string; content?: Array<{ text: string }> }>;
+    };
+    const finals = response.output.filter(item => item.type === "message" && item.phase === "final_answer");
+    expect(finals).toHaveLength(1);
+    expect(finals[0]!.content![0]!.text).toBe(answer);
+    async function* source() { yield* events; }
+    const body = await new Response(bridgeToResponsesSSE(source(), "chatgpt-web/test")).text();
+    expect(body).not.toContain("event: response.failed");
+    const frames = body.split("\n\n").flatMap(frame => {
+      const match = /^event: ([^\n]+)\ndata: ([^\n]+)$/m.exec(frame);
+      return match ? [{ type: match[1], data: JSON.parse(match[2]!) }] : [];
+    });
+    expect(frames.filter(frame => frame.type === "response.output_text.done"
+      && frame.data.text === answer)).toHaveLength(1);
+    const completed = frames.find(frame => frame.type === "response.completed")?.data.response.output;
+    expect(completed).toBeDefined();
+    const withoutIds = (items: Array<Record<string, unknown>>) => items.map(({ id, ...item }) => item);
+    expect(withoutIds(completed)).toEqual(withoutIds(response.output));
+  }
+
+  for (const mode of ["live", "reconnect", "settled reconnect"]) {
+    test(`reconciles a live final preview despite late work traces (${mode})`, async () => {
+      const reconnect = mode !== "live";
+      const provider: CodexProviderConfig = {
+        adapter: "chatgpt-web",
+        baseUrl: `browser://chatgpt-late-trace-${mode.replaceAll(" ", "-")}-${Date.now()}`,
+        chatgptWeb: { localToolsEnabled: false, solAvailable: true, proAvailable: true },
+      };
+      const worker = ChatGptBrowserWorker.forProvider(provider);
+      const originalRun = worker.run.bind(worker);
+      let releasePreview!: () => void;
+      const previewObserved = new Promise<void>(resolve => { releasePreview = resolve; });
+      let browserStarts = 0;
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+        browserStarts += 1;
+        turn.onTextDelta("Old answer");
+        await previewObserved;
+        turn.onReasoningSummary?.("Late reasoning");
+        turn.onCommentary?.("Late work hint");
+        await Bun.sleep(0);
+        return "New answer";
+      };
+      const request = rawWireRequest(environmentXml);
+      const adapter = createChatGptWebAdapter(provider);
+      const disconnect = new AbortController();
+      try {
+        const events: AdapterEvent[] = [];
+        const run = adapter.runTurn!(request,
+          { headers: new Headers(), abortSignal: disconnect.signal }, event => {
+            events.push(event);
+            if (event.type === "text_delta" && event.text === "Old answer") {
+              if (reconnect) {
+                disconnect.abort();
+                throw new DOMException("observer disconnected", "AbortError");
+              }
+              releasePreview();
+            }
+          });
+        if (reconnect) {
+          await expect(run).rejects.toMatchObject({ name: "AbortError" });
+          events.length = 0;
+          if (mode === "settled reconnect") {
+            releasePreview();
+            await Bun.sleep(0);
+          }
+          const resumed = adapter.runTurn!(request, { headers: new Headers() }, event => events.push(event));
+          releasePreview();
+          await resumed;
+        } else {
+          await run;
+        }
+        expect(events.filter(event => event.type === "text_delta" && event.phase === "final_answer"))
+          .toEqual([{ type: "text_delta", text: "Old answer", phase: "final_answer" }]);
+        expect(events.at(-1)).toMatchObject({ type: "done", finalText: "New answer" });
+        await expectReconciledFinal(events, "New answer");
+        const replay: AdapterEvent[] = [];
+        await adapter.runTurn!(request, { headers: new Headers() }, event => replay.push(event));
+        expect(replay).toEqual(events);
+        expect(browserStarts).toBe(1);
+      } finally {
+        releasePreview();
+        (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+      }
+    });
+  }
+
+  test("seeds the final response when all browser preview text was consumed before a tool result", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-final-seed-${process.pid}-${Date.now()}`);
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web",
+      baseUrl: `browser://chatgpt-final-seed-${Date.now()}`,
+      chatgptWeb: { brokerSocketPath: socketPath, turnTimeoutMs: 30_000, localToolsEnabled: true },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run.bind(worker);
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+      const prepared = await turn.prepare();
+      try {
+        const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
+        if (!token) throw new Error("turn token missing");
+        const claimed = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
+        turn.onTextDelta("Old answer before tools");
+        await invokeAfterBrowserBoundary(turn, () => callTurnBroker<BrokerToolResult>(socketPath, {
+          method: "invoke", bindingId: claimed.bindingId, wireName: "exec_command",
+          freeform: false, arguments: { cmd: "pwd", workdir: tempRoot },
+        }, 30_000));
+        turn.onReasoningSummary?.("Tool result checked");
+        // Markdown revision disabled further provisional deltas; completion still owns the final.
+        return "Revised final after tools";
+      } finally {
+        prepared.release();
+      }
+    };
+    const request = rawWireRequest(environmentXml);
+    const adapter = createChatGptWebAdapter(provider);
+    try {
+      const firstEvents: AdapterEvent[] = [];
+      await adapter.runTurn!(request, { headers: new Headers() }, event => firstEvents.push(event));
+      expect(firstEvents.some(event => event.type === "text_delta" && event.text === "Old answer before tools")).toBeTrue();
+      const call = firstEvents.find((event): event is Extract<AdapterEvent, { type: "tool_call_start" }> => event.type === "tool_call_start")!;
+      const continuation = structuredClone(request);
+      const arguments_ = { cmd: "pwd", workdir: tempRoot };
+      const output = JSON.stringify({ output: tempRoot, exit_code: 0 });
+      continuation.context.messages.push(
+        { role: "assistant", content: [{ type: "toolCall", id: call.id, name: call.name, arguments: arguments_ }], timestamp: 3 },
+        { role: "toolResult", toolCallId: call.id, toolName: call.name, content: output, isError: false, timestamp: 4 },
+      );
+      (continuation._rawBody as { input: unknown[] }).input.push(
+        { type: "function_call", call_id: call.id, name: call.name, arguments: JSON.stringify(arguments_) },
+        { type: "function_call_output", call_id: call.id, output },
+      );
+      const events: AdapterEvent[] = [];
+      await adapter.runTurn!(continuation, { headers: new Headers() }, event => events.push(event));
+      await expectReconciledFinal(events, "Revised final after tools");
+      const replay: AdapterEvent[] = [];
+      await adapter.runTurn!(continuation, { headers: new Headers() }, event => replay.push(event));
+      expect(replay).toEqual(events);
+    } finally {
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+      await TurnBroker.forSocket(socketPath).close();
     }
   });
 

@@ -1128,11 +1128,15 @@ export function createChatGptWebAdapter(
           chatGptInstructionLineage(parsed),
         );
         const roundKey = chatGptTurnRoundKey(parsed);
+        let hasFinalPreview = false;
         const emitRoundEvents = (events: readonly AdapterEvent[]): void => {
           // Journal the complete synchronous event batch before touching the HTTP observer. If the
           // observer disconnects midway through emission, an exact reconnect can replay the entire
           // canonical batch instead of losing the already-drained tail.
           session.appendRoundEvents(roundKey, events);
+          if (events.some(event => event.type === "text_delta" && event.phase === "final_answer")) {
+            hasFinalPreview = true;
+          }
           for (const event of events) emit(event);
         };
         const emitRoundBatch = (
@@ -1143,9 +1147,20 @@ export function createChatGptWebAdapter(
           emitRoundEvents(events);
         };
         const emitRoundEvent = (event: AdapterEvent): void => emitRoundEvents([event]);
+        const emitRoundTrace = (trace: ChatGptTraceEvent[]): void => {
+          // Late browser work hints must not close the provisional final message before its
+          // authoritative text arrives. Their text is still retained in the round reasoning.
+          if (!hasFinalPreview) emitRoundBatch(buffer => emitTraceEvents(trace, buffer));
+        };
+        const ensureFinalPreview = (answer: string): void => {
+          // Earlier native tool rounds may have consumed every provisional browser delta.
+          // Reconciliation requires a final message in THIS response, not in a prior response.
+          if (!hasFinalPreview && answer) emitRoundBatch(buffer => emitTextDeltas([answer], buffer));
+        };
         try {
           await session.runExclusive(async () => {
             const replay = session.roundEvents(roundKey);
+            hasFinalPreview = replay.some(event => event.type === "text_delta" && event.phase === "final_answer");
             replayEvents(replay, emit);
             if (session.roundCompleted(roundKey)) {
               const failure = session.roundFailure(roundKey);
@@ -1174,7 +1189,7 @@ export function createChatGptWebAdapter(
                 if (replay.length === 0 && !parsed._compactionRequest) {
                   emitRoundBatch(buffer => emitReadOnlyContextWarning(parsed, turnCapabilities, buffer));
                 }
-                emitRoundBatch(buffer => emitTraceEvents(trace, buffer));
+                emitRoundTrace(trace);
                 if (!bufferStructuredOutput) {
                   emitRoundBatch(buffer => emitTextDeltas(completedTextDeltas, buffer));
                 }
@@ -1186,9 +1201,7 @@ export function createChatGptWebAdapter(
                 throw new Error("ChatGPT browser completed without emitting its final answer");
               }
               structuredOutputValidator?.(settled.answer);
-              if (bufferStructuredOutput) {
-                emitRoundBatch(buffer => emitTextDeltas([settled.answer], buffer));
-              }
+              ensureFinalPreview(settled.answer);
               const reasoning = session.roundReasoning(roundKey);
               session.setFinalReasoning(reasoning);
               session.setFinalEvents(session.roundEvents(roundKey));
@@ -1241,7 +1254,7 @@ export function createChatGptWebAdapter(
               const emitNewTrace = (trace: ChatGptTraceEvent[]) => {
                 roundReasoning.push(...trace.map(event => event.text));
                 session.appendRoundReasoning(roundKey, trace.map(event => event.text));
-                emitRoundBatch(buffer => emitTraceEvents(trace, buffer));
+                emitRoundTrace(trace);
               };
               const emitNewText = (deltas: string[]) => {
                 if (!bufferStructuredOutput) emitRoundBatch(buffer => emitTextDeltas(deltas, buffer));
@@ -1287,17 +1300,15 @@ export function createChatGptWebAdapter(
                 // overtaken by the terminal owner notification.
                 emitNewTrace(session.runtime.trace.drain());
                 emitNewText(session.runtime.text.drain());
-                session.setFinalReasoning(roundReasoning);
-                session.setFinalEvents(session.roundEvents(roundKey));
                 if (turnToken) await broker.revoke(turnToken);
                 if (completedOutcome.type === "error") throw completedOutcome.error;
                 if (!session.runtime.text.value() && completedOutcome.answer) {
                   throw new Error("ChatGPT browser completed without emitting its final answer");
                 }
                 structuredOutputValidator?.(completedOutcome.answer);
-                if (bufferStructuredOutput) {
-                  emitRoundBatch(buffer => emitTextDeltas([completedOutcome.answer], buffer));
-                }
+                ensureFinalPreview(completedOutcome.answer);
+                session.setFinalReasoning(roundReasoning);
+                session.setFinalEvents(session.roundEvents(roundKey));
                 emitRoundBatch(buffer => emitBrowserCompletion(
                   completedOutcome,
                   estimateChatGptWebUsage(currentUsageInput(parsed), { answer: completedOutcome.answer, reasoning: roundReasoning }, turnCapabilities, experimentalBiggerContext),

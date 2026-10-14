@@ -54,6 +54,20 @@ test("non-streaming Responses also commits the authoritative final answer", () =
   expect(response.output[0]?.content?.[0]?.text).toBe("New answer");
 });
 
+test("Responses still rejects reconciliation after a final message was actually closed", async () => {
+  const events: AdapterEvent[] = [
+    { type: "text_delta", text: "Old answer", phase: "final_answer" },
+    { type: "assistant_boundary" },
+    { type: "done", endTurn: true, finalText: "New answer" },
+  ];
+  expect(() => buildResponseJSON(events, "chatgpt-web/test"))
+    .toThrow("Cannot reconcile a final answer after its streamed message was closed");
+  async function* source() { yield* events; }
+  const body = await new Response(bridgeToResponsesSSE(source(), "chatgpt-web/test")).text();
+  expect(body).toContain("event: response.failed");
+  expect(body).not.toContain("event: response.completed");
+});
+
 test("compaction keeps revised final text inside its synthetic item", async () => {
   async function* revisedSummary(): AsyncGenerator<AdapterEvent> {
     yield { type: "text_delta", text: "Old summary", phase: "final_answer" };
