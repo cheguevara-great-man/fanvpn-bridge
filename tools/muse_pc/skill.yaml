@@ -1,0 +1,5 @@
+name: "__SKILL_NAME__"
+title: "Codex PC Connection (Experimental)"
+description: "Request explicitly supplied Codex client tools and wait for their real approved results."
+category: "Work and knowledge"
+include_in_prompt: false

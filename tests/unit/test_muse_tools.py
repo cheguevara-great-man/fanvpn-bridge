@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import copy
+from concurrent.futures import ThreadPoolExecutor
+import hashlib
+import io
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -9,9 +13,10 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 from fanvpn_bridge.muse_service import MuseSessions, ServiceError
-from fanvpn_bridge.muse_tools import MailboxError, PROTOCOL, WorkspaceTools, response_frames
+from fanvpn_bridge.muse_tools import FILE_CHUNK_BYTES, MAX_BYTES, MailboxError, PROTOCOL, WorkspaceTools, response_frames
 from fanvpn_bridge.muse_tools_setup import install
 from test_muse_web import FakeMuse, TOOLS
 
@@ -39,7 +44,7 @@ class MailboxHelperTests(unittest.TestCase):
     def invoke(self, action, value=None, *extra, run=None):
         return subprocess.run([sys.executable, str(self.script), action, "--run", run or self.run, *extra],
                               input=json.dumps(value, ensure_ascii=False).encode("utf-8") if value else b"",
-                              capture_output=True, timeout=5)
+                              capture_output=True, timeout=5, env={**os.environ, "PYTHONIOENCODING": "utf-8"})
 
     def test_directory_does_not_dump_all_tool_definitions(self):
         value = self.invoke("tools")
@@ -80,10 +85,56 @@ class MailboxHelperTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertFalse((self.directory / "request.json").exists())
 
+    def referenced_catalog(self, tools=TOOLS):
+        raw = json.dumps({"schema_version": 1, "tools": tools}, ensure_ascii=False).encode("utf-8")
+        digest = hashlib.sha256(raw).hexdigest()
+        directory = self.root / "catalogs"
+        directory.mkdir(exist_ok=True)
+        path = directory / (digest + ".json")
+        path.write_bytes(raw)
+        self.write("manifest", {"schema_version": 2, "run": self.run,
+                               "expires_at": time.time() + 60, "catalog_sha256": digest})
+        return path
+
+    def test_referenced_catalog_lists_definitions_and_preserves_exact_request_and_result(self):
+        self.referenced_catalog()
+        directory = json.loads(self.invoke("tools").stdout)
+        self.assertEqual(directory, [{"name": tool["name"], "type": tool["type"]} for tool in TOOLS])
+        self.assertEqual(json.loads(self.invoke("tools", None, "--name", "apply_patch").stdout), TOOLS[1])
+        text = "literal 中文 `x`\n" * 6000
+        request = self.invoke("request", {"name": "apply_patch", "input": text})
+        self.assertEqual(request.returncode, 0, request.stderr)
+        self.assertEqual(json.loads((self.directory / "request.json").read_bytes())["input"], text)
+        result = {"schema_version": 1, "run": self.run, "result": {"output": text}}
+        self.write("result", result)
+        self.assertEqual(json.loads(self.invoke("result").stdout), result)
+
+    def test_reference_rejects_corrupt_missing_or_unsafe_catalog(self):
+        path = self.referenced_catalog()
+        path.write_bytes(path.read_bytes() + b" ")
+        self.assertEqual(self.invoke("tools").returncode, 2)
+        path.unlink()
+        self.assertEqual(self.invoke("request", {"name": "exec_command", "arguments": {}}).returncode, 2)
+        for digest in ("../outside", "A" * 64, "f" * 63, None):
+            self.write("manifest", {"schema_version": 2, "run": self.run, "catalog_sha256": digest})
+            self.assertEqual(self.invoke("tools").returncode, 2)
+        self.assertFalse((self.directory / "request.json").exists())
+
+    def test_reference_rejects_bad_schema_or_duplicate_tools(self):
+        for tools in (None, [None], [TOOLS[0], TOOLS[0]], [{"name": "x", "type": "unknown"}]):
+            self.referenced_catalog(tools)
+            self.assertEqual(self.invoke("tools").returncode, 2)
+        self.referenced_catalog()
+        manifest = json.loads((self.directory / "manifest.json").read_bytes())
+        for changes in ({"schema_version": 3}, {"run": "b" * 32}):
+            self.write("manifest", {**manifest, **changes})
+            self.assertEqual(self.invoke("tools").returncode, 2)
+
 
 class WorkspaceSessionTests(unittest.TestCase):
     def setUp(self):
         self.fake = FakeMuse()
+        self.fake.seed_helper()
         self.sessions = MuseSessions(self.fake.connect, timeout=0.2, poll=0.001, tool_workspace=WORKSPACE)
         self.body = {"model": "default", "input": "Inert tool test", "tools": TOOLS, "tool_protocol": PROTOCOL}
 
@@ -171,6 +222,30 @@ class WorkspaceSessionTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "muse_web_tools_unavailable")
         self.assertEqual(self.fake.connections, 0)
 
+    def test_old_or_missing_helper_fails_before_session_or_model_submission(self):
+        helper = WORKSPACE + "/scripts/mailbox.py"
+        for source in (None, b"# legacy helper"):
+            self.fake.files.clear()
+            if source is not None:
+                self.fake.files[helper] = source
+            with self.assertRaises(ServiceError) as caught:
+                self.call()
+            self.assertEqual(caught.exception.code, "muse_web_tools_unavailable")
+        self.assertEqual(self.fake.sent, [])
+        self.assertEqual(self.fake.conversations, {})
+
+    def test_independent_runs_share_one_unchanged_catalog(self):
+        response, result = self.pending()
+        self.call(previous_response_id=response["id"], tool_results=[result])
+        self.call()  # A new conversation also reuses it.
+        manifests = [json.loads(raw) for path, raw in self.fake.files.items() if path.endswith("/manifest.json")]
+        self.assertEqual(len(manifests), 3)
+        self.assertEqual(len({value["run"] for value in manifests}), 3)
+        self.assertEqual(len({value["catalog_sha256"] for value in manifests}), 1)
+        self.assertTrue(all("tools" not in value for value in manifests))
+        uploads = [body for method, body in self.fake.rpcs if method == "fs.write" and "/catalogs/" in body["path"]]
+        self.assertEqual(len(uploads), 1)
+
     def test_stream_projection_has_consistent_ids_and_exact_output(self):
         for custom in (False, True):
             response, _ = self.pending(custom=custom)
@@ -206,17 +281,95 @@ class WorkspaceFileTests(unittest.TestCase):
         workspace = WorkspaceTools(WORKSPACE)
 
         class Gateway:
-            value = {"text": "{}", "eof": False}
+            value = {"text": "", "eof": False}
 
             def call_json(self, *_args, **_kwargs):
                 return self.value
 
         gateway = Gateway()
-        for value in ({"text": "{}", "eof": False}, {"text": "not json", "eof": True},
+        for value in ({"text": "", "eof": False}, {"text": "not json", "eof": True},
                       {"text": '{"x": NaN}', "eof": True}):
             gateway.value = value
             with self.assertRaises(MailboxError):
                 workspace.read(gateway, workspace.path("a" * 32, "request"))
+
+    def test_large_unicode_file_roundtrip_uses_bounded_chunks(self):
+        fake, workspace = FakeMuse(), WorkspaceTools(WORKSPACE)
+        gateway = fake.connect()
+        value = {"input": "中文 `x` \\\"\n" * 9000}
+        path = workspace.path("a" * 32, "result")
+        workspace.write(gateway, path, value)
+        self.assertEqual(workspace.read(gateway, path), value)
+        writes = [body for method, body in fake.rpcs if method == "fs.write"]
+        self.assertGreater(len(writes), 2)
+        self.assertFalse(writes[0]["append"])
+        self.assertTrue(all(body["append"] for body in writes[1:]))
+        self.assertTrue(all(len(json.dumps(body).encode()) < 40 * 1024 for body in writes))
+        self.assertTrue(all(body["len"] <= FILE_CHUNK_BYTES for method, body in fake.rpcs if method == "fs.read"))
+        self.assertFalse(any(path.endswith(".tmp") for path in fake.files))
+
+    def test_interrupted_upload_is_not_published_or_retried(self):
+        fake, workspace = FakeMuse(), WorkspaceTools(WORKSPACE)
+        inner = fake.connect()
+        calls = []
+
+        class Gateway:
+            def call_json(self, method, **kwargs):
+                calls.append(method)
+                if method == "fs.write" and kwargs["body"]["append"]:
+                    raise TimeoutError("ambiguous write")
+                return inner.call_json(method, **kwargs)
+
+        path = workspace.path("a" * 32, "result")
+        with self.assertRaises(TimeoutError):
+            workspace.write(Gateway(), path, {"text": "x" * 70000})
+        self.assertNotIn(path, fake.files)
+        self.assertEqual(calls, ["fs.write", "fs.write"])
+
+    def test_catalog_reuse_changes_restart_deletion_and_vm_scope(self):
+        fake, workspace = FakeMuse(), WorkspaceTools(WORKSPACE)
+        gateway = fake.connect()
+        large = [{**TOOLS[0], "description": "中文 `test`\n" * 6000}]
+        run = workspace.prepare(gateway, large, 60)
+        digest = json.loads(fake.files[workspace.path(run, "manifest")])["catalog_sha256"]
+        catalog = f"{WORKSPACE}/catalogs/{digest}.json"
+        uploads = lambda: sum(method == "fs.write" and "/catalogs/" in body["path"] for method, body in fake.rpcs)
+        first_uploads = uploads()
+        self.assertGreater(first_uploads, 2)
+        workspace.prepare(gateway, copy.deepcopy(large), 60)
+        WorkspaceTools(WORKSPACE).prepare(gateway, large, 60)
+        self.assertEqual(uploads(), first_uploads)
+        del fake.files[catalog]
+        workspace.prepare(gateway, large, 60)
+        self.assertEqual(uploads(), first_uploads * 2)
+        changed = [{**large[0], "parameters": {"type": "object", "required": ["new"]}}]
+        workspace.prepare(gateway, changed, 60)
+        self.assertEqual(len([path for path in fake.files if "/catalogs/" in path]), 2)
+        fake.files[catalog] = b"corrupt"
+        # A different VM must not inherit trust in this digest.
+        gateway.vm_id = "other-vm"
+        with self.assertRaises(MailboxError):
+            workspace.prepare(gateway, large, 60)
+        self.assertEqual(fake.files[catalog], b"corrupt")
+
+    def test_parallel_first_use_uploads_one_catalog_and_distinct_manifests(self):
+        fake, workspace = FakeMuse(), WorkspaceTools(WORKSPACE)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            runs = list(pool.map(lambda _: workspace.prepare(fake.connect(), TOOLS, 60), range(4)))
+        self.assertEqual(len(set(runs)), 4)
+        writes = [body for method, body in fake.rpcs if method == "fs.write" and "/catalogs/" in body["path"]]
+        self.assertEqual(len(writes), 1)
+
+    def test_oversize_or_malformed_chunk_fails_closed(self):
+        fake, workspace = FakeMuse(), WorkspaceTools(WORKSPACE)
+        gateway = fake.connect()
+        path = workspace.path("a" * 32, "result")
+        with self.assertRaises(MailboxError):
+            workspace.write_bytes(gateway, path, b"x" * (MAX_BYTES + 1))
+        self.assertEqual(fake.rpcs, [])
+        fake.files[path] = b"x" * (MAX_BYTES + 1)
+        with self.assertRaises(MailboxError):
+            workspace.read_bytes(gateway, path)
 
     def test_setup_renders_and_checks_only_new_independent_skill(self):
         fake = FakeMuse()
@@ -246,6 +399,32 @@ class WorkspaceFileTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             install(gateway, "codex_test", ROOT / "tools/muse_tools")
         self.assertEqual(fake.files, before)
+
+    def test_installer_selects_network_before_connecting(self):
+        from fanvpn_bridge import muse_tools_setup
+
+        for arguments, configured, expected in (([], "direct", "direct"),
+                                                 (["--proxy", "direct"], "auto", "direct"),
+                                                 ([], None, "auto")):
+            events = []
+            config = {"api_key": "test-only"}
+            if configured is not None:
+                config["proxy"] = configured
+            gateway = FakeMuse().connect()
+
+            def factory(_config):
+                events.append("factory")
+                return lambda: gateway
+
+            with self.subTest(arguments=arguments, configured=configured), \
+                    patch.object(sys, "argv", ["setup", "--skill-name", "codex_test", *arguments]), \
+                    patch.object(Path, "read_text", return_value=json.dumps(config)), \
+                    patch.object(muse_tools_setup, "configure_network", side_effect=lambda value: events.append(value)), \
+                    patch.object(muse_tools_setup, "gateway_factory", side_effect=factory), \
+                    patch.object(muse_tools_setup, "install", return_value={}), \
+                    patch.object(sys, "stdout", io.StringIO()):
+                muse_tools_setup.main()
+            self.assertEqual(events, [expected, "factory"])
 
 
 if __name__ == "__main__":

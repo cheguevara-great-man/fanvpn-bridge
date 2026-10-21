@@ -15,6 +15,10 @@ python3 __SKILL_ROOT__/scripts/mailbox.py result --run <previous-run>
 ```
 
 `tools` lists names/types only; `--name` returns the full supplied definition.
+Unchanged tool catalogs are stored once by content hash and referenced by each
+new run. The helper verifies the referenced bytes before use. Both legacy inline
+manifests and catalog-reference manifests are supported; request/result files
+remain isolated per run. Do not edit or remove catalogs manually.
 Read a tool's definition before requesting it. The `request` command reads one
 JSON object from stdin, using a quoted shell heredoc for literal input:
 

@@ -10,13 +10,16 @@ from __future__ import annotations
 import re
 import json
 import hmac
+import time
+import uuid
 from collections.abc import Callable, Iterator
 from typing import Any
 
 from .gemini_web import GeminiWebError, TextWebProvider, _event_bytes
 from .muse_auth import AUTH_ERRORS, MuseAuthError, validate_ticket
 from .muse_workspace_provider import _muse_prompt, workspace_responses
-from .deepseek_harness import _is_local_compaction_request
+from .deepseek_harness import (_COMPACT_PROMPT, _deepseek_conversation_key, _history_item_fingerprint,
+                               _is_local_compaction_request, _prompt_input_items, _response_object)
 
 MUSE_WEB_PREFIX = "muse-web/"
 
@@ -53,6 +56,45 @@ class MuseWebProvider(TextWebProvider):
             super().__init__(base_url=base_url, api_key=api_key, timeout_seconds=timeout_seconds)
         except ValueError as exc:
             raise ValueError("Muse Web URL must be http://127.0.0.1:<port>/v1") from exc
+        self._conversation_heads: dict[str, str] = {}
+
+    @staticmethod
+    def _conversation_key(payload):
+        # Summarization is a separate model task, not a user-chat continuation.
+        if _is_local_compaction_request(payload) or payload.get("instructions") == _COMPACT_PROMPT:
+            return None
+        return _deepseek_conversation_key(payload)
+
+    def _history(self, payload):
+        key = self._conversation_key(payload)
+        if not payload.get("previous_response_id") and key:
+            with self._checkpoint_lock:
+                previous = self._conversation_heads.get(key)
+                checkpoint = self._checkpoints.get(previous)
+            if checkpoint is not None:
+                # Codex can replay canonical history instead of sending a
+                # previous_response_id. Identity alone is not proof: require
+                # the complete committed prefix plus genuinely new input.
+                items = _prompt_input_items(payload)
+                history = checkpoint.history
+                if history and len(items) > len(history) and all(
+                    _history_item_fingerprint(old) == _history_item_fingerprint(new)
+                    for old, new in zip(history, items)
+                ):
+                    payload = {**payload, "previous_response_id": previous}
+        return super()._history(payload)
+
+    def _remember_conversation(self, payload, response):
+        key = self._conversation_key(payload)
+        if not key or response.get("status") != "completed":
+            return
+        with self._checkpoint_lock:
+            if response.get("id") not in self._checkpoints:
+                return
+            self._conversation_heads[key] = response["id"]
+            # Reuse the existing checkpoint lifetime/limit, not another cache.
+            self._conversation_heads = {identity: head for identity, head in self._conversation_heads.items()
+                                        if head in self._checkpoints}
 
     def browser_ticket(self, authorization: str) -> dict[str, str]:
         if not self.enabled:
@@ -80,6 +122,8 @@ class MuseWebProvider(TextWebProvider):
             safe = MuseAuthError(code)
             raise MuseWebError(str(safe), status=safe.status, code=safe.code)
         safe_errors = {
+            "muse_web_connect_timeout": "Muse VM connection timed out before sending a task; check the Muse service proxy",
+            "muse_web_connect_failed": "Cannot connect to the Muse VM before sending a task; check the service proxy and VM",
             "muse_web_tools_unavailable": "Muse tool workspace is not configured; install the independent handoff skill first",
             "muse_web_tool_result_invalid": "Muse expected the matching current tool result; no replay performed",
             "muse_web_tool_format_invalid": "Muse workspace tool request was invalid; no tool was executed",
@@ -125,18 +169,39 @@ class MuseWebProvider(TextWebProvider):
             raise _error(exc) from exc
         if not streaming:
             result["usage"] = None
+            self._remember_conversation(payload, result)
             return False, result
 
         def translated() -> Iterator[bytes]:
+            last_response = None
+            sequence = -1
             try:
                 for frame in result:
-                    if frame.startswith(b"event: response.completed\n"):
+                    if frame.startswith(b"event: response."):
                         event = json.loads(frame.decode("utf-8").split("data: ", 1)[1])
-                        event["response"]["usage"] = None
-                        frame = _event_bytes(event)
+                        sequence = max(sequence, event.get("sequence_number", -1))
+                        if isinstance(event.get("response"), dict):
+                            last_response = event["response"]
+                        if event["type"] == "response.completed":
+                            event["response"]["usage"] = None
+                            self._remember_conversation(payload, event["response"])
+                            frame = _event_bytes(event)
                     yield frame
             except GeminiWebError as exc:
-                raise _error(exc) from exc
+                # A bare error event is ignored by some Responses clients, which
+                # then report only EOF and retry. Give Muse failures an explicit
+                # terminal response instead of concealing them as a closed stream.
+                safe = _error(exc)
+                if last_response is None:
+                    last_response = _response_object("resp_muse_" + uuid.uuid4().hex, payload["model"],
+                                                     int(time.time()), "in_progress", [], {})
+                    last_response["usage"] = None
+                    sequence += 1
+                    yield _event_bytes({"type": "response.created", "sequence_number": sequence,
+                                        "response": last_response})
+                failed = {**last_response, "status": "failed", "usage": None,
+                          "error": {"code": "server_error", "message": f"{safe.code}: {safe}"}}
+                yield _event_bytes({"type": "response.failed", "sequence_number": sequence + 1, "response": failed})
             finally:
                 result.close()
 

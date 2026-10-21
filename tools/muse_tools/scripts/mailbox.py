@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -9,18 +10,50 @@ import sys
 import time
 
 MAX_BYTES = 2 * 1024 * 1024
+CATALOG_SCHEMA_VERSION = 2
 
 
 def reject_constant(_value):
     raise ValueError("non-JSON numeric constant")
 
 
-def read_json(path):
+def read_bytes(path):
     with path.open("rb") as handle:
         raw = handle.read(MAX_BYTES + 1)
     if len(raw) > MAX_BYTES:
         raise ValueError("mailbox file is too large")
-    return json.loads(raw, parse_constant=reject_constant)
+    return raw
+
+
+def read_json(path):
+    return json.loads(read_bytes(path), parse_constant=reject_constant)
+
+
+def manifest_tools(root, manifest):
+    if manifest["schema_version"] == 1:
+        definitions = manifest["tools"]
+    elif manifest["schema_version"] == CATALOG_SCHEMA_VERSION:
+        digest = manifest["catalog_sha256"]
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError("invalid catalog identity")
+        raw = read_bytes(root / "catalogs" / (digest + ".json"))
+        if hashlib.sha256(raw).hexdigest() != digest:
+            raise ValueError("catalog hash mismatch")
+        catalog = json.loads(raw, parse_constant=reject_constant)
+        if catalog["schema_version"] != 1:
+            raise ValueError("unsupported catalog")
+        definitions = catalog["tools"]
+    else:
+        raise ValueError("unsupported manifest")
+    if not isinstance(definitions, list):
+        raise ValueError("invalid tool definitions")
+    tools = {}
+    for tool in definitions:
+        if (not isinstance(tool, dict) or not isinstance(tool.get("name"), str) or not tool["name"]
+                or tool.get("type") not in {"function", "custom"} or tool["name"] in tools):
+            raise ValueError("invalid tool definition")
+        tools[tool["name"]] = tool
+    return tools
 
 
 def main():
@@ -31,12 +64,13 @@ def main():
     args = parser.parse_args()
     if not re.fullmatch(r"[0-9a-f]{32}", args.run):
         parser.error("run must be 32 lowercase hexadecimal characters")
-    directory = Path(__file__).resolve().parents[1] / "runs" / args.run
+    root = Path(__file__).resolve().parents[1]
+    directory = root / "runs" / args.run
     try:
         manifest = read_json(directory / "manifest.json")
-        if manifest.get("run") != args.run or manifest.get("schema_version") != 1:
+        if not isinstance(manifest, dict) or manifest.get("run") != args.run:
             raise ValueError("invalid manifest")
-        tools = {tool["name"]: tool for tool in manifest["tools"]}
+        tools = manifest_tools(root, manifest)
         if args.action == "tools":
             if args.name:
                 if args.name not in tools:
@@ -46,7 +80,7 @@ def main():
                 value = [{"name": tool["name"], "type": tool["type"]} for tool in tools.values()]
         elif args.action == "result":
             value = read_json(directory / "result.json")
-            if value.get("run") != args.run or value.get("schema_version") != 1:
+            if not isinstance(value, dict) or value.get("run") != args.run or value.get("schema_version") != 1:
                 raise ValueError("invalid result")
         else:
             if time.time() > manifest["expires_at"]:

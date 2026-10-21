@@ -18,16 +18,18 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "native-host"))
 
 from fanvpn_bridge.muse_service import MuseSessions, gateway_factory, make_server
+from fanvpn_bridge.muse_network import configure_network
 from fanvpn_bridge.muse_web import MuseWebError, MuseWebProvider
 
 
-def verify(config, workspace, only="both"):
+def verify(config, workspace, only="both", *, full_history=False):
     factory = gateway_factory(config)
     audit = {}
 
     class AuditedGateway:
         def __init__(self):
             self.inner = factory()
+            self.vm_id = self.inner.vm_id
 
         def call_json(self, method, **kwargs):
             audit["last_rpc"] = method
@@ -78,7 +80,8 @@ def verify(config, workspace, only="both"):
             prompt = ("Request functions.apply_patch exactly once with this exact raw input (JSON-encoded here for clarity):\n"
                       + json.dumps(expected, ensure_ascii=False) if custom else
                       'Request codex_probe exactly once with {"challenge":"' + challenge + '"}.')
-            payload = {"model": "muse-web/default", "instructions": instructions, "tools": tools, "input": prompt}
+            payload = {"model": "muse-web/default", "instructions": instructions, "tools": tools, "input": prompt,
+                       "prompt_cache_key": "muse-inert-acceptance-" + challenge}
             _, response = provider.responses(payload)
             print("Received Muse handoff candidate: " + label, flush=True)
             if len(response["output"]) != 1:
@@ -99,7 +102,9 @@ def verify(config, workspace, only="both"):
             marker = "CODEX_INERT_RESULT_" + secrets.token_hex(24)
             result = {"type": "custom_tool_call_output" if custom else "function_call_output",
                       "call_id": call["call_id"], "output": marker}
-            _, final = provider.responses({**payload, "previous_response_id": response["id"], "input": [result]})
+            continuation = ({"input": [{"role": "user", "content": prompt}, *response["output"], result]}
+                            if full_history else {"previous_response_id": response["id"], "input": [result]})
+            _, final = provider.responses({**payload, **continuation})
             print("Received Muse result continuation: " + label, flush=True)
             text = "".join(part["text"] for item in final["output"] if item.get("type") == "message"
                            for part in item["content"] if part.get("type") == "output_text")
@@ -118,6 +123,7 @@ def verify(config, workspace, only="both"):
             finally:
                 gateway.close()
             reports.append({"test": label, "same_session": True, "exact_input": True,
+                            "full_history_without_response_id": full_history,
                             "independent_result_receipt": True, "skill_unchanged": True,
                             "elapsed_seconds": round(time.monotonic() - started, 1)})
             print(json.dumps(reports[-1]), flush=True)
@@ -136,12 +142,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tool-workspace", required=True)
     parser.add_argument("--only", choices=["both", "function", "freeform"], default="both")
+    parser.add_argument("--full-history", action="store_true",
+                        help="Replay canonical history without previous_response_id, as Codex can do between turns")
+    parser.add_argument("--proxy", help="auto, direct, or an explicit proxy URL (overrides config)")
     parser.add_argument("--config", type=Path, default=Path(os.environ.get("LOCALAPPDATA", Path.home())) /
                         "FanVPNBridge/muse-web-auth/service.json")
     args = parser.parse_args()
     try:
         config = json.loads(args.config.read_text(encoding="utf-8-sig"))
-        verify(config, args.tool_workspace, args.only)
+        configure_network(args.proxy if args.proxy is not None else config.get("proxy", "auto"))
+        verify(config, args.tool_workspace, args.only, full_history=args.full_history)
     except MuseWebError as error:
         # Provider errors are fixed, sanitized messages, not upstream bodies.
         print(json.dumps({"code": error.code, "status": error.status, "message": str(error)}), flush=True)

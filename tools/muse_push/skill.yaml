@@ -1,0 +1,5 @@
+name: "__SKILL_NAME__"
+title: "PC Push Connection (Experimental)"
+description: "Request explicitly supplied client tools and wait for their real approved results over an authenticated connection."
+category: "Work and knowledge"
+include_in_prompt: false

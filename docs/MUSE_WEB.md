@@ -1,5 +1,7 @@
 # Muse 网页模型接入（实验功能，默认关闭）
 
+最新的显式可选路线见 [同轮 PC 工具接入](MUSE_PC_RPC.md)：已验证连续两次真实本机只读调用及原会话续聊；未自动部署。下文保留原 workspace 交接路线的说明和历史实验边界。
+
 目标是让 `muse-web/default` 出现在 Codex 的 Hybrid 模型目录中，可作为主模型或具名子 Agent 模型。它不是额外的远程任务 MCP，也不替换现有 WebGPT、Gemini、Zen 或代理。模型名不承诺某个具体 Muse 版本、套餐权限或性能档位。
 
 ## 实现与限制
@@ -11,7 +13,7 @@ Codex → Bridge 的文本/工具适配 → 本机独立 Muse 服务 → Muse �
 - 服务只监听 `127.0.0.1:8008`，所有接口要求独立的至少 32 字符访问密钥；拒绝带 Origin 的浏览器请求，不提供 CORS。不使用 Cookie 充当本机 API key。
 - 默认自动复用 Chrome 里的 Muse 登录：Muse 页面脚本调用同源的 `/api/session`、`/api/auth/check`、`/api/hatch/token`，经已有 Native Messaging 通道把短期连接票据交给本机服务。每条连接重新取票据，票据只在内存里传递，不导出 Cookie、不读取浏览器数据库、不增加 Cookie 权限，也不写入磁盘、日志或聊天。保留上游 TLS 校验，不修改浏览器安全策略，不绕过认证、设备校验或平台限制。
 - 使用时须保留一个已登录的 `https://muse.ai/` 页面。升级扩展后，旧页面需要用户刷新或重新打开才能加载脚本。没有页面、登录过期、旧扩展不支持或 VM 不可用时明确报错；不自动打开网页、不切换账号、不尝试其他账号。多个候选页面优先当前活动页面，否则选择最近使用的非隐身 Muse 页面，不混用多个页面的票据。
-- 每个新对话建立独立的 Muse 持久侧会话；续聊用完成的 response ID 找回会话。并行请求使用不同连接，不让多个读取器争抢 Noise 帧。最多并行 4 个请求，超出返回 429；同一会话并发请求明确拒绝。
+- 每个新对话建立独立的 Muse 持久侧会话；续聊用完成的 response ID 找回会话。Codex 只重发完整历史、不带 `previous_response_id` 时，Bridge 也可凭同一 thread（优先）/`prompt_cache_key`，加上完整已提交历史前缀和新增输入，恢复当前 response ID，只向原 Muse 会话发送新增内容。不会仅凭问题相同或缓存键相同就拼接会话；编辑分支、控制指令/工具变化、无会话身份或 checkpoint 丢失时不猜测复用。该逻辑同时覆盖普通问答和 workspace 工具交接，压缩任务不覆盖普通对话的会话头。并行请求使用不同连接，不让多个读取器争抢 Noise 帧。最多并行 4 个请求，超出返回 429；同一会话并发请求明确拒绝。
 - 当前通过 `chat.history` 查询侧会话回答；只接受明确的 `status=completed`，排除后台主动推送。等待期间发 SSE 心跳，完成后发送 Responses 正文和结束事件。**不是逐 token 实时流式**，也不凭“几秒没有变化”推断完成。
 - Muse 工具请求使用独立的 workspace handoff，不再让模型在最终回答中伪造 XML。Muse 用现有 `muse.exec` 调用独立技能里的 JSON 辅助程序；服务读取已完成回合的请求，转换为 Codex 的 `function_call` / `custom_tool_call`。普通函数参数为 JSON 对象，freeform 保留原文；支持 namespace。工具目录先提供名称，完整定义按需读取，不把全部工具说明塞进每轮提示词。Gemini 的原有工具协议不变。
 - 发送之后的网络异常不会自动重发；服务取消、超时或交付结果不明会使该会话快照失效，避免下一轮误接。重试前应在 Muse 网页确认任务状态。旧分支或重启丢失的快照只有在 Bridge 仍持有完整历史时才可重建新会话，不静默丢上下文。
@@ -23,12 +25,36 @@ Codex → Bridge 的文本/工具适配 → 本机独立 Muse 服务 → Muse �
 
 源码的正式工具路径与先前的随机探针分开：`tools/muse_tools/` 是技能模板、无执行能力的辅助程序和真实连接验收脚本。它不是 Codex 插件，也没有给 Muse 添加任意原生函数。
 
-1. 每个生成回合新建随机 run 目录，上传本轮工具清单。Muse 通过辅助程序读取目录/单项定义、提交至多一个请求，然后结束该回合；不让云端程序挂起等待用户审批。
+1. 每个生成回合新建随机 run 目录，只上传引用工具清单的小型 manifest。完整清单按规范化 JSON 的 SHA-256 保存于 `catalogs/<hash>.json`：内容不变时跨回合/新对话复用，定义变化后才上传新版本。服务重启后先回读校验已有文件；文件被删除则重新上传，不覆盖内容不符的文件。Muse 通过辅助程序读取目录/单项定义、提交至多一个请求，然后结束该回合；不让云端程序挂起等待用户审批。
 2. 服务只在 Muse 明确完成后读取请求，检查 run、工具名称、类型和参数载体形状，不猜测或修复内容。Codex 接收正常工具调用，负责自己的参数/语法校验、审批及执行。辅助程序和服务均不执行该调用。
-3. 下一次请求必须携带当前 response ID 和精确匹配的工具结果。服务写入原 run 的结果文件，再在同一 Muse 会话开始下一回合，让辅助程序读取结果。工具清单变化、重复/错误/串会话的结果会拒绝；结果等待上限为 30 分钟。
+3. 下一次请求必须携带当前 response ID 和精确匹配的工具结果；若 Codex 重发完整历史，Bridge 在验证同一会话及已提交历史后可补全该 ID，独立服务仍严格核对 pending 调用。服务写入原 run 的结果文件，再在同一 Muse 会话开始下一回合，让辅助程序读取结果。工具清单变化、重复/错误/串会话的结果会拒绝；结果等待上限为 30 分钟。
 4. 会话锁和完成快照限制并发。取消、超时、提交或结果写入不确定时不自动重发；丢失 pending 快照时不以新会话重演工具调用。取消是停止本地等待并使快照失效，**不是保证停止 Muse 所有云端工作**；但辅助程序本身没有后台等待任务。
 
-run 目录保留工具定义、原始请求及工具输出（并非只有摘要）；它们会进入同一 Muse 账号的 VM 文件系统。随机编号和校验用于防串任务，不构成同一 VM 内的强安全隔离。当前不自动删除这些文件，以免误删审计材料；不应在首次试用中交付敏感任务。
+`catalogs` 保留完整工具定义，run 目录保留清单引用、原始请求及工具输出（并非只有摘要）；它们会进入同一 Muse 账号的 VM 文件系统。随机编号和校验用于防串任务，不构成同一 VM 内的强安全隔离。当前不自动删除这些文件，以免误删审计材料；不应在首次试用中交付敏感任务。
+
+清单、请求和结果的文件传输以最多 24 KiB 原始字节分块，避免 Base64/RPC 封装超过 Noise 单帧限制；写入临时文件，完整上传后才 rename 发布。总文件上限仍为 2 MiB，不截断、不修补工具内容；写入超时不自动重传。此分块只针对文件传输，不拆分用户问题、不增加模型回合，也不改变模型读取定义的 token 开销。
+
+缓存清单的 manifest 使用版本 2，云端新版 helper 逐次核对清单内容哈希，并兼容旧版内联清单。旧 helper 不认识新引用格式，因此升级必须另建独立技能目录，**不要覆盖当前运行的技能**。服务在创建侧会话/发送消息前检查 helper 能力，不兼容则返回明确错误。先由用户安装新目录（名称须未使用），再自行停止旧 Muse 独立服务并选择新目录启动；不必为清单缓存单独重启 Bridge/代理：
+
+```powershell
+$env:PYTHONPATH = 'native-host'
+.\dist-muse-web\Scripts\python.exe -m fanvpn_bridge.muse_tools_setup --skill-name codex_tools_cached_v2
+# 安装成功后，用户自行停止旧 Muse 独立服务，再运行：
+.\tools\start_muse_web.ps1 -ToolWorkspace workspace/custom-skills/codex_tools_cached_v2
+```
+
+安装及真实验收命令也支持 `--proxy`，选择规则与独立服务相同（参数优先，其次配置，默认 `auto`）。本地单元测试不连接账号；真实文件分块/模型往返仍应在用户明确部署新技能后运行下方验收脚本确认。
+
+离线传输回归可用隔离环境里的固定版社区客户端运行；测试只在内存中完成双端 Noise 握手和文件系统模拟，不连接账号、不会消耗模型额度：
+
+```powershell
+$env:PYTHONPATH = 'native-host'
+.\dist-muse-web\Scripts\python.exe -m unittest discover -s tests/unit -p 'test_muse_transport.py' -v
+```
+
+它会先复现旧版 70 KB 单次上传的 `NoiseInvalidMessage`，再校验新版大清单/长结果经过实际 protobuf、Noise 加密和解密后逐字一致、每帧低于限制，以及重复请求不再次上传清单。云端 `fs.write` 追加/`fs.read` 偏移的实际行为仍以真实连接验收为准。
+
+2026-10-21 经用户授权的实际部署验收：独立安装 `workspace/custom-skills/codex_tools_cached_v2`，逐文件回读校验，保留旧技能。真实云端传输的 70,190 字节清单连续两轮只上传一次；240,090 字节的中文/换行/引号/路径结果分块写入和读回完全一致，这两项文件测试未调用模型。普通函数和 namespaced freeform 的真实模型往返均通过：精确输入、同一侧会话续聊、独立结果回读和技能源码未变化；分别约 92 秒和 98 秒，不代表速度保证。Muse 独立服务已选择新版目录，`service.json` 也已保存 `tool_workspace`；未重启 Bridge/代理、未更新 Native Host。此前的完整本地回归为 Muse 77 项、Gemini 49 项、HTTP gateway 43 项通过。
 
 安装技能是独立、明确的云端操作：目标存在就拒绝覆盖，只写自己的 `SKILL.md`、`scripts/mailbox.py`、`skill.yaml` 并回读校验；不写现有插件、记忆、全局指令和本机配置。下面的安装命令仅供新的独立测试目录使用，已经安装的目录不要重复运行：
 
@@ -52,6 +78,10 @@ $env:PYTHONPATH = 'native-host'
 ```
 
 验收在随机临时回环端口启动测试服务，用普通函数、带 namespace 的 freeform 请求和调用后才生成的随机结果核对往返，并独立读取结果文件、确认技能源码未变。它不经过已安装的 Native Host，不证明完整代码任务或 Codex 实际审批界面已经验收。支持 `--only function` / `--only freeform` 单独定位；不自动重试失败的测试。
+
+加 `--full-history` 可测试 Codex 重发完整历史、不带 `previous_response_id` 的工具结果续接路径。此处会话复用的修复位于 Native Host 中的 Muse provider；只重启独立 Muse 服务不会更新该逻辑，用户需自行更新 Native Host 后生效，不需要重装云端 helper 或刷新模型目录。
+
+2026-10-21 的续聊修复验证：旧源码在本地模拟 Codex 完整历史请求时，连续三轮创建三个 Muse 会话；修复后同样请求只创建一个，后两轮不重复发送旧问题。Muse 84 项、Gemini 49 项、HTTP gateway 43 项及架构检查通过，覆盖普通/工具两条路径、流式/非流式、namespaced 工具结果、独立 Agent、编辑分支、控制变化、checkpoint 丢失和压缩任务。隔离临时服务上的真实两轮普通问答也确认云端 session ID 相同、第二轮仅发送新增输入；未更新或重启已安装的 Native Host、Muse 服务、Bridge 或代理。另一次 `--full-history` 真实工具测试首轮未产生预期工具请求，未达到续接阶段，不能据此宣称真实工具完整历史往返已经验收；该路径目前仅完成本地回归验证。测试新建的独立侧会话保留，未合并或删除用户已有会话。
 
 ## 准备（不部署、不启动服务）
 
@@ -80,7 +110,7 @@ cd D:\software\AI_Coding\codex\deepseek-harness
 - `%LOCALAPPDATA%\FanVPNBridge\muse-web-auth\service.json`：独立服务配置。
 - `%LOCALAPPDATA%\FanVPNBridge\muse-web.json`：Native Host 的 Muse 启用配置。
 
-文件的 NTFS ACL 限制为当前 Windows 用户；本机 API key 不是 Muse 登录凭证。后续运行复用配置，已有配置冲突时拒绝覆盖。脚本不打印密钥、不重启 Bridge、不修改代理或开机启动，只启动独立服务并返回 PID；重复启动不会替换旧服务，端口被占用时新进程无法启动。使用现有自定义配置时可传 `-ConfigPath`，脚本不会为该配置自动生成 Native Host 设置。
+文件的 NTFS ACL 限制为当前 Windows 用户；本机 API key 不是 Muse 登录凭证。后续运行复用配置，已有配置冲突时拒绝覆盖。脚本不打印密钥、不重启 Bridge、不修改系统代理或开机启动，只在网络配置预检通过后启动独立服务并返回 PID；重复启动不会替换旧服务，端口被占用时新进程无法启动。使用现有自定义配置时可传 `-ConfigPath`，脚本不会为该配置自动生成 Native Host 设置。
 
 自动生成的服务配置结构如下，示例不需要手动填写：
 
@@ -88,11 +118,28 @@ cd D:\software\AI_Coding\codex\deepseek-harness
 {
   "api_key": "AUTOMATICALLY_GENERATED_LOCAL_SECRET",
   "port": 8008,
-  "bridge_url": "http://127.0.0.1:18888"
+  "bridge_url": "http://127.0.0.1:18888",
+  "proxy": "auto"
 }
 ```
 
-登录 HTTP 请求由 Chrome 的 Muse 页面发出；但后续 Noise/WebSocket 连接由独立服务发出，**不自动跟随 Chrome 插件所选节点**，出口继承服务进程现有网络环境。需要代理时只在服务的专用启动环境显式配置已验证的出口，不改系统代理、路由或现有 Gateway。网络与账号地区可用性须单独验证。
+登录 HTTP 请求由 Chrome 的 Muse 页面发出；但后续 Noise/WebSocket 连接由独立服务发出，**不自动跟随 Chrome 插件所选节点**。服务启动时明确选择出口，不再依赖启动终端继承的代理环境：
+
+- 默认 `auto`（旧配置缺少 `proxy` 字段时也适用）：检查已运行的 `127.0.0.1:18889` 是否返回本项目转发代理的健康标识，再使用它。只检查，不启动代理；检查失败则拒绝启动，不偷偷改为直连或其他代理。该检查不证明外网或 Muse 可达。
+- `direct`：明确直连，清除服务进程继承的代理设置。仅适用于该电脑能直接访问 Muse 的网络。
+- 代理 URL：支持有明确端口的 HTTP、HTTPS、SOCKS5、SOCKS5h 地址，例如 `http://127.0.0.1:7890`。`18888` 是 Bridge API，不能填成上网代理。
+
+启动参数 `-Proxy` 优先于服务配置的 `proxy`，不会重写配置。选择只作用于 Muse 专用进程，不改变当前终端、系统代理、浏览器节点或已有 Gateway。回环接口始终绕过代理，自动/显式代理模式不继承可能让 Muse 绕过代理的 `NO_PROXY` 规则。网络和账号地区可用性仍须单独验证。
+
+```powershell
+# 默认检查并使用现有 18889；保留已经安装的独立工具技能
+.\tools\start_muse_web.ps1 -ToolWorkspace workspace/custom-skills/codex_tools_handoff_6c0e71ab
+
+# 也可显式指定其他现有代理，或选 -Proxy direct
+.\tools\start_muse_web.ps1 -ToolWorkspace workspace/custom-skills/codex_tools_handoff_6c0e71ab -Proxy http://127.0.0.1:7890
+```
+
+代理凭证只能存于受保护的服务配置，不要放在命令行、聊天或日志中。切换出口需由用户停止旧 Muse 服务后重新启动；不需要为此重启 Bridge/代理。连接超时会报告 Muse 服务代理/VM 连接错误；流式请求使用终止性的 `response.failed`，不把失败伪装成成功或仅以 EOF 结束。Codex UI 的具体错误显示及是否重试仍需实际客户端验收。
 
 3. 由用户更新 Native Host。自动登录需要新版扩展和新版 Host 两端，不能只更新独立服务。现有更新命令会停止旧 Bridge/代理，可能暂时影响正在使用的连接，选择安全时机执行：
 

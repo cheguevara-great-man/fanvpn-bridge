@@ -2,19 +2,29 @@
 from __future__ import annotations
 
 import base64
+from collections import OrderedDict
+import hashlib
 import json
 import re
 import secrets
+import threading
 import time
 
 from .deepseek_harness import _responses_events
 from .gemini_web import _event_bytes
 
 MAX_BYTES = 2 * 1024 * 1024
+# Base64 plus the RPC/Noise envelopes must fit a 65535-byte encrypted frame.
+FILE_CHUNK_BYTES = 24 * 1024
 PROTOCOL = "workspace-v1"
+CATALOG_SCHEMA_VERSION = 2
 
 
 class MailboxError(ValueError):
+    pass
+
+
+class MailboxCompatibilityError(MailboxError):
     pass
 
 
@@ -23,6 +33,8 @@ class WorkspaceTools:
         if not isinstance(root, str) or not re.fullmatch(r"workspace/custom-skills/[a-z][a-z0-9_]{0,63}", root):
             raise ValueError("Invalid Muse tool workspace path")
         self.root = root
+        self._catalog_lock = threading.Lock()
+        self._verified_catalogs = OrderedDict()
 
     @staticmethod
     def missing(error):
@@ -37,20 +49,28 @@ class WorkspaceTools:
                 isinstance(detail, dict) and detail.get("code") == "not_found")
 
     def read_bytes(self, gateway, path, *, optional=False):
-        try:
-            value = gateway.call_json("fs.read", body={"path": path, "offset": 0, "len": MAX_BYTES + 1}, timeout=30)
-        except Exception as error:
-            # Only explicit not-found is optional, never a permission/transport error.
-            if optional and self.missing(error):
-                return None
-            raise
-        if not isinstance(value, dict):
-            raise MailboxError("Invalid Muse mailbox read")
-        raw = (base64.b64decode(value["data_base64"], validate=True) if "data_base64" in value
-               else value.get("text", "").encode("utf-8"))
-        if len(raw) > MAX_BYTES or value.get("eof") is not True:
-            raise MailboxError("Incomplete or oversized Muse mailbox")
-        return raw
+        raw = bytearray()
+        while True:
+            length = min(FILE_CHUNK_BYTES, MAX_BYTES + 1 - len(raw))
+            try:
+                value = gateway.call_json("fs.read", body={"path": path, "offset": len(raw), "len": length}, timeout=30)
+            except Exception as error:
+                # A file disappearing mid-read is not an absent optional request.
+                if optional and not raw and self.missing(error):
+                    return None
+                raise
+            try:
+                if not isinstance(value, dict) or type(value.get("eof")) is not bool:
+                    raise ValueError()
+                chunk = (base64.b64decode(value["data_base64"], validate=True) if "data_base64" in value
+                         else value["text"].encode("utf-8"))
+            except (ValueError, KeyError, TypeError, AttributeError):
+                raise MailboxError("Invalid Muse mailbox read") from None
+            raw.extend(chunk)
+            if len(chunk) > length or len(raw) > MAX_BYTES or not chunk and not value["eof"]:
+                raise MailboxError("Incomplete or oversized Muse mailbox")
+            if value["eof"]:
+                return bytes(raw)
 
     def read(self, gateway, path, *, optional=False):
         raw = self.read_bytes(gateway, path, optional=optional)
@@ -63,19 +83,61 @@ class WorkspaceTools:
 
     def write(self, gateway, path, value):
         raw = json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        self.write_bytes(gateway, path, raw)
+
+    def write_bytes(self, gateway, path, raw):
         if len(raw) > MAX_BYTES:
             raise MailboxError("Muse mailbox exceeds size limit")
         # Temp + rename: the helper must never see a partially uploaded manifest/result.
         temporary = path + "." + secrets.token_hex(8) + ".tmp"
-        gateway.call_json("fs.write", body={"path": temporary, "data_base64": base64.b64encode(raw).decode("ascii"),
-                          "overwrite": False, "append": False, "create_parent": True}, timeout=30)
+        for offset in range(0, max(1, len(raw)), FILE_CHUNK_BYTES):
+            chunk = raw[offset:offset + FILE_CHUNK_BYTES]
+            gateway.call_json("fs.write", body={"path": temporary, "data_base64": base64.b64encode(chunk).decode("ascii"),
+                              "overwrite": False, "append": offset > 0, "create_parent": True}, timeout=30)
         gateway.call_json("fs.rename", body={"source": temporary, "destination": path,
                           "create_parent": True, "overwrite": False}, timeout=30)
 
+    def check_compatible(self, gateway):
+        source = self.read_bytes(gateway, self.root + "/scripts/mailbox.py", optional=True)
+        marker = f"CATALOG_SCHEMA_VERSION = {CATALOG_SCHEMA_VERSION}".encode("ascii")
+        if source is None or marker not in source.splitlines():
+            raise MailboxCompatibilityError("Muse handoff helper needs catalog-reference support")
+
+    def catalog(self, gateway, tools):
+        raw = json.dumps({"schema_version": 1, "tools": tools}, ensure_ascii=False,
+                         allow_nan=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        if len(raw) > MAX_BYTES:
+            raise MailboxError("Muse tool catalog exceeds size limit")
+        digest = hashlib.sha256(raw).hexdigest()
+        path = f"{self.root}/catalogs/{digest}.json"
+        # A VM identifier scopes the verification cache to its actual filesystem.
+        vm_id = getattr(gateway, "vm_id", None)
+        key = (vm_id, digest) if isinstance(vm_id, str) and vm_id else None
+        with self._catalog_lock:
+            try:
+                gateway.call_json("fs.stat", body={"path": path}, timeout=30)
+            except Exception as error:
+                if not self.missing(error):
+                    raise
+                if key is not None:
+                    self._verified_catalogs.pop(key, None)
+                self.write_bytes(gateway, path, raw)
+            if key is None or key not in self._verified_catalogs:
+                existing = self.read_bytes(gateway, path)
+                if existing != raw:
+                    raise MailboxError("Muse cached tool catalog does not match its content hash")
+            if key is not None:
+                self._verified_catalogs[key] = True
+                self._verified_catalogs.move_to_end(key)
+                while len(self._verified_catalogs) > 128:
+                    self._verified_catalogs.popitem(last=False)
+        return digest
+
     def prepare(self, gateway, tools, timeout):
+        digest = self.catalog(gateway, tools)
         run = secrets.token_hex(16)
-        self.write(gateway, self.path(run, "manifest"), {"schema_version": 1, "run": run,
-                   "expires_at": time.time() + timeout, "tools": tools})
+        self.write(gateway, self.path(run, "manifest"), {"schema_version": CATALOG_SCHEMA_VERSION, "run": run,
+                   "expires_at": time.time() + timeout, "catalog_sha256": digest})
         return run
 
     def path(self, run, kind):

@@ -22,6 +22,7 @@ from fanvpn_bridge.zen_provider import ZenProvider, ZenProviderError
 from fanvpn_bridge.gemini_web import GeminiWebError
 from fanvpn_bridge.muse_auth import BrowserTicketClient, MuseAuthError
 from fanvpn_bridge.muse_web import MuseWebProvider
+from fanvpn_bridge.muse_service import MuseSessions, ServiceError, make_server
 from tests.helpers import FakeExtension, channel_pair
 
 
@@ -159,6 +160,33 @@ class HttpGatewayIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual([row["id"] for row in json.loads(body)["data"]],
                          ["gemini-3.7-flash", "deepseek-web/chat"])
+
+    def test_muse_connection_error_is_terminal_through_both_bridge_routes(self) -> None:
+        def unavailable():
+            raise ServiceError("Connection timeout", 504, "muse_web_connect_timeout")
+
+        key = "test-only-" + "d" * 40
+        sidecar = make_server({"api_key": key, "port": 0}, MuseSessions(
+            unavailable, tool_workspace="workspace/custom-skills/codex_test"))
+        thread = threading.Thread(target=sidecar.serve_forever, daemon=True)
+        thread.start()
+        self.server.muse_web = MuseWebProvider(base_url=f"http://127.0.0.1:{sidecar.server_port}/v1", api_key=key)
+        try:
+            for prefix in ("/muse-web/v1", "/hybrid/v1"):
+                payload = {"model": "muse-web/default", "input": "Hello", "stream": True,
+                           "tools": [{"type": "function", "name": "inert", "parameters": {"type": "object"}}]}
+                status, headers, body = self.request("POST", prefix + "/responses", json.dumps(payload).encode())
+                self.assertEqual(status, 200)
+                self.assertIn("text/event-stream", headers["Content-Type"])
+                events = [json.loads(line[6:]) for line in body.decode().splitlines() if line.startswith("data: {")]
+                self.assertEqual(events[-1]["type"], "response.failed")
+                self.assertIn("muse_web_connect_timeout", events[-1]["response"]["error"]["message"])
+                self.assertIn("service proxy", events[-1]["response"]["error"]["message"])
+                self.assertNotIn("response.completed", [event["type"] for event in events])
+        finally:
+            sidecar.shutdown()
+            sidecar.server_close()
+            thread.join(2)
 
     def test_gemini_web_disabled_endpoint_does_not_touch_other_routes(self) -> None:
         status, _, body = self.request("GET", "/gemini-web/v1/models")

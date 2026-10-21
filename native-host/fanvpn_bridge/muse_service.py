@@ -22,7 +22,8 @@ from typing import Any, Callable
 from .deepseek_harness import _last_completed_response, _responses_events
 from .gemini_web import _event_bytes
 from .muse_auth import BrowserTicketClient, MuseAuthError
-from .muse_tools import PROTOCOL, MailboxError, WorkspaceTools, response_frames
+from .muse_network import configure_network
+from .muse_tools import PROTOCOL, MailboxCompatibilityError, MailboxError, WorkspaceTools, response_frames
 
 MAX_BODY = 2 * 1024 * 1024
 MODEL = {"id": "default", "display_name": "Muse Web", "context_window": 32768,
@@ -72,9 +73,13 @@ def gateway_factory(config: dict[str, Any]) -> Callable[[], Any]:
                                "muse_web_auth_required") from None
         except ServiceError:
             raise
-        except Exception:
+        except Exception as error:
             # Upstream exceptions can contain tokens, cookie paths or raw replies.
-            raise ServiceError("Cannot connect to the Muse VM; check login and VM availability") from None
+            if isinstance(error, TimeoutError) or getattr(error, "code", None) == 28:
+                raise ServiceError("Muse VM connection timed out before sending a task; check the Muse service proxy",
+                                   504, "muse_web_connect_timeout") from None
+            raise ServiceError("Cannot connect to the Muse VM before sending a task; check the service proxy and VM",
+                               502, "muse_web_connect_failed") from None
 
     return connect
 
@@ -160,6 +165,8 @@ class MuseSessions:
             started = time.monotonic()
             deadline = started + self.timeout
             gateway = self.factory()
+            if workspace_mode:
+                self.workspace.check_compatible(gateway)
             if state is None:
                 value = gateway.call_json("session.start", body={"method": "/api/session/start", "params": {
                     "origin": "fresh", "lifecycle": "persistent", "title": "Codex Muse " + secrets.token_hex(4),
@@ -235,6 +242,10 @@ class MuseSessions:
             if state is not None and submitted:
                 state.valid = False
             raise
+        except MailboxCompatibilityError:
+            raise ServiceError("Muse handoff helper is outdated or missing; install a new independent catalog-aware skill "
+                               "and select its workspace before retrying; no message sent", 503,
+                               "muse_web_tools_unavailable") from None
         except MailboxError:
             if state is not None and submitted:
                 state.valid = False
@@ -358,11 +369,20 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--tool-workspace", help="Explicit independent Muse handoff skill directory")
+    parser.add_argument("--proxy", help="auto (verified local forward proxy), direct, or an explicit proxy URL")
+    parser.add_argument("--check-network", action="store_true", help="Validate egress without starting a service or logging in")
     args = parser.parse_args()
     config = json.loads(args.config.read_text(encoding="utf-8"))
     if (not isinstance(config, dict) or not isinstance(config.get("api_key"), str)
             or ("cookies_file" in config and not isinstance(config["cookies_file"], str))):
         raise SystemExit("Muse config requires a local api_key; browser login is the default")
+    try:
+        route = configure_network(args.proxy if args.proxy is not None else config.get("proxy", "auto"))
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
+    print("Muse network route: " + route, flush=True)
+    if args.check_network:
+        return
     sessions = MuseSessions(gateway_factory(config), tool_workspace=args.tool_workspace or config.get("tool_workspace"))
     server = make_server(config, sessions)
     try:

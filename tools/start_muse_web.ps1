@@ -2,11 +2,26 @@
 param(
     [string]$ConfigPath,
     [string]$Python,
-    [string]$ToolWorkspace
+    [string]$ToolWorkspace,
+    [switch]$PC,
+    [switch]$Push,
+    [string]$RelayConfigPath,
+    [ValidateNotNullOrEmpty()]
+    [string]$Proxy
 )
 $ErrorActionPreference = 'Stop'
+if (($PC -or $Push) -and -not $ToolWorkspace) {
+    throw 'Experimental PC RPC requires its own explicit -ToolWorkspace; no service was launched.'
+}
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-if (-not $Python) { $Python = Join-Path $repositoryRoot 'dist-muse-web\Scripts\python.exe' }
+if ($Push -and -not $RelayConfigPath) {
+    throw 'Push mode requires protected -RelayConfigPath settings; no service was launched.'
+}
+if ($RelayConfigPath) { $RelayConfigPath = (Resolve-Path -LiteralPath $RelayConfigPath).Path }
+if (-not $Python) {
+    $museEnvironment = if ($Push) { 'dist-muse-push' } else { 'dist-muse-web' }
+    $Python = Join-Path $repositoryRoot "$museEnvironment\Scripts\python.exe"
+}
 $Python = (Resolve-Path -LiteralPath $Python).Path
 if (-not $ConfigPath) {
     # Explicit deployment action by the user. Generate matching local keys;
@@ -32,7 +47,7 @@ if (-not $ConfigPath) {
         $museRng = [Security.Cryptography.RandomNumberGenerator]::Create()
         try { $museRng.GetBytes($museKeyBytes) } finally { $museRng.Dispose() }
         $museKey = ([BitConverter]::ToString($museKeyBytes)).Replace('-', '').ToLowerInvariant()
-        $museService = @{ api_key = $museKey; port = 8008; bridge_url = 'http://127.0.0.1:18888' }
+        $museService = @{ api_key = $museKey; port = 8008; bridge_url = 'http://127.0.0.1:18888'; proxy = 'auto' }
         $museBridge = @{ base_url = 'http://127.0.0.1:8008/v1'; api_key = $museKey }
         $museEncoding = New-Object Text.UTF8Encoding($false)
         [IO.File]::WriteAllText($ConfigPath, ($museService | ConvertTo-Json), $museEncoding)
@@ -55,14 +70,32 @@ $oldPythonPath = $env:PYTHONPATH
 try {
     $env:PYTHONPATH = Join-Path $repositoryRoot 'native-host'
     # Explicit user action only; no scheduled task, proxy changes or Bridge restart.
+    $museModule = if ($Push) { 'fanvpn_bridge.muse_push' } elseif ($PC) { 'fanvpn_bridge.muse_pc' } else { 'fanvpn_bridge.muse_service' }
     $museArguments = @(
-        '-m', 'fanvpn_bridge.muse_service', '--config', ('"' + $ConfigPath + '"')
+        '-m', $museModule, '--config', ('"' + $ConfigPath + '"')
     )
+    $museNetworkArguments = @('--config', $ConfigPath, '--check-network')
+    if ($Push) { $museArguments += @('--relay-config', ('"' + $RelayConfigPath + '"')) }
     if ($ToolWorkspace) {
         if ($ToolWorkspace -cnotmatch '^workspace/custom-skills/[a-z][a-z0-9_]{0,63}$') {
             throw 'Invalid Muse tool workspace path.'
         }
         $museArguments += @('--tool-workspace', $ToolWorkspace)
+    }
+    if ($PSBoundParameters.ContainsKey('Proxy')) {
+        # Start-Process joins arguments on Windows. Do not accept quoting/control
+        # characters or put proxy credentials into the process command line.
+        if ($Proxy -match '[\s"''`]' -or $Proxy -match '://[^/]*@') {
+            throw 'Use auto, direct, or an uncredentialed proxy URL. Store proxy credentials only in the protected service config.'
+        }
+        $museArguments += @('--proxy', $Proxy)
+        $museNetworkArguments += @('--proxy', $Proxy)
+    }
+    # Validate in a short-lived child, not this shell. No login, service startup,
+    # proxy startup, registry changes or terminal-environment mutation.
+    & $Python -m fanvpn_bridge.muse_service @museNetworkArguments
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Muse network validation failed; no service was launched. Choose -Proxy auto, direct, or a working proxy URL.'
     }
     $process = Start-Process -FilePath $Python -ArgumentList $museArguments -WorkingDirectory $repositoryRoot -WindowStyle Hidden -PassThru
     Write-Host "Muse local service launched, PID $($process.Id). Keep the signed-in muse.ai page open in Chrome."

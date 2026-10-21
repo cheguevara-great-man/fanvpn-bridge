@@ -4,6 +4,7 @@ import copy
 import base64
 import http.client
 import json
+from pathlib import Path
 import re
 import threading
 import unittest
@@ -13,6 +14,7 @@ from unittest.mock import patch
 from fanvpn_bridge.muse_service import MuseSessions, ServiceError, make_server
 from fanvpn_bridge.muse_auth import MuseAuthError
 from fanvpn_bridge.muse_web import MuseWebError, MuseWebProvider
+from fanvpn_bridge.deepseek_harness import _last_completed_response
 
 KEY = "test-only-" + "a" * 40
 MODEL = "muse-web/default"
@@ -30,6 +32,11 @@ class FakeMuse:
         self.open_hook = lambda: None
         self.lock = threading.Lock()
         self.files = {}
+        self.rpcs = []
+
+    def seed_helper(self, root="workspace/custom-skills/codex_test"):
+        self.files[root + "/scripts/mailbox.py"] = (
+            Path(__file__).resolve().parents[2] / "tools/muse_tools/scripts/mailbox.py").read_bytes()
 
     def connect(self):
         self.connections += 1
@@ -37,24 +44,32 @@ class FakeMuse:
 
         class Gateway:
             pending = None
+            vm_id = "test-vm"
 
             def call_json(self, method, *, body, timeout):
+                owner.rpcs.append((method, copy.deepcopy(body)))
                 if method == "fs.write":
-                    if not body["overwrite"] and body["path"] in owner.files:
+                    if not body["overwrite"] and not body["append"] and body["path"] in owner.files:
                         raise FileExistsError()
-                    owner.files[body["path"]] = base64.b64decode(body["data_base64"])
+                    prefix = owner.files.get(body["path"], b"") if body["append"] else b""
+                    owner.files[body["path"]] = prefix + base64.b64decode(body["data_base64"])
                     return {}
                 if method == "fs.rename":
                     if not body["overwrite"] and body["destination"] in owner.files:
                         raise FileExistsError()
                     owner.files[body["destination"]] = owner.files.pop(body["source"])
                     return {}
-                if method == "fs.read":
+                if method in {"fs.read", "fs.stat"}:
                     if body["path"] not in owner.files:
                         error = RuntimeError("not found")
                         error.status = 404
                         raise error
-                    return {"data_base64": base64.b64encode(owner.files[body["path"]]).decode(), "eof": True}
+                    raw = owner.files[body["path"]]
+                    if method == "fs.stat":
+                        return {"kind": "file", "size": len(raw)}
+                    offset, length = body["offset"], body["len"]
+                    return {"data_base64": base64.b64encode(raw[offset:offset + length]).decode(),
+                            "eof": offset + length >= len(raw)}
                 if method == "session.start":
                     with owner.lock:
                         session_id = "session_" + str(len(owner.conversations))
@@ -214,6 +229,7 @@ class MuseSessionTests(unittest.TestCase):
 class MuseWebTests(unittest.TestCase):
     def setUp(self):
         self.fake = FakeMuse()
+        self.fake.seed_helper()
         self.sessions = MuseSessions(self.fake.connect, timeout=1, poll=0.001,
                                      tool_workspace="workspace/custom-skills/codex_test")
         self.server = make_server({"api_key": KEY, "port": 0}, self.sessions)
@@ -278,6 +294,7 @@ class MuseWebTests(unittest.TestCase):
         self.assertIsNone(completed["response"]["usage"])
 
     def test_optional_hosted_search_only_does_not_require_workspace(self):
+        self.fake.files.clear()
         self.sessions.workspace = None
         result = self.ask(tools=[{"type": "web_search"}])
         self.assertEqual(result["output"][0]["content"][0]["text"], "Hello from Muse")
@@ -288,7 +305,8 @@ class MuseWebTests(unittest.TestCase):
         first = self.ask(tools=TOOLS)
         self.assertIsNone(first["usage"])
         self.assertNotIn("SYSTEM / DEVELOPER INSTRUCTIONS", self.fake.sent[0]["items"][0]["text"])
-        self.assertIn("not a Muse system message", self.fake.sent[0]["items"][0]["text"])
+        self.assertIn("Focus on the requested work", self.fake.sent[0]["items"][0]["text"])
+        self.assertIn("normal permissions and safety rules", self.fake.sent[0]["items"][0]["text"])
         call = first["output"][0]
         self.assertEqual(call["type"], "function_call")
         self.assertEqual(json.loads(call["arguments"]), {"cmd": "echo safe"})
@@ -299,6 +317,51 @@ class MuseWebTests(unittest.TestCase):
         result = next(json.loads(raw) for path, raw in self.fake.files.items() if path.endswith("/result.json"))
         self.assertEqual(result["result"]["output"], "safe")
         self.assertIn("result --run", self.fake.sent[1]["items"][0]["text"])
+
+    def test_forwarded_guidance_is_task_focused_and_keeps_operational_requirements(self):
+        from fanvpn_bridge.muse_workspace_provider import _muse_prompt
+        guidance = "Use Chinese. Preserve existing files. Require approval for destructive operations."
+        items = [{"role": "user", "content": "Create a text file on my desktop."}]
+        prompt = _muse_prompt({"instructions": guidance}, items, include_control=True)
+        self.assertIn("Client task guidance:\n" + guidance, prompt)
+        self.assertIn("Create a text file on my desktop.", prompt)
+        self.assertNotIn("Codex", prompt)
+        self.assertNotIn("model identity", prompt)
+        self.assertIn("working instructions for this task, not merely quoted background", prompt)
+        self.assertIn("the client handles approval and execution", prompt)
+        self.assertIn("explain concrete limitations", prompt)
+        self.assertIn("normal permissions and safety rules", prompt)
+        self.assertNotIn("not a Muse system message", prompt)
+        self.assertNotIn("not a change to your identity", prompt)
+        followup = _muse_prompt({"instructions": guidance}, items, include_control=False)
+        self.assertNotIn(guidance, followup)
+
+    def test_client_identity_preamble_is_removed_without_losing_work_requirements(self):
+        from fanvpn_bridge.muse_workspace_provider import _muse_prompt
+        requirements = "Use Chinese. Preserve files. Require approval for destructive operations."
+        for identity in ("You are Codex.", "You are Codex, an agent based on GPT-5.",
+                         "You are Codex, an agent based on GPT-5.6."):
+            for separator in (" ", "\n\n"):
+                with self.subTest(identity=identity, separator=separator):
+                    instructions = identity + separator + requirements
+                    payload = {"instructions": instructions}
+                    prompt = _muse_prompt(payload, [{"role": "user", "content": "Hello"}], include_control=True)
+                    self.assertNotIn("You are Codex", prompt)
+                    self.assertNotIn("an agent based on", prompt)
+                    self.assertIn("Client task guidance:\n" + requirements, prompt)
+                    self.assertEqual(payload["instructions"], instructions)
+        prompt = _muse_prompt({"instructions": "You are Codex."}, [], include_control=True)
+        self.assertNotIn("Codex", prompt)
+        self.assertNotIn("Client task guidance:", prompt)
+
+    def test_identity_filter_does_not_rewrite_user_content_or_other_guidance(self):
+        from fanvpn_bridge.muse_workspace_provider import _muse_prompt
+        guidance = 'Keep the literal documentation example "You are Codex." unchanged.'
+        user_text = 'Explain the sentence "You are Codex."'
+        prompt = _muse_prompt({"instructions": guidance}, [{"role": "user", "content": user_text}],
+                              include_control=True)
+        self.assertIn(guidance, prompt)
+        self.assertIn(user_text, prompt)
 
     def test_long_chinese_namespaced_freeform_is_exact(self):
         patch_text = "*** Begin Patch\n*** Add File: example.md\n+" + "中文 `code` | 表格\n+" * 500 + "end\n*** End Patch"
@@ -361,9 +424,9 @@ class MuseWebTests(unittest.TestCase):
         self.assertEqual(len(self.fake.sent), 2)
         self.assertEqual(len({body["session_id"] for body in self.fake.sent}), 1)
         self.assertNotIn("Fetch a read-only item", self.fake.sent[0]["items"][0]["text"])
-        manifest = next(json.loads(raw) for path, raw in self.fake.files.items() if path.endswith("/manifest.json"))
-        self.assertEqual(manifest["tools"][0]["name"], name)
-        self.assertEqual(manifest["tools"][0]["description"], "Fetch a read-only item")
+        catalog = next(json.loads(raw) for path, raw in self.fake.files.items() if "/catalogs/" in path)
+        self.assertEqual(catalog["tools"][0]["name"], name)
+        self.assertEqual(catalog["tools"][0]["description"], "Fetch a read-only item")
 
     def test_missing_service_snapshot_rebuilds_full_history_once(self):
         first = self.ask()
@@ -372,13 +435,121 @@ class MuseWebTests(unittest.TestCase):
         self.assertNotEqual(self.fake.sent[0]["session_id"], self.fake.sent[1]["session_id"])
         self.assertIn("Hello from Muse", self.fake.sent[1]["items"][0]["text"])
 
+    def test_full_history_without_response_id_reuses_conversation(self):
+        for tools, stream in (([], False), (TOOLS, True)):
+            with self.subTest(tools=bool(tools), stream=stream):
+                history = [{"role": "user", "content": "Unique first question"}]
+                key = "full-history-" + str(stream)
+                first = self.ask(input=history, tools=tools, stream=stream, prompt_cache_key=key)
+                if stream:
+                    first = _last_completed_response(first)
+                history = [*history, *first["output"], {"role": "user", "content": "Second question"}]
+                before = copy.deepcopy(history)
+                second = self.ask(input=history, tools=tools, prompt_cache_key=key)
+                third = self.ask(input=[*history, *second["output"], {"role": "user", "content": "Third question"}],
+                                 tools=tools, prompt_cache_key=key)
+                turns = self.fake.sent[-3:]
+                self.assertEqual(len({turn["session_id"] for turn in turns}), 1)
+                self.assertIn("Second question", turns[1]["items"][0]["text"])
+                self.assertNotIn("Unique first question", turns[1]["items"][0]["text"])
+                self.assertNotIn("Second question", turns[2]["items"][0]["text"])
+                self.assertEqual(history, before)
+                self.assertEqual(third["status"], "completed")
+
+    def test_replayed_namespaced_tool_result_without_response_id_reuses_session(self):
+        tools = [{"type": "namespace", "name": "functions", "tools": TOOLS}]
+        self.fake.replies = [{"name": "functions.apply_patch", "input": "literal patch"}, "Result received"]
+        history = [{"role": "user", "content": "Inert tool request"}]
+        first = self.ask(input=history, tools=tools, prompt_cache_key="tool-thread")
+        result = {"type": "custom_tool_call_output", "call_id": first["output"][0]["call_id"],
+                  "output": "inert result"}
+        self.ask(input=[*history, *first["output"], result], tools=tools, prompt_cache_key="tool-thread")
+        self.assertEqual(len({turn["session_id"] for turn in self.fake.sent}), 1)
+        receipts = [json.loads(raw)["result"] for path, raw in self.fake.files.items() if path.endswith("/result.json")]
+        self.assertEqual(receipts, [result])
+
+    def test_conversation_identity_never_overrides_different_or_edited_history(self):
+        history = [{"role": "user", "content": "Original question"}]
+        first = self.ask(input=history, tools=TOOLS, prompt_cache_key="one-thread")
+        normal = [*history, *first["output"], {"role": "user", "content": "Next question"}]
+        self.ask(input=normal, tools=TOOLS, prompt_cache_key="other-thread")
+        edited = [{"role": "user", "content": "Edited question"}, *first["output"],
+                  {"role": "user", "content": "Next question"}]
+        self.ask(input=edited, tools=TOOLS, prompt_cache_key="one-thread")
+        self.assertEqual(len({turn["session_id"] for turn in self.fake.sent}), 3)
+        # Even under one identity, a short message alone is not proof of continuity.
+        self.ask(input="Unrelated new question", tools=TOOLS, prompt_cache_key="one-thread")
+        self.assertEqual(len(self.fake.conversations), 4)
+
+    def test_agent_thread_metadata_takes_precedence_over_shared_cache_key(self):
+        def metadata(thread):
+            return {"x-codex-turn-metadata": json.dumps({"thread_id": thread, "turn_id": "changes-per-turn"})}
+
+        history = [{"role": "user", "content": "Same first question"}]
+        first = self.ask(input=history, client_metadata=metadata("agent-one"), prompt_cache_key="shared")
+        other = self.ask(input=history, client_metadata=metadata("agent-two"), prompt_cache_key="shared")
+        self.ask(input=[*history, *first["output"], {"role": "user", "content": "Next"}],
+                 client_metadata=metadata("agent-one"), prompt_cache_key="shared")
+        self.ask(input=[*history, *other["output"], {"role": "user", "content": "Next"}],
+                 client_metadata=metadata("agent-two"), prompt_cache_key="shared")
+        ids = [turn["session_id"] for turn in self.fake.sent]
+        self.assertEqual(ids[0], ids[2])
+        self.assertEqual(ids[1], ids[3])
+        self.assertNotEqual(ids[0], ids[1])
+
+    def test_unidentified_history_and_changed_control_do_not_reuse(self):
+        history = [{"role": "user", "content": "First"}]
+        first = self.ask(input=history, tools=TOOLS)
+        self.ask(input=[*history, *first["output"], {"role": "user", "content": "Next"}], tools=TOOLS)
+        first = self.ask(input=history, tools=TOOLS, prompt_cache_key="control-thread")
+        replay = [*history, *first["output"], {"role": "user", "content": "Next"}]
+        self.ask(input=replay, tools=TOOLS[:1], prompt_cache_key="control-thread")
+        self.assertEqual(len(self.fake.conversations), 4)
+
+    def test_evicted_or_failed_conversation_head_is_not_inferred(self):
+        history = [{"role": "user", "content": "First"}]
+        first = self.ask(input=history, tools=TOOLS, prompt_cache_key="evicted-thread")
+        self.provider._checkpoints.clear()
+        replay = [*history, *first["output"], {"role": "user", "content": "Next"}]
+        self.ask(input=replay, tools=TOOLS, prompt_cache_key="evicted-thread")
+        self.assertEqual(len(self.fake.conversations), 2)
+        self.assertEqual(len(self.provider._conversation_heads), 1)
+        self.fake.replies.append(RuntimeError("inert failure"))
+        frames = self.ask(input="Fail once", tools=TOOLS, stream=True, prompt_cache_key="failed-thread")
+        self.assertTrue(any(b"response.failed" in frame for frame in frames))
+        self.assertNotIn("cache:failed-thread", self.provider._conversation_heads)
+
+    def test_compaction_does_not_replace_normal_conversation_head(self):
+        history = [{"role": "user", "content": "First question"}]
+        first = self.ask(input=history, prompt_cache_key="compact-thread")
+        replay = [*history, *first["output"], {"role": "user", "content": "Next question"}]
+        self.provider.compact({"model": MODEL, "input": replay, "prompt_cache_key": "compact-thread"})
+        self.assertEqual(self.provider._conversation_heads["cache:compact-thread"], first["id"])
+        self.ask(input=replay, prompt_cache_key="compact-thread")
+        self.assertEqual(self.fake.sent[0]["session_id"], self.fake.sent[2]["session_id"])
+        self.assertNotEqual(self.fake.sent[0]["session_id"], self.fake.sent[1]["session_id"])
+
     def test_muse_failures_do_not_expose_credentials_or_claim_completion(self):
         self.fake.replies = [RuntimeError("TOKEN=SECRET")]
-        with self.assertRaises(MuseWebError) as caught:
-            self.ask(stream=True)
-        self.assertNotIn("SECRET", str(caught.exception))
-        self.assertNotIn("Gemini", str(caught.exception))
+        frames = self.ask(stream=True, tools=TOOLS)
+        failed = self.assert_failed_stream(frames, "muse_web_transport_error")
+        self.assertNotIn("SECRET", str(failed))
+        self.assertNotIn("Gemini", str(failed))
         self.assertEqual(len(self.fake.sent), 1)
+
+    def assert_failed_stream(self, frames, code):
+        events = [json.loads(frame.decode().split("data: ", 1)[1]) for frame in frames if frame.startswith(b"event:")]
+        self.assertEqual(events[-1]["type"], "response.failed")
+        failed = events[-1]["response"]
+        self.assertEqual(failed["status"], "failed")
+        self.assertIn(code, failed["error"]["message"])
+        self.assertNotIn("response.completed", [event["type"] for event in events])
+        created = next(event["response"] for event in events if event["type"] == "response.created")
+        self.assertEqual(created["id"], failed["id"])
+        sequences = [event["sequence_number"] for event in events]
+        self.assertEqual(sequences, sorted(set(sequences)))
+        self.assertEqual(self.provider._checkpoints, {})
+        return failed
 
     def test_browser_login_errors_survive_sse_heartbeats(self):
         def failed_login():
@@ -386,13 +557,22 @@ class MuseWebTests(unittest.TestCase):
             raise ServiceError(str(error), error.status, error.code)
 
         self.sessions.factory = failed_login
-        for stream in (False, True):
-            with self.subTest(stream=stream), self.assertRaises(MuseWebError) as caught:
-                self.ask(stream=stream)
-            self.assertEqual(caught.exception.status, 401)
-            self.assertEqual(caught.exception.code, "muse_web_login_required")
-            self.assertIn("Log in to Muse", str(caught.exception))
+        with self.assertRaises(MuseWebError) as caught:
+            self.ask(stream=False)
+        self.assertEqual(caught.exception.status, 401)
+        self.assertEqual(caught.exception.code, "muse_web_login_required")
+        for tools in ([], TOOLS):
+            failed = self.assert_failed_stream(self.ask(stream=True, tools=tools), "muse_web_login_required")
+            self.assertIn("Log in to Muse", failed["error"]["message"])
         self.assertEqual(self.fake.connections, 0)
+        self.assertEqual(self.fake.sent, [])
+
+    def test_connection_timeout_reaches_client_as_terminal_failure_without_sending_a_task(self):
+        self.sessions.factory = lambda: (_ for _ in ()).throw(ServiceError(
+            "Safe connection timeout", 504, "muse_web_connect_timeout"))
+        for tools in ([], TOOLS):
+            failed = self.assert_failed_stream(self.ask(stream=True, tools=tools), "muse_web_connect_timeout")
+            self.assertIn("service proxy", failed["error"]["message"])
         self.assertEqual(self.fake.sent, [])
 
 

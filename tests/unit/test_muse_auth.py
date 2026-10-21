@@ -76,6 +76,26 @@ class MuseAuthTests(unittest.TestCase):
         self.assertEqual(module.Gateway.call_args_list[1].kwargs, second)
         module.load_cookies.assert_not_called()
 
+    def test_gateway_connection_errors_are_actionable_and_never_include_ticket_details(self):
+        module = ModuleType("muse_cli.gateway")
+        module.AuthError = type("AuthError", (RuntimeError,), {})
+        module.Gateway = Mock()
+        module.load_cookies = Mock()
+        timeout = RuntimeError("SECRET auth_token=SECRET")
+        timeout.code = 28
+        for error, code in ((timeout, "muse_web_connect_timeout"),
+                            (TimeoutError("SECRET"), "muse_web_connect_timeout"),
+                            (RuntimeError("SECRET"), "muse_web_connect_failed")):
+            with self.subTest(code=code), patch.dict(sys.modules, {"muse_cli.gateway": module}), patch(
+                    "fanvpn_bridge.muse_service.BrowserTicketClient") as client:
+                client.return_value.ticket.return_value = TICKET
+                module.Gateway.side_effect = error
+                with self.assertRaises(ServiceError) as caught:
+                    gateway_factory({"api_key": KEY})()
+                self.assertEqual(caught.exception.code, code)
+                self.assertIn("proxy", str(caught.exception))
+                self.assertNotIn("SECRET", str(caught.exception))
+
 
 class MuseTicketClientTests(unittest.TestCase):
     def setUp(self):
