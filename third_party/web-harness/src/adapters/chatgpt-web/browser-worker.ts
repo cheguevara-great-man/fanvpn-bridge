@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
@@ -55,6 +55,9 @@ import { estimateCompiledChatGptWebInputTokens } from "./input-tokens";
 import {
   assertAuthenticatedChatGptPage,
   assertTemporaryChatPage,
+  assertChatGptProjectPage,
+  isChatGptProjectPageUrl,
+  normalizeChatGptProjectUrl,
   CHATGPT_ASSISTANT_TURN_SELECTOR,
   CHATGPT_COMPLETION_ACTION_SELECTOR,
   CHATGPT_COMPOSER_SELECTOR,
@@ -1238,6 +1241,7 @@ interface ChatGptSubmissionDomState {
   turnIdentities: string[];
   userIdentities: string[];
   responseIdentities: string[];
+  promotedTurnIdentities?: Record<string, string>;
 }
 
 interface ChatGptSubmissionDomCache {
@@ -1249,6 +1253,7 @@ interface ChatGptSubmissionDomCache {
 
 export interface ResolvedBrowserConfig {
   appName: string;
+  projectUrl?: string;
   browserHost: "managed-chrome" | "launcher";
   browserHostDescriptorPath?: string;
   browserHelperScriptPath?: string;
@@ -2157,6 +2162,7 @@ export function resolveBrowserConfig(provider: CodexProviderConfig): ResolvedBro
   }
   return {
     appName,
+    projectUrl: normalizeChatGptProjectUrl(configured.projectUrl),
     browserHost,
     ...(browserHostDescriptorPath ? { browserHostDescriptorPath: resolve(expandUserPath(browserHostDescriptorPath)) } : {}),
     ...(resolvedBrowserHelperScriptPath ? { browserHelperScriptPath: resolvedBrowserHelperScriptPath } : {}),
@@ -2252,6 +2258,11 @@ export async function clearChatGptComposerText(composer: Locator, signal?: Abort
   await composer.focus(options);
   await composer.press(CHATGPT_COMPOSER_SELECT_ALL_KEY, options);
   await composer.press("Backspace", options);
+}
+
+export function chatGptScopedConversationKey(key: string | undefined, projectUrl?: string): string | undefined {
+  if (!key || !projectUrl) return key;
+  return createHash("sha256").update(JSON.stringify([key, normalizeChatGptProjectUrl(projectUrl)])).digest("hex");
 }
 
 export class ChatGptBrowserWorker {
@@ -2712,6 +2723,25 @@ export class ChatGptBrowserWorker {
     return composer;
   }
 
+  private async prepareChatSurface(
+    page: Page,
+    captureDiagnostic?: (checkpoint: string) => Promise<void>,
+    allowConversation = false,
+  ): Promise<Locator> {
+    const projectUrl = this.config.projectUrl;
+    if (!projectUrl) return this.prepareTemporaryChatSurface(page, captureDiagnostic);
+    if (!isChatGptProjectPageUrl(page.url(), projectUrl, allowConversation)) {
+      await page.goto(projectUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
+      await captureDiagnostic?.("project-navigation-complete");
+    }
+    const composer = await this.activeComposer(page);
+    await throwIfChatGptSessionFailureAlert(page);
+    await assertAuthenticatedChatGptPage(page);
+    await assertChatGptProjectPage(page, projectUrl, allowConversation);
+    await captureDiagnostic?.("project-session-verified");
+    return composer;
+  }
+
   private async waitForTurnDomMutation(page: Page, timeoutMs = 50): Promise<void> {
     await page.evaluate(({ timeout, attributeFilter }) => new Promise<void>(resolveMutation => {
       let settled = false;
@@ -2882,6 +2912,33 @@ export class ChatGptBrowserWorker {
       if ([...userIdentities, ...responseIdentities].some(identity => !knownTurns.has(identity))) {
         throw new Error("ChatGPT conversation turn has no matching identity container");
       }
+      // The current renderer promotes a streaming fallback-turn-N container to the user message
+      // ID when it settles. Its user and assistant search units retain the original fallback key.
+      // Require both roles in that exact container; a display index or new user ID alone is not
+      // enough evidence to cross the detached-response guard below.
+      const promotedTurnIdentities: Record<string, string> = {};
+      for (const container of currentContainers) {
+        const identity = container.getAttribute("data-turn-key")!;
+        if (!userIdentities.includes(identity) || !responseIdentities.includes(identity)) continue;
+        const roles = new Map<string, Set<string>>();
+        for (const unit of container.querySelectorAll("[data-chatgpt-search-unit-key]")) {
+          if (unit.closest("[data-turn-key]") !== container) continue;
+          const match = /^(fallback-turn-\d+):\d+:(user|assistant)$/.exec(
+            unit.getAttribute("data-chatgpt-search-unit-key") ?? "",
+          );
+          if (!match || match[1] === identity) continue;
+          const seen = roles.get(match[1]!) ?? new Set<string>();
+          seen.add(match[2]!);
+          roles.set(match[1]!, seen);
+        }
+        for (const [previous, seen] of roles) {
+          if (!seen.has("user") || !seen.has("assistant")) continue;
+          if (promotedTurnIdentities[previous] && promotedTurnIdentities[previous] !== identity) {
+            throw new Error("ChatGPT exposed ambiguous promoted conversation turn identities");
+          }
+          promotedTurnIdentities[previous] = identity;
+        }
+      }
       return {
         key: observerKey,
         snapshot: {
@@ -2891,6 +2948,7 @@ export class ChatGptBrowserWorker {
           turnIdentities,
           userIdentities,
           responseIdentities,
+          promotedTurnIdentities,
         },
       };
     }, {
@@ -3088,14 +3146,17 @@ export class ChatGptBrowserWorker {
     }
     const state = await this.submissionDomState(page, baseline.domCache, signal);
     const acceptedTurns = new Set(binding.acceptedTurnIdentities);
-    if (state.userIdentities.some(identity => !acceptedTurns.has(identity))) {
-      throw new Error("ChatGPT opened another user turn while the bound assistant response was detached");
-    }
     const identity = chatGptReboundTurnIdentity(
       baseline.initialTurnIdentities,
       binding.identity,
       state.responseIdentities,
     );
+    const promotedIdentity = state.promotedTurnIdentities?.[binding.identity] === identity
+      ? identity
+      : undefined;
+    if (state.userIdentities.some(user => !acceptedTurns.has(user) && user !== promotedIdentity)) {
+      throw new Error("ChatGPT opened another user turn while the bound assistant response was detached");
+    }
     if (!identity || identity === binding.identity) return binding;
     return {
       identity,
@@ -3259,7 +3320,9 @@ export class ChatGptBrowserWorker {
     const appResult = menuRows.filter({
       has: page.getByText(this.config.appName, { exact: true }),
     });
-    await ensureChatGptPersonalizedConnectorAccess(
+    if (this.config.projectUrl) {
+      await assertChatGptProjectPage(page, this.config.projectUrl, true);
+    } else await ensureChatGptPersonalizedConnectorAccess(
       page,
       capture,
       async (personalizationSignal) => {
@@ -3579,6 +3642,7 @@ export class ChatGptBrowserWorker {
     completionTracker?: ChatGptCompletionTracker,
     recoverObservation?: ChatGptObservationRecovery,
   ): Promise<ChatGptSubmissionEvidence> {
+    if (this.config.projectUrl) await assertChatGptProjectPage(page, this.config.projectUrl, true);
     const composer = await this.activeComposer(page);
     const sendButton = composer
       .locator("xpath=ancestor::form[1]")
@@ -3599,6 +3663,8 @@ export class ChatGptBrowserWorker {
       await settleChatGptUi();
     }
     await captureDiagnostic?.("send-ready");
+    // A redirect during composer hydration must not send the task into an ordinary chat.
+    if (this.config.projectUrl) await assertChatGptProjectPage(page, this.config.projectUrl, true);
     const initialToolBatchRevision = externalProgress?.snapshot().lastToolBatchRevision ?? 0;
     await submissionLifecycle?.onSendActivated?.();
     await sendButton.press("Enter", {
@@ -3845,7 +3911,7 @@ export class ChatGptBrowserWorker {
     const captureDiagnostic = (checkpoint: string): Promise<void> => diagnostics.capture(page, checkpoint);
     try {
       await captureDiagnostic("connector-verification-started");
-      await this.prepareTemporaryChatSurface(page, captureDiagnostic);
+      await this.prepareChatSurface(page, captureDiagnostic);
       // The launcher refreshes its owned ChatGPT document before starting this helper. A second
       // reload here can discard the first catalog's exact mismatch evidence and report a generic
       // menu failure instead of identifying the connector the account actually exposes.
@@ -3880,7 +3946,7 @@ export class ChatGptBrowserWorker {
 
   private async smokeTestExclusive(abortSignal?: AbortSignal): Promise<{ effort: string; response: string }> {
     const page = await this.ensurePage();
-    await this.prepareTemporaryChatSurface(page);
+    await this.prepareChatSurface(page);
     const account = await detectChatGptAccountCapabilities(page);
     // Core smoke runs before the optional MCP connector is configured, so it must remain a
     // browser-only transport check. Connector setup has its own explicit verification operation.
@@ -4461,11 +4527,13 @@ export class ChatGptBrowserWorker {
     if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
     if (this.config.browserHost !== "launcher") return this.runBrowserTurn(turn);
 
+    // Changing destinations must not lease a still-retained Temporary Chat or another project.
+    const conversationKey = chatGptScopedConversationKey(turn.conversationKey, this.config.projectUrl);
     const lease = await notifyLauncherTurn(this.config.browserHostDescriptorPath!, {
       phase: "start",
       traceId: turn.traceId,
       helperPid: process.pid,
-      ...(turn.conversationKey ? { conversationKey: turn.conversationKey } : {}),
+      ...(conversationKey ? { conversationKey } : {}),
       ...((turn.conversationKey
         && (turn.nativeConnector || turn.capabilities.localToolsEnabled || turn.requireRetainedConversation))
         ? { connectorIdentity: this.config.appName }
@@ -4802,11 +4870,13 @@ export class ChatGptBrowserWorker {
           turn.traceId,
           "temporary_chat_preparation",
           browserStageTimeouts.temporaryChatPreparation,
-          () => this.prepareTemporaryChatSurface(
+          () => this.prepareChatSurface(
             page,
             checkpoint => diagnostics.capture(page, checkpoint),
           ),
         );
+      } else if (this.config.projectUrl) {
+        await assertChatGptProjectPage(page, this.config.projectUrl, true);
       }
       // A retained lease proves the connector binding, not the current model selection.
       // Reconcile the live control before every submission, including retained continuations.
@@ -4975,9 +5045,10 @@ export class ChatGptBrowserWorker {
             browserStageTimeouts.temporaryChatPreparation,
             async () => {
               await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
-              await this.prepareTemporaryChatSurface(
+              await this.prepareChatSurface(
                 page,
                 checkpoint => diagnostics.capture(page, checkpoint),
+                true,
               );
               mode = await this.selectModelAndEffort(
                 page,

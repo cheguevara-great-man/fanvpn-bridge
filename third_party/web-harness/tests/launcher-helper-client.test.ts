@@ -19,7 +19,10 @@ test("daemon streams browser lifecycle through the real helper process", async (
   writeFileSync(helper, `
     import { ChatGptBrowserWorker } from ${JSON.stringify(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url).href)};
     // Substitute only the browser. Both sides of the production IPC protocol run unchanged.
-    ChatGptBrowserWorker.prototype.run = async turn => {
+    ChatGptBrowserWorker.prototype.run = async function (turn) {
+      if (this.config.projectUrl !== "https://chatgpt.com/g/g-p-00000000000000000000000000000001/project") {
+        throw new Error("Project destination was lost in the helper protocol");
+      }
       await turn.onPreparedSelected(false);
       const prepared = await turn.prepare();
       if (prepared.multipart.parts.length !== 3) throw new Error("Multipart context was lost");
@@ -67,6 +70,7 @@ test("daemon streams browser lifecycle through the real helper process", async (
   })}\n`, { mode: 0o600 });
   const config: ResolvedBrowserConfig = {
     appName: "Codex Native2",
+    projectUrl: "https://chatgpt.com/g/g-p-00000000000000000000000000000001/project",
     browserHost: "launcher",
     browserHostDescriptorPath: descriptorPath,
     browserHelperScriptPath: helper,

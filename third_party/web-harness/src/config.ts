@@ -9,6 +9,7 @@ import {
 } from "./chatgpt-web-models";
 import type { CodexProviderConfig } from "./types";
 import { VERSION } from "./version";
+import { normalizeChatGptProjectUrl } from "./chatgpt-session";
 
 export type RuntimeMode = "browser-only" | "full";
 export type BrowserHostMode = "managed-chrome" | "launcher";
@@ -77,6 +78,8 @@ export interface AppConfig {
   browserHost: BrowserHostMode;
   browserInteractionMode: BrowserInteractionMode;
   browserHostDescriptorPath?: string;
+  /** Opt-in destination for new automatic chats; omitted configurations retain Temporary Chat. */
+  chatgptProjectUrl?: string;
   chromeExecutablePath: string;
   storageStatePath: string;
   brokerSocketPath: string;
@@ -430,6 +433,7 @@ function parseConfig(value: unknown, path: string): AppConfig {
     throw new Error(`Launcher browserHostDescriptorPath must be absolute in ${path}`);
   }
   const brokerEndpoint = expandUserPath(parsed.brokerSocketPath!);
+  const chatgptProjectUrl = normalizeChatGptProjectUrl(parsed.chatgptProjectUrl);
   if (process.platform === "win32") {
     if (!isWindowsPipeEndpoint(brokerEndpoint)) {
       throw new Error(`Windows brokerSocketPath must be a named pipe in ${path}`);
@@ -509,6 +513,7 @@ function parseConfig(value: unknown, path: string): AppConfig {
   }
   return {
     ...parsed,
+    chatgptProjectUrl,
     appName: expectedAppName,
     automaticAppName,
     manualAppName,
@@ -561,6 +566,7 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       browserInteractionMode: config.browserInteractionMode,
       browserHost: config.browserHost,
       browserHostDescriptorPath: config.browserHostDescriptorPath,
+      projectUrl: config.chatgptProjectUrl,
       storageStatePath: config.storageStatePath,
       chromeExecutablePath: config.chromeExecutablePath,
       brokerSocketPath: config.brokerSocketPath,

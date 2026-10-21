@@ -1378,6 +1378,7 @@ test("connector verification is effort-independent and works while the browser s
   const fixture = {
     helper: { executable: "/runtime/electron", script: "/runtime/browser-helper.cjs" },
     descriptorPath: "/runtime/launcher-browser.json",
+    getProjectUrl: () => "https://chatgpt.com/g/g-p-00000000000000000000000000000001/project",
     logger: { info: (event, detail) => calls.push(["log", event, detail]) },
     setState: (patch) => calls.push(["state", patch]),
     show: () => calls.push(["show"]),
@@ -1403,6 +1404,7 @@ test("connector verification is effort-independent and works while the browser s
         helper: fixture.helper,
         descriptorPath: fixture.descriptorPath,
         appName: "Codex Native2",
+        projectUrl: fixture.getProjectUrl(),
         logger: fixture.logger,
       }],
     ],

@@ -15,6 +15,7 @@ interface RunMessage {
   id: string;
   config: {
     appName: string;
+    projectUrl?: string;
     browserHostDescriptorPath: string;
     browserDiagnosticsPath?: string;
     turnTimeoutMs: number;
@@ -41,6 +42,7 @@ interface VerifyMessage {
   id: string;
   config: {
     appName: string;
+    projectUrl?: string;
     browserHostDescriptorPath: string;
   };
 }
@@ -182,6 +184,7 @@ async function run(message: RunMessage): Promise<void> {
     baseUrl: "https://chatgpt.com",
     chatgptWeb: {
       appName: message.config.appName,
+      projectUrl: message.config.projectUrl,
       browserHost: "launcher",
       browserHostDescriptorPath: message.config.browserHostDescriptorPath,
       browserDiagnosticsPath: message.config.browserDiagnosticsPath,
@@ -356,7 +359,7 @@ function maintenanceWorker(message: MaintenanceMessage): ChatGptBrowserWorker {
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
     baseUrl: "https://chatgpt.com",
-    chatgptWeb: { appName, browserHost: "launcher", browserHostDescriptorPath },
+    chatgptWeb: { appName, projectUrl: message.config.projectUrl, browserHost: "launcher", browserHostDescriptorPath },
   };
   return ChatGptBrowserWorker.forProvider(provider);
 }

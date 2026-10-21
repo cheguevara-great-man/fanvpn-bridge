@@ -1067,6 +1067,7 @@ async function start() {
     control: browserControl.descriptor(),
     cancelTurn: IS_DEV_PROFILE ? undefined : traceId => runtimeSupervisor.cancelBrowserTurn(traceId),
     getConnectorName: () => runtimeHost.browserConnectorName(),
+    getProjectUrl: () => runtimeHost.runtimeConfigSnapshot().config?.chatgptProjectUrl,
     helper: { executable: process.execPath, script: BROWSER_HELPER_PATH },
     logger,
     loginWithPasskey: () => runtimeHost.capturePasskeyLogin(),

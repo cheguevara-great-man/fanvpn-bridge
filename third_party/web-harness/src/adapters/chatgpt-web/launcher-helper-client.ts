@@ -273,6 +273,7 @@ export class LauncherBrowserHelperClient {
           id: turn.traceId,
           config: {
             appName: this.config.appName,
+            projectUrl: this.config.projectUrl,
             browserHostDescriptorPath: this.config.browserHostDescriptorPath!,
             browserDiagnosticsPath: this.config.browserDiagnosticsPath,
             turnTimeoutMs: this.config.turnTimeoutMs,

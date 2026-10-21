@@ -322,6 +322,7 @@ class BrowserHost {
     control,
     cancelTurn,
     getConnectorName,
+    getProjectUrl = () => undefined,
     helper,
     logger,
     loginWithPasskey,
@@ -344,6 +345,7 @@ class BrowserHost {
     this.control = control;
     this.cancelTurn = cancelTurn;
     this.getConnectorName = getConnectorName;
+    this.getProjectUrl = getProjectUrl;
     this.helper = helper;
     this.logger = logger;
     this.loginWithPasskey = loginWithPasskey;
@@ -2760,6 +2762,7 @@ class BrowserHost {
       descriptorPath: this.descriptorPath,
       appName: connectorName,
       operation: "smoke",
+      projectUrl: this.getProjectUrl?.(),
       logger: this.logger,
     });
     const evidence = result?.value;
@@ -2789,6 +2792,7 @@ class BrowserHost {
         helper: this.helper,
         descriptorPath: this.descriptorPath,
         appName: connectorName,
+        projectUrl: this.getProjectUrl?.(),
         logger: this.logger,
       });
       this.logger.info("connector.verified", { appName: connectorName });

@@ -69,6 +69,16 @@ processed by OpenAI and are subject to the account's settings and OpenAI's
 is unofficial; users remain responsible for complying with applicable OpenAI terms and workspace
 policies.
 
+### Optional project destination
+
+To create automatic chats inside an existing ChatGPT project, set `chatgptProjectUrl` in the
+WebHarness configuration to `https://chatgpt.com/g/g-p-<id>/project`, then restart WebHarness.
+The signed-in account must have access to that project and the configured connector. New chats
+are saved in the project rather than Temporary Chat; project instructions and memory settings
+apply. Existing chats are not moved. Retained conversations are isolated by project URL, and
+submission fails if a retained page is outside that project. Remove the setting to restore the
+default Temporary Chat behavior.
+
 ## Quick start
 
 Install or update the desktop launcher. To update or repair an existing installation, quit the

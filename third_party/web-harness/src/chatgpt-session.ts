@@ -2,6 +2,37 @@ import type { Locator, Page } from "playwright-core";
 import type { ChatGptWebAccountCapabilities } from "./chatgpt-web-models";
 
 export const CHATGPT_TEMPORARY_CHAT_URL = "https://chatgpt.com/?temporary-chat=true";
+
+/** An explicit project is opt-in: never silently fall back to a different chat scope. */
+export function normalizeChatGptProjectUrl(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !value.trim()) throw new Error("ChatGPT projectUrl must be a project URL");
+  const url = new URL(value.trim());
+  const project = /^\/g\/(g-p-[a-f0-9]{32})(?:-[^/]+)?\/project\/?$/.exec(url.pathname);
+  if (url.origin !== "https://chatgpt.com" || url.username || url.password
+    || url.search || url.hash || !project) {
+    throw new Error("ChatGPT projectUrl must be https://chatgpt.com/g/g-p-<id>/project without query or fragment");
+  }
+  // ChatGPT adds a mutable project-name slug after the stable 32-character ID.
+  return `${url.origin}/g/${project[1]}/project`;
+}
+
+export function isChatGptProjectPageUrl(value: string, projectUrl: string, allowConversation = false): boolean {
+  const expected = new URL(normalizeChatGptProjectUrl(projectUrl)!);
+  let actual: URL;
+  try { actual = new URL(value); } catch { return false; }
+  if (actual.origin !== expected.origin || actual.username || actual.password
+    || actual.search || actual.hash) return false;
+  const route = /^\/g\/(g-p-[a-f0-9]{32})(?:-[^/]+)?\/(project|c\/[A-Za-z0-9-]+)\/?$/.exec(actual.pathname);
+  return route?.[1] === expected.pathname.split("/")[2]
+    && (route[2] === "project" || allowConversation);
+}
+
+export async function assertChatGptProjectPage(page: Page, projectUrl: string, allowConversation = false): Promise<void> {
+  if (!isChatGptProjectPageUrl(page.url(), projectUrl, allowConversation)) {
+    throw new Error("ChatGPT left the configured project; refusing to submit outside it");
+  }
+}
 export const CHATGPT_COMPOSER_SELECTOR = [
   '[data-testid="prompt-textarea"]',
   "#prompt-textarea",

@@ -272,6 +272,8 @@ export interface CodexProviderConfig {
     browserHost?: "managed-chrome" | "launcher";
     /** Owner-only descriptor containing the launcher's loopback CDP and control endpoints. */
     browserHostDescriptorPath?: string;
+    /** Optional ChatGPT project home used for new automatic browser conversations. */
+    projectUrl?: string;
     /** Explicit browser-helper bundle. DEV builds current source; the launcher still supplies Electron-as-Node. */
     browserHelperScriptPath?: string;
     /** Explicit private diagnostic root for isolated harnesses. */

@@ -1538,7 +1538,7 @@ test("connector verification preserves the host-refreshed catalog evidence", asy
   const fixture = {
     config: { appName: "Codex Native2", browserDiagnosticsPath: diagnosticsRoot },
     ensurePage: async () => page,
-    prepareTemporaryChatSurface: async () => {
+    prepareChatSurface: async () => {
       prepared += 1;
       calls.push(`prepare:${prepared}`);
     },
@@ -1598,7 +1598,7 @@ for (const captureScreenshots of [false, true]) test(`connector failure persists
     await expect(verifyConnectorExclusive.call({
       config: { appName: "Codex Native2", browserDiagnosticsPath: diagnosticsRoot },
       ensurePage: async () => page,
-      prepareTemporaryChatSurface: async (_page: unknown, capture: (checkpoint: string) => Promise<void>) => {
+      prepareChatSurface: async (_page: unknown, capture: (checkpoint: string) => Promise<void>) => {
         await capture("composer-ready");
       },
       selectConnector: async (_page: unknown, capture: (checkpoint: string) => Promise<void>) => {
@@ -1653,7 +1653,7 @@ test("successful connector verification clears the proven selection before relea
     const result = await verifyConnectorExclusive.call({
       config: { appName: "Codex Native2 DEV", browserDiagnosticsPath: diagnosticsRoot },
       ensurePage: async () => page,
-      prepareTemporaryChatSurface: async (_page: unknown, capture: (checkpoint: string) => Promise<void>) => {
+      prepareChatSurface: async (_page: unknown, capture: (checkpoint: string) => Promise<void>) => {
         calls.push("prepare");
         await capture("composer-ready");
       },
