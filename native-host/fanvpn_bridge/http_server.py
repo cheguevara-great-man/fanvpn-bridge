@@ -43,6 +43,8 @@ from .errors import BridgeError, ErrorCode
 from .deepseek_harness import DeepSeekHarnessError, DeepSeekHarnessProvider, is_deepseek_model
 from .zen_provider import ZenProvider, ZenProviderError, is_zen_model
 from .gemini_account import GeminiAccountError, GeminiAccountProvider
+from .gemini_web import GeminiWebError, GeminiWebProvider, is_gemini_web_model
+from .muse_web import MuseWebProvider, is_muse_web_model
 from .hybrid_route import (
     GPT_ROUTE_BROWSER_FULL,
     GPT_ROUTE_DIRECT,
@@ -161,6 +163,8 @@ class BridgeHTTPServer(ThreadingHTTPServer):
         product_cache: ProductResponseCache,
         usage_reporter: UsageReporter | None = None,
         gemini_account: GeminiAccountProvider | None = None,
+        gemini_web: GeminiWebProvider | None = None,
+        muse_web: MuseWebProvider | None = None,
         deepseek_harness: DeepSeekHarnessProvider | None = None,
         zen_provider: ZenProvider | None = None,
         subagent_policy: SubagentPolicyStore | None = None,
@@ -176,6 +180,8 @@ class BridgeHTTPServer(ThreadingHTTPServer):
         self.product_cache = product_cache
         self.usage_reporter = usage_reporter
         self.gemini_account = gemini_account
+        self.gemini_web = gemini_web
+        self.muse_web = muse_web
         self.deepseek_harness = deepseek_harness
         self.zen_provider = zen_provider
         self.subagent_policy = subagent_policy
@@ -273,6 +279,12 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         if not server.product_api_alias and self.path.split("?", 1)[0].startswith("/gemini-account/"):
             self._handle_gemini_account(server, method, request_id)
             return
+        if not server.product_api_alias and self.path.split("?", 1)[0].startswith("/gemini-web/"):
+            self._handle_gemini_web(server, method, request_id)
+            return
+        if not server.product_api_alias and self.path.split("?", 1)[0].startswith("/muse-web/"):
+            self._handle_gemini_web(server, method, request_id, muse=True)
+            return
         if not server.product_api_alias and self.path.split("?", 1)[0].startswith("/deepseek-harness/"):
             self._handle_deepseek_harness(server, method, request_id)
             return
@@ -288,6 +300,16 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                     models: list[object] = []
                     if server.gemini_account is not None:
                         models.extend(server.gemini_account.models_response().get("data", []))
+                    if server.muse_web is not None:
+                        try:
+                            models.extend(server.muse_web.models_response().get("data", []))
+                        except GeminiWebError:
+                            _LOG.warning("muse_web_catalog_unavailable request_id=%s", request_id)
+                    if server.gemini_web is not None:
+                        try:
+                            models.extend(server.gemini_web.models_response().get("data", []))
+                        except GeminiWebError:
+                            _LOG.warning("gemini_web_catalog_unavailable request_id=%s", request_id)
                     if server.deepseek_harness is not None:
                         models.extend(server.deepseek_harness.models_response().get("data", []))
                     if server.zen_provider is not None:
@@ -314,6 +336,18 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                             ErrorCode.REQUEST_BODY_INVALID,
                             "Hybrid Responses request must be a JSON object",
                         )
+                    if is_muse_web_model(hybrid_payload.get("model")):
+                        self._handle_gemini_web_payload(
+                            server, hybrid_payload, request_id,
+                            compact=hybrid_path.endswith("/compact"), muse=True,
+                        )
+                        return
+                    if is_gemini_web_model(hybrid_payload.get("model")):
+                        self._handle_gemini_web_payload(
+                            server, hybrid_payload, request_id,
+                            compact=hybrid_path.endswith("/responses/compact"),
+                        )
+                        return
                     if is_web_model(hybrid_payload.get("model")):
                         # Local web turns never enter the OpenAI account quota
                         # reporter or acquire its Authorization header.
@@ -1383,6 +1417,120 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 {"error": {"message": str(error), "type": error.code, "code": error.code}},
             )
 
+    def _handle_gemini_web(self, server: BridgeHTTPServer, method: str, request_id: str, *, muse: bool = False) -> None:
+        # Both opt-in text services use the same Responses HTTP framing.
+        prefix = "/muse-web" if muse else "/gemini-web"
+        provider = server.muse_web if muse else server.gemini_web
+        path = self.path.split("?", 1)[0].rstrip("/")
+        if muse and path == "/muse-web/auth":
+            self._handle_muse_browser_auth(server, method)
+            return
+        if path == prefix + "/v1/models" and method == "GET":
+            try:
+                self._send_json(200, provider.models_response(
+                    force=parse_qs(urlsplit(self.path).query).get("refresh") == ["force"],
+                ) if provider is not None else {"object": "list", "data": [], "enabled": False})
+            except GeminiWebError as error:
+                self._send_json(error.status, {"error": {"message": str(error), "code": error.code}})
+            return
+        if path not in {prefix + "/v1/responses", prefix + "/v1/responses/compact"} or method != "POST":
+            self._discard_small_rejected_body()
+            self._send_json(404, {"error": {"code": "not_found"}})
+            return
+        raw = b"".join(self._request_body(
+            server.bridge_config.protocol.max_chunk_bytes,
+            max_body_bytes=server.bridge_config.protocol.max_request_body_bytes,
+            timeout=server.bridge_config.protocol.request_timeout_seconds,
+        ))
+        try:
+            payload = json.loads(raw)
+        except (ValueError, UnicodeError):
+            self._send_json(400, {"error": {"code": "invalid_json"}})
+            return
+        if not isinstance(payload, dict):
+            self._send_json(400, {"error": {"code": "invalid_request"}})
+            return
+        self._handle_gemini_web_payload(server, payload, request_id, compact=path.endswith("/compact"), muse=muse)
+
+    def _handle_muse_browser_auth(self, server: BridgeHTTPServer, method: str) -> None:
+        if method != "POST":
+            self._discard_small_rejected_body()
+            self._send_json(405, {"error": {"code": "method_not_allowed"}})
+            return
+        # This private loopback endpoint is for the authenticated Muse sidecar,
+        # never browser JavaScript or a client-supplied URL/account request.
+        if self.headers.get("Origin") is not None:
+            self._discard_small_rejected_body()
+            self._send_json(401, {"error": {"code": "muse_web_auth_required"}})
+            return
+        if self.headers.get("Transfer-Encoding") or self.headers.get("Content-Length", "0") != "0":
+            self._discard_small_rejected_body()
+            self._send_json(400, {"error": {"code": "invalid_request"}})
+            return
+        if server.muse_web is None:
+            self._send_json(503, {"error": {"code": "muse_web_disabled"}})
+            return
+        try:
+            ticket = server.muse_web.browser_ticket(self.headers.get("Authorization", ""))
+            raw = json.dumps(ticket, separators=(",", ":")).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(raw)
+        except GeminiWebError as error:
+            self._send_json(error.status, {"error": {"code": error.code, "message": str(error)}})
+
+    def _handle_gemini_web_payload(
+        self, server: BridgeHTTPServer, payload: dict[str, object], request_id: str, *, compact: bool = False,
+        muse: bool = False,
+    ) -> None:
+        provider = server.muse_web if muse else server.gemini_web
+        provider_code = "muse_web" if muse else "gemini_web"
+        if provider is None:
+            self._send_json(503, {"error": {"code": provider_code + "_disabled"}})
+            return
+        headers_sent = False
+        events = None
+        try:
+            if compact:
+                self._send_json(200, provider.compact(payload))
+                return
+            streaming, result = provider.responses(payload)
+            if not streaming:
+                self._send_json(200, result)
+                return
+            events = cast(Iterable[bytes], result)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("X-FanVPN-Request-Id", request_id)
+            self.end_headers()
+            headers_sent = True
+            for chunk in events:
+                if _socket_disconnected(self.connection):
+                    return
+                self._write_chunk(chunk)
+            self._write_chunk(b"")
+        except GeminiWebError as error:
+            if not headers_sent:
+                self._send_json(error.status, {"error": {"message": str(error), "code": error.code}})
+            else:
+                event = {"type": "error", "code": error.code, "message": str(error)}
+                try:
+                    self._write_chunk(("event: error\ndata: " + json.dumps(event) + "\n\n").encode("utf-8"))
+                    self._write_chunk(b"")
+                except OSError:
+                    self.close_connection = True
+            _LOG.warning("%s_failed request_id=%s code=%s", provider_code, request_id, error.code)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            self.close_connection = True
+        finally:
+            if events is not None and hasattr(events, "close"):
+                events.close()
+
     def _handle_zen_provider(
         self,
         server: BridgeHTTPServer,
@@ -1634,6 +1782,8 @@ def create_http_server(
     product_cache: ProductResponseCache | None = None,
     usage_reporter: UsageReporter | None = None,
     gemini_account: GeminiAccountProvider | None = None,
+    gemini_web: GeminiWebProvider | None = None,
+    muse_web: MuseWebProvider | None = None,
     deepseek_harness: DeepSeekHarnessProvider | None = None,
     zen_provider: ZenProvider | None = None,
     subagent_policy: SubagentPolicyStore | None = None,
@@ -1651,6 +1801,8 @@ def create_http_server(
         product_cache=product_cache or ProductResponseCache(),
         usage_reporter=usage_reporter,
         gemini_account=gemini_account,
+        gemini_web=gemini_web,
+        muse_web=muse_web,
         deepseek_harness=deepseek_harness,
         zen_provider=zen_provider,
         subagent_policy=subagent_policy,

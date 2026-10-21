@@ -18,6 +18,8 @@ $accountModels = New-Object System.Collections.Generic.List[object]
 $geminiRefreshSucceeded = $false
 $deepSeekRefreshSucceeded = $false
 $zenRefreshSucceeded = $false
+$geminiWebRefreshSucceeded = $false
+$museWebRefreshSucceeded = $false
 
 function Get-CodexClientVersion {
     $versions = New-Object System.Collections.Generic.List[version]
@@ -69,11 +71,28 @@ try {
     Write-Warning "Zen model refresh failed; keeping the last valid Zen catalog. $($_.Exception.Message)"
 }
 
-# Gemini and DeepSeek share the generated account-model catalog. If only one
+try {
+    $geminiWeb = Invoke-RestMethod "$BridgeBaseUrl/gemini-web/v1/models" -Proxy $null -TimeoutSec 20
+    @($geminiWeb.data) | Where-Object { $_.id -match '^gemini-web/' } | ForEach-Object { $accountModels.Add($_) }
+    # Disabled is a successful empty catalog, not a reason to retain stale entries.
+    $geminiWebRefreshSucceeded = $true
+} catch {
+    Write-Warning 'Gemini Web model refresh failed; keeping its last valid catalog.'
+}
+
+try {
+    $museWeb = Invoke-RestMethod "$BridgeBaseUrl/muse-web/v1/models" -Proxy $null -TimeoutSec 20
+    @($museWeb.data) | Where-Object { $_.id -eq 'muse-web/default' } | ForEach-Object { $accountModels.Add($_) }
+    $museWebRefreshSucceeded = $true
+} catch {
+    Write-Warning 'Muse Web model refresh failed; keeping its last valid catalog.'
+}
+
+# Account providers share the generated model catalog. If only one
 # refresh succeeds, keep the other provider's last known entries instead of
 # destructively replacing the cache with a partial list.
 $availableModelsCachePath = Join-Path ([System.IO.Path]::GetFullPath($CodexHome)) 'browser-ai-bridge-gemini-available-models.json'
-if ((-not $geminiRefreshSucceeded -or -not $deepSeekRefreshSucceeded -or -not $zenRefreshSucceeded) -and
+if ((-not $geminiRefreshSucceeded -or -not $deepSeekRefreshSucceeded -or -not $zenRefreshSucceeded -or -not $geminiWebRefreshSucceeded -or -not $museWebRefreshSucceeded) -and
     (Test-Path -LiteralPath $availableModelsCachePath -PathType Leaf)) {
     try {
         $cachedAccountModels = [System.IO.File]::ReadAllText($availableModelsCachePath) | ConvertFrom-Json
@@ -81,7 +100,9 @@ if ((-not $geminiRefreshSucceeded -or -not $deepSeekRefreshSucceeded -or -not $z
             $cachedId = if ($cachedModel -is [string]) { [string]$cachedModel } else { [string]$cachedModel.id }
             if ((-not $geminiRefreshSucceeded -and $cachedId -match '^gemini-[a-z0-9.-]+$') -or
                 (-not $deepSeekRefreshSucceeded -and $cachedId -match '^deepseek-web/(?:chat|reasoner)$') -or
-                (-not $zenRefreshSucceeded -and $cachedId -match '^zen/')) {
+                (-not $zenRefreshSucceeded -and $cachedId -match '^zen/') -or
+                (-not $geminiWebRefreshSucceeded -and $cachedId -match '^gemini-web/') -or
+                (-not $museWebRefreshSucceeded -and $cachedId -eq 'muse-web/default')) {
                 $accountModels.Add($cachedModel)
             }
         }

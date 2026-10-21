@@ -234,6 +234,8 @@ try {
         $geminiRefreshSucceeded = $false
         $deepSeekRefreshSucceeded = $false
         $zenRefreshSucceeded = $false
+        $geminiWebRefreshSucceeded = $false
+        $museWebRefreshSucceeded = $false
         if ($Mode -eq 'GeminiAccount' -or $Mode -in @('HybridForce', 'HybridConfigured', 'HybridNative')) {
             try {
                 $geminiModels = Invoke-RestMethod 'http://127.0.0.1:18888/gemini-account/v1/models' -Proxy $null -TimeoutSec 15
@@ -289,11 +291,27 @@ try {
                 Write-Warning 'Zen model refresh failed; the last valid Zen catalog will be kept.'
             }
 
+            try {
+                $geminiWebModels = Invoke-RestMethod 'http://127.0.0.1:18888/gemini-web/v1/models' -Proxy $null -TimeoutSec 20
+                @($geminiWebModels.data) | Where-Object { $_.id -match '^gemini-web/' } | ForEach-Object { $accountCatalogModels.Add($_) }
+                $geminiWebRefreshSucceeded = $true
+            } catch {
+                Write-Warning 'Gemini Web model refresh failed; its last valid catalog will be kept.'
+            }
+
+            try {
+                $museWebModels = Invoke-RestMethod 'http://127.0.0.1:18888/muse-web/v1/models' -Proxy $null -TimeoutSec 20
+                @($museWebModels.data) | Where-Object { $_.id -eq 'muse-web/default' } | ForEach-Object { $accountCatalogModels.Add($_) }
+                $museWebRefreshSucceeded = $true
+            } catch {
+                Write-Warning 'Muse Web model refresh failed; its last valid catalog will be kept.'
+            }
+
             # A restart may happen while only one provider is reachable.
             # Preserve the unavailable provider's last known entries instead of replacing
             # the shared account-model cache with a partial refresh.
             $availableModelsCachePath = Join-Path ([System.IO.Path]::GetFullPath($CodexHome)) 'browser-ai-bridge-gemini-available-models.json'
-            if ((-not $geminiRefreshSucceeded -or -not $deepSeekRefreshSucceeded -or -not $zenRefreshSucceeded) -and
+            if ((-not $geminiRefreshSucceeded -or -not $deepSeekRefreshSucceeded -or -not $zenRefreshSucceeded -or -not $geminiWebRefreshSucceeded -or -not $museWebRefreshSucceeded) -and
                 (Test-Path -LiteralPath $availableModelsCachePath -PathType Leaf)) {
                 try {
                     $cachedAccountModels = [System.IO.File]::ReadAllText($availableModelsCachePath) | ConvertFrom-Json
@@ -301,7 +319,9 @@ try {
                         $cachedId = if ($cachedModel -is [string]) { [string]$cachedModel } else { [string]$cachedModel.id }
                         if ((-not $geminiRefreshSucceeded -and $cachedId -match '^gemini-[a-z0-9.-]+$') -or
                             (-not $deepSeekRefreshSucceeded -and $cachedId -match '^deepseek-web/(?:chat|reasoner)$') -or
-                            (-not $zenRefreshSucceeded -and $cachedId -match '^zen/')) {
+                            (-not $zenRefreshSucceeded -and $cachedId -match '^zen/') -or
+                            (-not $geminiWebRefreshSucceeded -and $cachedId -match '^gemini-web/') -or
+                            (-not $museWebRefreshSucceeded -and $cachedId -eq 'muse-web/default')) {
                             $accountCatalogModels.Add($cachedModel)
                         }
                     }

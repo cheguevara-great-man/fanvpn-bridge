@@ -33,6 +33,8 @@
     { "$ref": "#/$defs/controlGeminiQuotaResult" },
     { "$ref": "#/$defs/controlDeepSeekPowSolve" },
     { "$ref": "#/$defs/controlDeepSeekPowResult" },
+    { "$ref": "#/$defs/controlMuseAuthGet" },
+    { "$ref": "#/$defs/controlMuseAuthResult" },
     { "$ref": "#/$defs/controlUpdateStatus" },
     { "$ref": "#/$defs/controlUpdateStart" },
     { "$ref": "#/$defs/controlUpdateReady" },
@@ -131,7 +133,8 @@
             "v": { "$ref": "#/$defs/protocolVersion" },
             "type": { "const": "hello_ack" },
             "extension_version": { "type": "string", "minLength": 1 },
-            "executor": { "enum": ["service_worker", "offscreen"] }
+            "executor": { "enum": ["service_worker", "offscreen"] },
+            "muse_browser_auth": { "type": "boolean" }
           },
           "additionalProperties": false
         }
@@ -627,6 +630,43 @@
           "additionalProperties": false
         }
       ]
+    },
+    "museTicket": {
+      "type": "object",
+      "required": ["vm_id", "access_token", "hatch_token"],
+      "properties": {
+        "vm_id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+        "access_token": { "type": "string", "pattern": "^[!-~]{1,16384}$" },
+        "hatch_token": { "type": "string", "pattern": "^[!-~]{1,16384}$" }
+      },
+      "additionalProperties": false
+    },
+    "controlMuseAuthGet": {
+      "type": "object",
+      "required": ["v", "type", "id"],
+      "properties": {
+        "v": { "$ref": "#/$defs/protocolVersion" },
+        "type": { "const": "control.muse_auth.get" },
+        "id": { "$ref": "#/$defs/requestId" }
+      },
+      "additionalProperties": false
+    },
+    "controlMuseAuthResult": {
+      "type": "object",
+      "required": ["v", "type", "id", "ok"],
+      "properties": {
+        "v": { "$ref": "#/$defs/protocolVersion" },
+        "type": { "const": "control.muse_auth.result" },
+        "id": { "$ref": "#/$defs/requestId" },
+        "ok": { "type": "boolean" },
+        "ticket": { "$ref": "#/$defs/museTicket" },
+        "error_code": { "enum": ["muse_web_login_required", "muse_web_tab_required", "muse_web_browser_unavailable", "muse_web_vm_unavailable", "muse_web_rate_limited", "muse_web_auth_timeout", "muse_web_ticket_invalid"] }
+      },
+      "oneOf": [
+        { "properties": { "ok": { "const": true } }, "required": ["ticket"], "not": { "required": ["error_code"] } },
+        { "properties": { "ok": { "const": false } }, "required": ["error_code"], "not": { "required": ["ticket"] } }
+      ],
+      "additionalProperties": false
     },
     "updateProject": {
       "enum": ["fanvpn-bridge", "browser-gateway", "web-harness"]

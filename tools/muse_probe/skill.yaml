@@ -1,0 +1,5 @@
+name: "__SKILL_NAME__"
+title: "Codex Tools Probe"
+description: "Run the inert Codex workspace-tool probe when explicitly asked to test __SKILL_NAME__."
+category: "Work and knowledge"
+include_in_prompt: false

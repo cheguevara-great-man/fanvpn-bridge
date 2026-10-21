@@ -25,6 +25,11 @@
       "matches": ["https://chat.deepseek.com/*"],
       "js": ["src/deepseek_auth.js"],
       "run_at": "document_start"
+    },
+    {
+      "matches": ["https://muse.ai/*"],
+      "js": ["src/muse_login.js"],
+      "run_at": "document_start"
     }
   ],
   "content_security_policy": {

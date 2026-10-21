@@ -56,7 +56,7 @@ class SubagentPolicyStore:
             mode = POLICY_NATIVE
         model = str(value.get("default_model") or "gemini-3.7-flash")
         effort = str(value.get("default_reasoning_effort") or "high").lower()
-        if effort not in {"low", "medium", "high"}:
+        if effort not in {"low", "medium", "high"} and not (model == "muse-web/default" and effort == "none"):
             effort = "high"
         return SubagentPolicyConfig(mode, model, effort)
 

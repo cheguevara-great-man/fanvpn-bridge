@@ -31,6 +31,7 @@ test("serializes native messages, caches the offscreen context, retries, and res
   let contextQueries = 0;
   let documentCreates = 0;
   let failNextSend = false;
+  let finishMuseAuth;
 
   const port = {
     onMessage: nativeMessages,
@@ -47,6 +48,10 @@ test("serializes native messages, caches the offscreen context, retries, and res
   const scheduledTimers = [];
 
   globalThis.chrome = {
+    tabs: {
+      async query() { return [{ id: 9, url: "https://muse.ai/" }]; },
+      sendMessage() { return new Promise((resolve) => { finishMuseAuth = resolve; }); },
+    },
     runtime: {
       lastError: null,
       connectNative() {
@@ -123,6 +128,20 @@ test("serializes native messages, caches the offscreen context, retries, and res
       { maxChunkBytes: 64 * 1024, maxInFlight: 2 },
     );
     assert.equal(nativeOutbound[0].type, "hello_ack");
+    assert.equal(nativeOutbound[0].muse_browser_auth, true);
+
+    nativeMessages.emit({ v: 1, type: "control.muse_auth.get", id: "muse_auth_nonblocking" });
+    nativeMessages.emit({ v: 1, type: "ping", nonce: "during-muse-auth" });
+    await waitFor(() => nativeOutbound.some((message) => message.nonce === "during-muse-auth"),
+      "slow Muse auth blocked the native message queue");
+    assert.equal(typeof finishMuseAuth, "function");
+    assert.equal(nativeOutbound.some((message) => message.type === "control.muse_auth.result"), false);
+    finishMuseAuth({ ok: false, error_code: "muse_web_login_required" });
+    await waitFor(() => nativeOutbound.some((message) => message.type === "control.muse_auth.result"),
+      "Muse auth result was not delivered");
+    const museResult = nativeOutbound.find((message) => message.type === "control.muse_auth.result");
+    assert.equal(museResult.id, "muse_auth_nonblocking");
+    assert.equal(museResult.error_code, "muse_web_login_required");
 
     const modeResponse = new Promise((resolve) => {
       const handled = chrome.runtime.onMessage.emit(

@@ -15,11 +15,111 @@ SCRIPT = ROOT / "tools" / "set_codex_network_mode.ps1"
 
 @unittest.skipUnless(os.name == "nt", "PowerShell network-mode test is Windows-only")
 class NetworkModeScriptTests(unittest.TestCase):
+    def test_muse_web_model_appears_without_invented_effort_or_search(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / "config.toml").write_text('model = "gpt-test"\n', encoding="utf-8")
+            self.run_mode(home, "HybridNative", json.dumps([{
+                "id": "muse-web/default", "display_name": "Muse Web (experimental)",
+                "context_window": 32768, "auto_compact_token_limit": 27000,
+                "supported_reasoning_levels": [], "default_reasoning_level": "none",
+            }]))
+            catalog = json.loads((home / "browser-ai-bridge-gemini-models.json").read_text(encoding="utf-8"))
+            row = next(row for row in catalog["models"] if row["slug"] == "muse-web/default")
+            self.assertEqual(row["context_window"], 32768)
+            self.assertEqual(row["auto_compact_token_limit"], 27000)
+            self.assertEqual(row["supported_reasoning_levels"], [])
+            self.assertEqual(row["input_modalities"], ["text"])
+            self.assertFalse(row["supports_search_tool"])
+
     def test_vscode_launcher_refreshes_both_account_model_providers(self) -> None:
         launcher = (ROOT / "tools" / "start_vscode_network_mode.ps1").read_text(encoding="utf-8")
         self.assertIn("/gemini-account/v1/models", launcher)
         self.assertIn("/deepseek-harness/v1/models", launcher)
         self.assertIn("deepSeekRefreshSucceeded", launcher)
+        self.assertIn("/gemini-web/v1/models", launcher)
+        self.assertIn("/muse-web/v1/models", launcher)
+
+    def test_gemini_web_catalog_uses_real_window_and_does_not_invent_reasoning(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / "config.toml").write_text('model = "gpt-test"\n', encoding="utf-8")
+            self.run_mode(home, "HybridNative", json.dumps([{
+                "id": "gemini-web/gemini-4-argon", "display_name": "Gemini Web 4 Argon",
+                "context_window": 65536, "auto_compact_token_limit": 55000,
+                "supported_reasoning_levels": [], "default_reasoning_level": "none",
+                "input_modalities": ["text"],
+            }]))
+            catalog = json.loads((home / "browser-ai-bridge-gemini-models.json").read_text(encoding="utf-8"))
+            row = next(row for row in catalog["models"] if row["slug"] == "gemini-web/gemini-4-argon")
+            self.assertEqual(row["context_window"], 65536)
+            self.assertEqual(row["default_reasoning_level"], "none")
+            self.assertEqual(row["supported_reasoning_levels"], [])
+            self.assertEqual(row["input_modalities"], ["text"])
+            self.assertFalse(row["supports_search_tool"])
+
+    def test_optional_web_catalog_is_merged_preserved_on_failure_and_removed_when_disabled(self) -> None:
+        command = r"""
+param($ScriptPath, $CodexHome, $WebState)
+$ErrorActionPreference = 'Stop'
+$Mode = 'HybridNative'
+$BridgeBaseUrl = 'http://127.0.0.1:18888'
+function Invoke-RestMethod {
+    param($Uri, $Proxy, $TimeoutSec)
+    if ($Uri -match '/muse-web/') {
+        if ($WebState -eq 'failed') { throw 'offline' }
+        if ($WebState -eq 'disabled') { return @{ data = @(); enabled = $false } }
+        return @{ data = @(@{ id = 'muse-web/default'; display_name = 'Live Muse' }) }
+    }
+    if ($Uri -match '/gemini-web/') {
+        if ($WebState -eq 'failed') { throw 'offline' }
+        if ($WebState -eq 'disabled') { return @{ data = @(); enabled = $false } }
+        return @{ data = @(@{ id = 'gemini-web/gemini-4-argon'; display_name = 'Live Web Argon' }) }
+    }
+    if ($Uri -match '/zen/') { $id = 'zen/space-bunny-free' }
+    elseif ($Uri -match '/gemini-account/') { $id = 'gemini-3.8-flash' }
+    else { $id = 'deepseek-web/reasoner' }
+    return @{ data = @(@{ id = $id; supported_reasoning_levels = @('high') }) }
+}
+$source = [IO.File]::ReadAllText($ScriptPath)
+if ($ScriptPath.EndsWith('start_vscode_network_mode.ps1')) {
+    $start = $source.IndexOf('        $accountCatalogModels =')
+    $end = $source.IndexOf('        $geminiModelsJson =', $start)
+    . ([scriptblock]::Create($source.Substring($start, $end - $start)))
+    $rows = $accountCatalogModels.ToArray()
+} else {
+    $start = $source.IndexOf('$geminiJson = $null')
+    $end = $source.IndexOf('if ($accountModels.Count -gt 0)', $start)
+    . ([scriptblock]::Create($source.Substring($start, $end - $start)))
+    $rows = $accountModels.ToArray()
+}
+ConvertTo-Json -InputObject @($rows) -Depth 8 -Compress
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / "browser-ai-bridge-gemini-available-models.json").write_text(json.dumps([
+                {"id": "gemini-web/gemini-4-argon", "display_name": "Cached Web Argon"},
+                {"id": "muse-web/default", "display_name": "Cached Muse"},
+            ]), encoding="utf-8")
+            for script in ("start_vscode_network_mode.ps1", "refresh_model_catalog.ps1"):
+                for state in ("enabled", "failed", "disabled"):
+                    with self.subTest(script=script, state=state):
+                        result = subprocess.run(["powershell", "-NoProfile", "-Command", "& {" + command + "} '"
+                                                 + str(ROOT / "tools" / script) + "' '" + str(home) + "' '" + state + "'"],
+                                                check=True, capture_output=True, text=True)
+                        rows = json.loads(result.stdout.strip().splitlines()[-1])
+                        self.assertTrue({"gemini-3.8-flash", "deepseek-web/reasoner", "zen/space-bunny-free"}
+                                        .issubset({row["id"] for row in rows}))
+                        web = [row for row in rows if row["id"].startswith("gemini-web/")]
+                        muse = [row for row in rows if row["id"] == "muse-web/default"]
+                        if state == "disabled":
+                            self.assertEqual(web, [])
+                            self.assertEqual(muse, [])
+                        else:
+                            self.assertEqual(len(web), 1)
+                            self.assertEqual(web[0]["display_name"], "Cached Web Argon" if state == "failed" else "Live Web Argon")
+                            self.assertEqual(len(muse), 1)
+                            self.assertEqual(muse[0]["display_name"], "Cached Muse" if state == "failed" else "Live Muse")
 
     def test_catalog_scripts_include_zen_and_preserve_it_when_refresh_fails(self) -> None:
         # Execute only catalog collection, avoiding the launcher's process and

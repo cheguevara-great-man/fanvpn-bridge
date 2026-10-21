@@ -19,6 +19,9 @@ from fanvpn_bridge.product_cache import ProductResponseCache
 from fanvpn_bridge.routing import RouteTable
 from fanvpn_bridge.subagent_policy import SubagentPolicyConfig, SubagentPolicyStore
 from fanvpn_bridge.zen_provider import ZenProvider, ZenProviderError
+from fanvpn_bridge.gemini_web import GeminiWebError
+from fanvpn_bridge.muse_auth import BrowserTicketClient, MuseAuthError
+from fanvpn_bridge.muse_web import MuseWebProvider
 from tests.helpers import FakeExtension, channel_pair
 
 
@@ -60,6 +63,165 @@ class _FakeDeepSeekHarness:
 
 
 class HttpGatewayIntegrationTests(unittest.TestCase):
+    def configure_muse_browser_auth(self, callback):
+        key = "test-only-" + "c" * 40
+        self.server.muse_web = MuseWebProvider(base_url="http://127.0.0.1:8008/v1", api_key=key,
+                                                ticket_provider=callback)
+        return {"Authorization": "Bearer " + key}
+
+    def test_muse_browser_auth_is_private_authenticated_and_not_cached(self) -> None:
+        ticket = {"vm_id": "test-vm", "access_token": "test-access", "hatch_token": "test-hatch"}
+        calls = []
+        headers = self.configure_muse_browser_auth(lambda: calls.append(True) or ticket)
+        for method, body, extra, expected in (
+                ("GET", None, headers, 405),
+                ("POST", None, {}, 401),
+                ("POST", None, {"Authorization": "Bearer wrong"}, 401),
+                ("POST", None, {**headers, "Origin": "https://muse.ai"}, 403),
+                ("POST", b"{}", headers, 400)):
+            status, _, raw = self.request(method, "/muse-web/auth", body, extra)
+            self.assertEqual(status, expected)
+            self.assertNotIn(b"test-access", raw)
+        self.assertEqual(calls, [])
+        status, response_headers, raw = self.request("POST", "/muse-web/auth", headers=headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(raw), ticket)
+        self.assertEqual(response_headers["Cache-Control"], "no-store")
+        self.assertNotIn("Access-Control-Allow-Origin", response_headers)
+        client = BrowserTicketClient(bridge_url=f"http://127.0.0.1:{self.port}",
+                                     api_key=headers["Authorization"][7:])
+        self.assertEqual(client.ticket(), ticket)
+        self.assertEqual(len(calls), 2)
+        self.product_server.muse_web = self.server.muse_web
+        status, _, _ = self.product_request("POST", "/muse-web/auth", headers=headers)
+        self.assertNotEqual(status, 200)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(self.upstream_counts, {})
+
+    def test_muse_browser_auth_errors_are_safe_and_disabled_by_default(self) -> None:
+        status, _, raw = self.request("POST", "/muse-web/auth")
+        self.assertEqual(status, 503)
+        self.assertEqual(json.loads(raw)["error"]["code"], "muse_web_disabled")
+
+        def failed_login():
+            raise MuseAuthError("muse_web_login_required")
+
+        headers = self.configure_muse_browser_auth(failed_login)
+        status, _, raw = self.request("POST", "/muse-web/auth", headers=headers)
+        self.assertEqual(status, 401)
+        self.assertEqual(json.loads(raw)["error"]["code"], "muse_web_login_required")
+        self.server.muse_web.ticket_provider = lambda: (_ for _ in ()).throw(RuntimeError("SECRET"))
+        status, _, raw = self.request("POST", "/muse-web/auth", headers=headers)
+        self.assertEqual(status, 503)
+        self.assertNotIn(b"SECRET", raw)
+        self.assertEqual(self.upstream_counts, {})
+
+    def test_muse_web_disabled_has_no_upstream_effect(self) -> None:
+        status, _, body = self.request("GET", "/muse-web/v1/models")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {"object": "list", "data": [], "enabled": False})
+        status, _, body = self.request("POST", "/hybrid/v1/responses", json.dumps({"model": "muse-web/default"}).encode())
+        self.assertEqual(status, 503)
+        self.assertEqual(json.loads(body)["error"]["code"], "muse_web_disabled")
+        self.assertEqual(self.upstream_counts, {})
+
+    def test_muse_web_direct_hybrid_models_and_compaction(self) -> None:
+        class Provider:
+            def models_response(self, *, force=False):
+                return {"data": [{"id": "muse-web/default"}], "force": force}
+
+            def responses(self, payload):
+                return False, {"model": payload["model"], "output": []}
+
+            def compact(self, payload):
+                return {"model": payload["model"], "output": [], "object": "response.compaction"}
+
+        self.server.muse_web = Provider()
+        for prefix in ("/muse-web/v1", "/hybrid/v1"):
+            for suffix in ("/responses", "/responses/compact"):
+                with self.subTest(path=prefix + suffix):
+                    status, _, body = self.request("POST", prefix + suffix, json.dumps({"model": "muse-web/default"}).encode())
+                    self.assertEqual(status, 200)
+                    self.assertEqual(json.loads(body)["model"], "muse-web/default")
+        status, _, body = self.request("GET", "/muse-web/v1/models?refresh=force")
+        self.assertTrue(json.loads(body)["force"])
+        status, _, body = self.request("GET", "/hybrid/v1/models")
+        self.assertIn("muse-web/default", {row["id"] for row in json.loads(body)["data"]})
+        self.assertEqual(self.upstream_counts, {})
+
+    def test_muse_web_outage_does_not_break_other_models(self) -> None:
+        class Provider:
+            def models_response(self):
+                raise GeminiWebError("offline")
+
+        self.server.muse_web = Provider()
+        status, _, body = self.request("GET", "/hybrid/v1/models")
+        self.assertEqual(status, 200)
+        self.assertEqual([row["id"] for row in json.loads(body)["data"]],
+                         ["gemini-3.7-flash", "deepseek-web/chat"])
+
+    def test_gemini_web_disabled_endpoint_does_not_touch_other_routes(self) -> None:
+        status, _, body = self.request("GET", "/gemini-web/v1/models")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {"object": "list", "data": [], "enabled": False})
+        status, _, _ = self.request("POST", "/hybrid/v1/responses", json.dumps({"model": "gemini-web/gemini-4-argon"}).encode())
+        self.assertEqual(status, 503)
+        self.assertEqual(self.upstream_counts, {})
+
+    def test_gemini_web_hybrid_and_direct_routes_and_compaction(self) -> None:
+        class WebProvider:
+            def models_response(self, *, force=False):
+                return {"data": [{"id": "gemini-web/gemini-4-argon"}], "force": force}
+
+            def responses(self, payload):
+                return False, {"model": payload["model"], "output": []}
+
+            def compact(self, payload):
+                return {"model": payload["model"], "output": [], "object": "response.compaction"}
+
+        self.server.gemini_web = WebProvider()
+        for path in ("/hybrid/v1/responses", "/gemini-web/v1/responses", "/hybrid/v1/responses/compact", "/gemini-web/v1/responses/compact"):
+            with self.subTest(path=path):
+                status, _, body = self.request("POST", path, json.dumps({"model": "gemini-web/gemini-4-argon"}).encode())
+                self.assertEqual(status, 200)
+                self.assertEqual(json.loads(body)["model"], "gemini-web/gemini-4-argon")
+        status, _, body = self.request("GET", "/gemini-web/v1/models?refresh=force")
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["force"])
+        status, _, body = self.request("GET", "/hybrid/v1/models")
+        self.assertEqual({item["id"] for item in json.loads(body)["data"]},
+                         {"gemini-3.7-flash", "deepseek-web/chat", "gemini-web/gemini-4-argon"})
+        self.assertEqual(self.upstream_counts, {})
+
+    def test_gemini_web_catalog_outage_keeps_other_hybrid_models(self) -> None:
+        class WebProvider:
+            def models_response(self):
+                raise GeminiWebError("Service offline")
+
+        self.server.gemini_web = WebProvider()
+        status, _, body = self.request("GET", "/hybrid/v1/models")
+        self.assertEqual(status, 200)
+        self.assertEqual([item["id"] for item in json.loads(body)["data"]], ["gemini-3.7-flash", "deepseek-web/chat"])
+
+    def test_gemini_web_stream_failure_is_an_explicit_error_not_a_success(self) -> None:
+        class WebProvider:
+            def responses(self, payload):
+                def events():
+                    yield b": heartbeat\n\n"
+                    raise GeminiWebError("Incomplete upstream", code="gemini_web_test_failure")
+                return True, events()
+
+        self.server.gemini_web = WebProvider()
+        status, headers, body = self.request("POST", "/hybrid/v1/responses", json.dumps({"model": "gemini-web/gemini-4-argon", "stream": True}).encode())
+        self.assertEqual(status, 200)
+        self.assertIn(b"event: error", body)
+        self.assertIn(b"gemini_web_test_failure", body)
+        self.assertNotIn(b"response.completed", body)
+
+    def test_gemini_web_direct_rejects_invalid_json(self) -> None:
+        status, _, _ = self.request("POST", "/gemini-web/v1/responses", b"{")
+        self.assertEqual(status, 400)
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.auth_path = Path(self.temp.name) / "auth.json"

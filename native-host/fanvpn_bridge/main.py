@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -21,6 +22,8 @@ from .errors import BridgeError
 from .framing import FramedMessageChannel
 from .forward_proxy import ForwardProxyError, run_forward_proxy
 from .gemini_account import GeminiAccountProvider
+from .gemini_web import GeminiWebProvider
+from .muse_web import MuseWebProvider
 from .hybrid_route import HybridRouteStore
 from .http_server import create_http_server
 from .mode_control import CodexModeController
@@ -52,6 +55,40 @@ def run(config_path: Path) -> int:
         bridge_url=f"http://{config.listen_host}:{config.listen_port}",
         timeout_seconds=config.protocol.request_timeout_seconds,
     )
+    gemini_web_url = os.environ.get("FANVPN_GEMINI_WEB_URL")
+    try:
+        # A local opt-in file also works when Chrome was started before the
+        # user's shell environment changed. No account credentials belong here.
+        gemini_web_config = cache_base / "gemini-web.json"
+        if gemini_web_url is None and gemini_web_config.is_file():
+            web_config = json.loads(gemini_web_config.read_text(encoding="utf-8"))
+            if not isinstance(web_config, dict) or set(web_config) != {"base_url"} or not isinstance(web_config["base_url"], str):
+                raise ValueError("Invalid Gemini Web configuration")
+            gemini_web_url = web_config["base_url"]
+        gemini_web = GeminiWebProvider(
+            base_url=gemini_web_url,
+            api_key=os.environ.get("FANVPN_GEMINI_WEB_API_KEY", ""),
+            timeout_seconds=config.protocol.request_timeout_seconds,
+        )
+    except (OSError, ValueError):
+        # An optional experimental provider must never stop the existing Bridge.
+        log.warning("gemini_web_disabled reason=invalid_local_configuration")
+        gemini_web = GeminiWebProvider()
+    muse_web_url = os.environ.get("FANVPN_MUSE_WEB_URL")
+    muse_web_key = os.environ.get("FANVPN_MUSE_WEB_API_KEY", "")
+    try:
+        muse_config_path = cache_base / "muse-web.json"
+        if muse_web_url is None and muse_config_path.is_file():
+            muse_config = json.loads(muse_config_path.read_text(encoding="utf-8"))
+            if (not isinstance(muse_config, dict) or set(muse_config) != {"base_url", "api_key"}
+                    or not all(isinstance(value, str) for value in muse_config.values())):
+                raise ValueError("Invalid Muse Web local configuration")
+            muse_web_url, muse_web_key = muse_config["base_url"], muse_config["api_key"]
+        muse_web = MuseWebProvider(base_url=muse_web_url, api_key=muse_web_key,
+                                   timeout_seconds=config.protocol.request_timeout_seconds)
+    except (OSError, ValueError):
+        log.warning("muse_web_disabled reason=invalid_local_configuration")
+        muse_web = MuseWebProvider()
     server_executor_controller = ServerExecutorTransportController(cache_base=cache_base)
     if server_executor_controller.recover_selected_mode():
         log.info("server_executor_client_recovery_started port=18890")
@@ -71,6 +108,7 @@ def run(config_path: Path) -> int:
         gemini_account_provider=gemini_account,
         update_controller=LocalUpdateController(cache_base=cache_base),
     )
+    muse_web.ticket_provider = dispatcher.get_muse_auth_ticket
     deepseek_harness = DeepSeekHarnessProvider(
         bridge_url=f"http://{config.listen_host}:{config.listen_port}",
         pow_solver=dispatcher.solve_deepseek_pow,
@@ -101,6 +139,8 @@ def run(config_path: Path) -> int:
         product_cache=product_cache,
         usage_reporter=usage_reporter,
         gemini_account=gemini_account,
+        gemini_web=gemini_web,
+        muse_web=muse_web,
         deepseek_harness=deepseek_harness,
         zen_provider=zen_provider,
         subagent_policy=subagent_policy,
@@ -124,6 +164,8 @@ def run(config_path: Path) -> int:
             product_cache=product_cache,
             usage_reporter=usage_reporter,
             gemini_account=gemini_account,
+            gemini_web=gemini_web,
+            muse_web=muse_web,
             deepseek_harness=deepseek_harness,
             zen_provider=zen_provider,
             subagent_policy=subagent_policy,

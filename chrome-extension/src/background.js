@@ -9,6 +9,7 @@ import {
   isProtocolEnvelope,
 } from "./protocol.js";
 import { solveDeepSeekPowChallenge } from "./deepseek_pow.js";
+import { museBrowserTicket } from "./muse_auth.js";
 
 const NATIVE_HOST_NAME = "com.fanvpn.bridge";
 const RECONNECT_MIN_MS = 1000;
@@ -172,6 +173,7 @@ async function handleNativeMessage(message, port) {
         envelope(MessageType.HELLO_ACK, {
           extension_version: chrome.runtime.getManifest().version,
           executor: "offscreen",
+          muse_browser_auth: true,
         }),
         port,
       );
@@ -213,6 +215,12 @@ async function handleNativeMessage(message, port) {
         port,
       );
     }
+    return;
+  }
+  if (message.type === MessageType.CONTROL_MUSE_AUTH_GET && handshakeComplete) {
+    // Do not hold the native message chain while the Muse page does network I/O.
+    void museBrowserTicket().catch(() => ({ ok: false, error_code: "muse_web_browser_unavailable" }))
+      .then((result) => postNative(envelope(MessageType.CONTROL_MUSE_AUTH_RESULT, { id: message.id, ...result }), port));
     return;
   }
   if (

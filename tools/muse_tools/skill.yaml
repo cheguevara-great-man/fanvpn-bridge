@@ -1,0 +1,5 @@
+name: "__SKILL_NAME__"
+title: "Codex Tool Handoff"
+description: "Hand off explicitly supplied Codex tools to the connected Codex client and read its returned results."
+category: "Work and knowledge"
+include_in_prompt: false

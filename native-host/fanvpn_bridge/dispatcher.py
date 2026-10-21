@@ -35,6 +35,7 @@ from .server_executor_control import (
 from .subagent_config import SubagentConfigurationController, SubagentConfigError
 from .update_control import LocalUpdateController, UpdateControlError
 from .web_harness import WebHarnessController, WebHarnessError
+from .muse_auth import MuseAuthError, validate_ticket
 from .protocol import (
     FlowWindow,
     PROTOCOL_VERSION,
@@ -80,6 +81,13 @@ class _PendingDeepSeekPow:
     error: str | None = None
 
 
+@dataclass(slots=True)
+class _PendingMuseAuth:
+    event: threading.Event
+    ticket: dict[str, str] | None = None
+    error: MuseAuthError | None = None
+
+
 class NativeDispatcher:
     """Routes concurrent local requests over one full-duplex native channel."""
 
@@ -115,6 +123,9 @@ class NativeDispatcher:
         self._pending_updates: dict[str, _PendingUpdate] = {}
         self._deepseek_pow_lock = threading.Lock()
         self._pending_deepseek_pow: dict[str, _PendingDeepSeekPow] = {}
+        self._muse_auth_lock = threading.Lock()
+        self._pending_muse_auth: dict[str, _PendingMuseAuth] = {}
+        self._muse_auth_supported = False
         self._pending: dict[str, _PendingRequest] = {}
         self._pending_lock = threading.Lock()
         self._ready = threading.Event()
@@ -268,6 +279,33 @@ class NativeDispatcher:
             with self._deepseek_pow_lock:
                 self._pending_deepseek_pow.pop(request_id, None)
 
+    def get_muse_auth_ticket(self, *, timeout: float = 35) -> dict[str, str]:
+        """Request a fresh ticket; never read/export cookies or retain credentials."""
+        if not self._ready.is_set() or self._closed.is_set():
+            raise MuseAuthError("muse_web_browser_unavailable")
+        if not self._muse_auth_supported:
+            raise MuseAuthError("muse_web_extension_required")
+        request_id = "museauth_" + uuid.uuid4().hex
+        pending = _PendingMuseAuth(event=threading.Event())
+        with self._muse_auth_lock:
+            if len(self._pending_muse_auth) >= 4:
+                raise MuseAuthError("muse_web_rate_limited")
+            self._pending_muse_auth[request_id] = pending
+        try:
+            self._channel.send(envelope("control.muse_auth.get", id=request_id))
+            if not pending.event.wait(min(timeout, self._request_timeout)):
+                raise MuseAuthError("muse_web_auth_timeout")
+            if pending.error is not None:
+                raise pending.error
+            return validate_ticket(pending.ticket)
+        except MuseAuthError:
+            raise
+        except Exception:
+            raise MuseAuthError("muse_web_browser_unavailable") from None
+        finally:
+            with self._muse_auth_lock:
+                self._pending_muse_auth.pop(request_id, None)
+
     def snapshot(self) -> HealthSnapshot:
         with self._pending_lock:
             active_requests = len(self._pending)
@@ -307,6 +345,12 @@ class NativeDispatcher:
         for item in pow_pending:
             item.error = str(failure)
             item.event.set()
+        with self._muse_auth_lock:
+            muse_pending = list(self._pending_muse_auth.values())
+            self._pending_muse_auth.clear()
+        for item in muse_pending:
+            item.error = MuseAuthError("muse_web_browser_unavailable")
+            item.event.set()
         self._channel.close()
 
     def _reader_loop(self) -> None:
@@ -340,6 +384,7 @@ class NativeDispatcher:
             ):
                 raise BridgeError(ErrorCode.PROTOCOL_VIOLATION, "Invalid hello_ack")
             self._executor = executor
+            self._muse_auth_supported = message.get("muse_browser_auth") is True
             self._ready.set()
             return
         if message_type == "ping":
@@ -368,6 +413,22 @@ class NativeDispatcher:
                 detail = message.get("message")
                 pending_pow.error = detail if isinstance(detail, str) and detail else "DeepSeek PoW solver failed"
             pending_pow.event.set()
+            return
+        if message_type == "control.muse_auth.result":
+            request_id = message.get("id")
+            if not isinstance(request_id, str):
+                return
+            with self._muse_auth_lock:
+                pending_muse = self._pending_muse_auth.get(request_id)
+                if pending_muse is None or pending_muse.event.is_set():
+                    return  # Ignore stale/duplicate tickets, including after timeout.
+                try:
+                    if message.get("ok") is not True:
+                        raise MuseAuthError(message.get("error_code"))
+                    pending_muse.ticket = validate_ticket(message.get("ticket"))
+                except MuseAuthError as error:
+                    pending_muse.error = error
+                pending_muse.event.set()
             return
         if message_type == "error" and not self._ready.is_set() and message.get("id") is None:
             code_value = message.get("code")

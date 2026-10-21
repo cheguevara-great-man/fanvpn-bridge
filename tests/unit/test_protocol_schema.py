@@ -9,6 +9,25 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class NativeMessagingSchemaTests(unittest.TestCase):
+    def test_muse_auth_is_an_optional_capability_with_private_typed_results(self) -> None:
+        schema = json.loads(
+            (ROOT / "contracts" / "native-messaging-v1.schema.json").read_text(encoding="utf-8")
+        )
+        definitions = schema["$defs"]
+        hello = definitions["helloAck"]["allOf"][1]
+        self.assertEqual(hello["properties"]["muse_browser_auth"], {"type": "boolean"})
+        self.assertNotIn("muse_browser_auth", hello["required"])
+        ticket = definitions["museTicket"]
+        self.assertEqual(set(ticket["required"]), {"vm_id", "access_token", "hatch_token"})
+        self.assertFalse(ticket["additionalProperties"])
+        self.assertNotIn("cookies", ticket["properties"])
+        for name in ("controlMuseAuthGet", "controlMuseAuthResult"):
+            self.assertIn({"$ref": "#/$defs/" + name}, schema["oneOf"])
+            self.assertFalse(definitions[name]["additionalProperties"])
+        variants = definitions["controlMuseAuthResult"]["oneOf"]
+        self.assertEqual(variants[0]["not"], {"required": ["error_code"]})
+        self.assertEqual(variants[1]["not"], {"required": ["ticket"]})
+
     def test_browser_timing_belongs_to_responses_and_errors_only(self) -> None:
         schema = json.loads(
             (ROOT / "contracts" / "native-messaging-v1.schema.json").read_text(encoding="utf-8")

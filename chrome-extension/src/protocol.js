@@ -42,6 +42,8 @@ export const MessageType = Object.freeze({
   CONTROL_GEMINI_QUOTA_RESULT: "control.gemini_quota.result",
   CONTROL_DEEPSEEK_POW_SOLVE: "control.deepseek_pow.solve",
   CONTROL_DEEPSEEK_POW_RESULT: "control.deepseek_pow.result",
+  CONTROL_MUSE_AUTH_GET: "control.muse_auth.get",
+  CONTROL_MUSE_AUTH_RESULT: "control.muse_auth.result",
   CONTROL_UPDATE_STATUS: "control.update.status",
   CONTROL_UPDATE_START: "control.update.start",
   CONTROL_UPDATE_READY: "control.update.ready",

@@ -11,9 +11,9 @@ from typing import Mapping
 from .subagent_policy import POLICY_CONFIGURED, SubagentPolicyConfig, SubagentPolicyStore
 
 
-_MODEL_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
+_MODEL_RE = re.compile(r"^(?:[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}|muse-web/default)$")
 _ROLE_RE = re.compile(r"^[a-z][a-z0-9_]{0,47}$")
-_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max", "ultra"})
+_EFFORTS = frozenset({"none", "low", "medium", "high", "xhigh", "max", "ultra"})
 _MANAGED_ROLE_PREFIX = "browser-ai-bridge-"
 _MAX_CONFIG_BYTES = 2 * 1024 * 1024
 
@@ -80,7 +80,7 @@ class SubagentConfigurationController:
                 result.append({
                     "id": slug,
                     "name": str(item.get("display_name") or slug)[:160],
-                    "efforts": efforts or ["low", "medium", "high"],
+                    "efforts": efforts or (["none"] if slug == "muse-web/default" else ["low", "medium", "high"]),
                 })
         return result
 

@@ -10,6 +10,31 @@ from fanvpn_bridge.subagent_policy import SubagentPolicyStore
 
 
 class SubagentConfigurationTests(unittest.TestCase):
+    def test_muse_is_selectable_as_a_subagent_without_fake_reasoning(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / "config.toml").write_text(
+                "# BEGIN Browser AI Bridge managed subagent defaults\n"
+                "# previous-subagent-model-base64: absent\n"
+                "# previous-subagent-effort-base64: absent\n"
+                "# END Browser AI Bridge managed subagent defaults\n"
+                'model = "gpt-main"\n\n[agents]\n'
+                'default_subagent_model = "gemini-3.7-flash"\n'
+                'default_subagent_reasoning_effort = "high"\n', encoding="utf-8")
+            (home / "browser-ai-bridge-gemini-models.json").write_text(json.dumps({"models": [{
+                "slug": "muse-web/default", "display_name": "Muse Web", "supported_reasoning_levels": [],
+            }]}), encoding="utf-8")
+            store = SubagentPolicyStore(home / "policy.json")
+            controller = SubagentConfigurationController(home, store)
+            self.assertEqual(controller.status()["models"][0]["efforts"], ["none"])
+            result = controller.apply({"default_model": "muse-web/default", "default_reasoning_effort": "none",
+                                       "roles": [{"name": "muse", "description": "Muse helper",
+                                                  "developer_instructions": "Use the tools provided by Codex.",
+                                                  "model": "muse-web/default", "model_reasoning_effort": "none"}]})
+            self.assertEqual(result["roles"][0]["model"], "muse-web/default")
+            self.assertEqual(store.read().default_reasoning_effort, "none")
+            self.assertIn('model = "gpt-main"', (home / "config.toml").read_text(encoding="utf-8"))
+
     def test_updates_only_managed_defaults_and_roles(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)

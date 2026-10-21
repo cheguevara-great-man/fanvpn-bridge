@@ -144,6 +144,8 @@ function New-GeminiModelCatalog {
         $modelId = if ($_ -is [string]) { [string]$_ } else { [string]$_.id }
         if ((
                 $modelId -match '^gemini-[a-z0-9.-]+$' -or
+                ($IncludeOpenAI -and $modelId -match '^gemini-web/gemini-[a-z0-9.-]+$') -or
+                ($IncludeOpenAI -and $modelId -eq 'muse-web/default') -or
                 $modelId -match '^deepseek-web/(?:chat|reasoner)$' -or
                 $modelId -match '^zen/[a-z0-9][a-z0-9.-]*$'
             ) -and
@@ -207,6 +209,8 @@ function New-GeminiModelCatalog {
                 $officialCache = [System.IO.File]::ReadAllText($officialCatalogPath) | ConvertFrom-Json
                 foreach ($officialModel in @($officialCache.models | Where-Object {
                     $_.slug -is [string] -and $_.slug -notmatch '^gemini-' -and
+                    $_.slug -notmatch '^gemini-web/' -and
+                    $_.slug -notmatch '^muse-web/' -and
                     $_.slug -notmatch '^deepseek-web/' -and
                     $_.slug -notmatch '^zen/' -and
                     $_.slug -notmatch '^chatgpt-web/'
@@ -237,6 +241,9 @@ function New-GeminiModelCatalog {
         $metadata = $rankedModel.Metadata
         $isDeepSeekModel = $modelId.StartsWith('deepseek-web/')
         $isZenModel = $modelId.StartsWith('zen/')
+        $isGeminiWebModel = $modelId.StartsWith('gemini-web/')
+        $isMuseWebModel = $modelId -eq 'muse-web/default'
+        $isTextWebModel = $isGeminiWebModel -or $isMuseWebModel
         $displayName = if ($metadata -and $metadata.display_name) {
             [string]$metadata.display_name
         } else {
@@ -255,6 +262,10 @@ function New-GeminiModelCatalog {
             'DeepSeek Web model through Browser AI Bridge'
         } elseif ($isZenModel) {
             'Free OpenCode Zen model reachable without credentials'
+        } elseif ($isGeminiWebModel) {
+            'Experimental Gemini website model through an opt-in local service'
+        } elseif ($isMuseWebModel) {
+            'Experimental Muse website agent through an opt-in local service'
         } else {
             'Google account model through Browser AI Bridge'
         })
@@ -267,16 +278,22 @@ function New-GeminiModelCatalog {
         Set-ObjectProperty $model 'default_reasoning_summary' 'none'
         Set-ObjectProperty $model 'prefer_websockets' $false
         Set-ObjectProperty $model 'use_responses_lite' $false
+        if ($isTextWebModel) {
+            Set-ObjectProperty $model 'input_modalities' @('text')
+            Set-ObjectProperty $model 'supports_search_tool' $false
+        }
         # DeepSeek and Zen both advertise their real window through provider
         # metadata; the Google aliases below are all one million tokens.
-        $contextWindow = if (($isDeepSeekModel -or $isZenModel) -and $metadata -and $metadata.context_window) {
+        $contextWindow = if (($isDeepSeekModel -or $isZenModel -or $isTextWebModel) -and $metadata -and $metadata.context_window) {
             [int64]$metadata.context_window
+        } elseif ($isTextWebModel) {
+            32768
         } else {
             1000000
         }
         Set-ObjectProperty $model 'context_window' $contextWindow
         Set-ObjectProperty $model 'max_context_window' $contextWindow
-        if ($isDeepSeekModel -or $isZenModel) {
+        if ($isDeepSeekModel -or $isZenModel -or $isTextWebModel) {
             $autoCompactTokenLimit = if ($metadata -and $metadata.auto_compact_token_limit) {
                 [int64]$metadata.auto_compact_token_limit
             } else {
@@ -318,6 +335,9 @@ function New-GeminiModelCatalog {
                 }
                 [pscustomobject]@{ effort = $_; description = $description }
             })
+        } elseif ($isTextWebModel) {
+            Set-ObjectProperty $model 'default_reasoning_level' 'none'
+            Set-ObjectProperty $model 'supported_reasoning_levels' @()
         } else {
             $fixedEffort = $null
             if ($modelId -match '-high$') { $fixedEffort = 'high' }
@@ -352,6 +372,8 @@ function New-GeminiModelCatalog {
                 'You are Codex, an agent powered by DeepSeek Web. You remain the coding agent and use the tools supplied by Codex.'
             } elseif ($isZenModel) {
                 'You are Codex, an agent powered by a free OpenCode Zen model. You remain the coding agent and use the tools supplied by Codex.'
+            } elseif ($isMuseWebModel) {
+                'You are Codex, an agent powered by Muse Web. You remain the coding agent and use the tools supplied by Codex.'
             } else {
                 'You are Codex, an agent powered by Gemini. You remain the coding agent and use the tools supplied by Codex.'
             }
@@ -448,12 +470,16 @@ if (($effectiveMode -eq 'GeminiAccount' -or $isHybrid) -and $GeminiModelsJson) {
             if ($_ -is [string] -and (
                 $_ -match '^gemini-[a-z0-9.-]+$' -or
                 ($isHybrid -and $_ -match '^deepseek-web/(?:chat|reasoner)$') -or
+                ($isHybrid -and $_ -match '^gemini-web/gemini-[a-z0-9.-]+$') -or
+                ($isHybrid -and $_ -eq 'muse-web/default') -or
                 ($isHybrid -and $_ -match '^zen/[a-z0-9][a-z0-9.-]*$')
             )) {
                 $_
             } elseif ($_.id -is [string] -and (
                 $_.id -match '^gemini-[a-z0-9.-]+$' -or
                 ($isHybrid -and $_.id -match '^deepseek-web/(?:chat|reasoner)$') -or
+                ($isHybrid -and $_.id -match '^gemini-web/gemini-[a-z0-9.-]+$') -or
+                ($isHybrid -and $_.id -eq 'muse-web/default') -or
                 ($isHybrid -and $_.id -match '^zen/[a-z0-9][a-z0-9.-]*$')
             )) {
                 $allowedEfforts = if ($_.id.StartsWith('zen/')) {
@@ -464,7 +490,17 @@ if (($effectiveMode -eq 'GeminiAccount' -or $isHybrid) -and $GeminiModelsJson) {
                 $efforts = @($_.supported_reasoning_levels | Where-Object {
                     $_ -in $allowedEfforts
                 } | Select-Object -Unique)
-                if ($efforts.Count -gt 0) {
+                if ($_.id.StartsWith('gemini-web/') -or $_.id -eq 'muse-web/default') {
+                    [pscustomobject]@{
+                        id = [string]$_.id
+                        display_name = [string]$_.display_name
+                        default_reasoning_level = [string]$_.default_reasoning_level
+                        supported_reasoning_levels = $efforts
+                        context_window = $_.context_window
+                        auto_compact_token_limit = $_.auto_compact_token_limit
+                        input_modalities = @('text')
+                    }
+                } elseif ($efforts.Count -gt 0) {
                     [pscustomobject]@{
                         id = [string]$_.id
                         display_name = [string]$_.display_name
