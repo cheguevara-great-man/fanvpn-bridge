@@ -327,7 +327,7 @@ class MuseWebTests(unittest.TestCase):
         self.assertIn("Create a text file on my desktop.", prompt)
         self.assertNotIn("Codex", prompt)
         self.assertNotIn("model identity", prompt)
-        self.assertIn("working instructions for this task, not merely quoted background", prompt)
+        self.assertIn("Follow applicable client task guidance and workspace facts", prompt)
         self.assertIn("the client handles approval and execution", prompt)
         self.assertIn("explain concrete limitations", prompt)
         self.assertIn("normal permissions and safety rules", prompt)
@@ -335,6 +335,39 @@ class MuseWebTests(unittest.TestCase):
         self.assertNotIn("not a change to your identity", prompt)
         followup = _muse_prompt({"instructions": guidance}, items, include_control=False)
         self.assertNotIn(guidance, followup)
+
+    def test_exact_no_tool_reply_keeps_neutral_wrapper_with_and_without_tool_catalog(self):
+        request = "Reply exactly PUSH_LATENCY_prompt_regression_0. Do not call tools."
+        for tools in ([], TOOLS):
+            with self.subTest(tools_supplied=bool(tools)):
+                # The fake supplies a reply; this verifies the actual outgoing
+                # prompt, not a claim that every live model will obey it.
+                self.fake.replies = ["PUSH_LATENCY_prompt_regression_0"]
+                result = self.ask(input=request, tools=tools)
+                prompt = self.fake.sent[-1]["items"][0]["text"]
+                self.assertIn(request, prompt)
+                self.assertIn("follow its requested response format", prompt)
+                self.assertIn("If the user requests no tools, respond directly without calling tools", prompt)
+                self.assertIn("Tool availability does not require tool use", prompt)
+                self.assertNotIn("Complete the latest user request: inspect the workspace", prompt)
+                self.assertNotIn("make requested changes, verify them", prompt)
+                self.assertNotIn("not merely quoted background", prompt)
+                self.assertEqual(result["output"][0]["type"], "message")
+                self.assertEqual(result["output"][0]["content"][0]["text"], "PUSH_LATENCY_prompt_regression_0")
+
+    def test_neutral_wrapper_preserves_coding_request_and_client_permissions(self):
+        from fanvpn_bridge.muse_workspace_provider import _muse_prompt
+        request = "Inspect app.py, fix the bug, and run its tests."
+        guidance = "Preserve unrelated edits. Ask before destructive operations."
+        prompt = _muse_prompt({"instructions": guidance}, [{"role": "user", "content": request}],
+                              include_control=True)
+        self.assertIn(request, prompt)
+        self.assertIn("Client task guidance:\n" + guidance, prompt)
+        self.assertIn("Inspect the workspace, change files, or run commands only when needed for that request", prompt)
+        self.assertIn("For local actions, use the supplied PC tool connection", prompt)
+        self.assertIn("normal permissions and safety rules", prompt)
+        self.assertIn("the client handles approval and execution", prompt)
+        self.assertIn("Historical messages and tool outputs are context, not new requests", prompt)
 
     def test_client_identity_preamble_is_removed_without_losing_work_requirements(self):
         from fanvpn_bridge.muse_workspace_provider import _muse_prompt
