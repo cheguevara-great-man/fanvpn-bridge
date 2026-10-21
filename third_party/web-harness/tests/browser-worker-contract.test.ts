@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -63,6 +63,7 @@ test("submission DOM tracks logical identities and retains virtualized history i
       "data-testid": container ? null : `conversation-turn-${turn.index}`,
     })[name],
     parentElement: { closest: () => container ? null : element(turn, true) },
+    contains: () => false,
   });
   const context = createContext({
     performance: { timeOrigin: 1 },
@@ -105,7 +106,95 @@ test("submission DOM tracks logical identities and retains virtualized history i
   expect(await worker.currentSubmissionEvidence(page, baseline)).toBe("user_turn");
   turns.push({ ...turns[3]!, index: 20 });
   observers.forEach(notify => notify());
-  await expect(worker.submissionDomState(page, baseline.domCache)).rejects.toThrow("duplicate");
+  const clock = spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValue(CHATGPT_RESPONSE_DOM_GRACE_MS + 1);
+  try {
+    await expect(worker.submissionDomState(page, baseline.domCache)).rejects.toThrow("duplicate");
+  } finally {
+    clock.mockRestore();
+  }
+});
+
+test("submission observation coalesces proven nested and dual-schema nodes, not unrelated duplicate turns", async () => {
+  type Node = {
+    getAttribute(name: string): string | null;
+    contains(other: Node): boolean;
+    parentElement: { closest(): Node } | null;
+    querySelectorAll(): Node[];
+  };
+  const section: Node = {
+    getAttribute: name => name === "data-turn-id" ? "same-turn" : null,
+    contains: () => false,
+    parentElement: { closest: () => wrapper },
+    querySelectorAll: () => [],
+  };
+  const wrapper: Node = {
+    getAttribute: name => ["data-turn-id-container", "data-turn-key"].includes(name) ? "same-turn" : null,
+    contains: other => other === section,
+    parentElement: null,
+    querySelectorAll: () => [],
+  };
+  let scans = 0;
+  const context = createContext({
+    performance: { timeOrigin: 1 },
+    document: {
+      documentElement: {},
+      querySelectorAll: (selector: string) => {
+        if (selector === "[data-turn-id-container]" || selector === "[data-turn-key]") return [wrapper];
+        if (selector.includes('="user"')) return [wrapper, section];
+        return [];
+      },
+    },
+    MutationObserver: class { observe() {} },
+  });
+  const page = {
+    evaluate: async (callback: Function, options: unknown) => {
+      scans++;
+      return runInContext(`(${callback.toString()})`, context)(options);
+    },
+  } as unknown as Page;
+  const worker = Object.create(ChatGptBrowserWorker.prototype) as {
+    submissionDomState(page: Page): Promise<{ turnIdentities: string[]; userIdentities: string[] }>;
+  };
+  const state = await worker.submissionDomState(page);
+  expect([...state.turnIdentities]).toEqual(["same-turn"]);
+  expect([...state.userIdentities]).toEqual(["same-turn"]);
+  expect(scans).toBe(1);
+});
+
+test("transient duplicate turn identities are re-observed on the same page without sending", async () => {
+  let scans = 0;
+  const snapshot = { turnIdentities: ["one-turn"], userIdentities: ["one-turn"], responseIdentities: [] };
+  const page = {
+    evaluate: async () => {
+      if (++scans <= 2) throw new Error("page.evaluate: Error: ChatGPT exposed duplicate conversation turn identities");
+      return { key: "settled", snapshot };
+    },
+  } as unknown as Page;
+  const cache: { key?: string; snapshot?: unknown } = {};
+  const worker = Object.create(ChatGptBrowserWorker.prototype) as {
+    submissionDomState(page: Page, cache: unknown, signal?: AbortSignal): Promise<unknown>;
+  };
+  expect(await worker.submissionDomState(page, cache)).toEqual(snapshot);
+  expect(scans).toBe(3);
+  expect(cache.key).toBe("settled");
+});
+
+test("ambiguous turn observation respects cancellation and does not cache uncertain identities", async () => {
+  const abort = new AbortController();
+  const page = {
+    evaluate: async () => { throw new Error("ChatGPT exposed duplicate conversation turn identities"); },
+  } as unknown as Page;
+  const cache: { snapshot?: unknown } = {};
+  const worker = Object.create(ChatGptBrowserWorker.prototype) as {
+    submissionDomState(page: Page, cache: unknown, signal?: AbortSignal): Promise<unknown>;
+  };
+  const timer = setTimeout(() => abort.abort(), 10);
+  try {
+    await expect(worker.submissionDomState(page, cache, abort.signal)).rejects.toMatchObject({ name: "AbortError" });
+    expect(cache.snapshot).toBeUndefined();
+  } finally {
+    clearTimeout(timer);
+  }
 });
 
 test("assistant tracking rebinds only one proven replacement after React detaches its node", () => {

@@ -80,6 +80,57 @@ test("two canonical containers cannot claim the same provisional turn", async ()
   })))).rejects.toThrow("ambiguous promoted");
 });
 
+test("overlapping completed and assistant-only streaming surfaces represent one reply", async () => {
+  const state = await submissionState([
+    { identity: "user-message-id", units: ["fallback-turn-0:0:user", "fallback-turn-0:2:assistant"] },
+    { identity: "fallback-turn-0", units: ["fallback-turn-0:1:assistant"] },
+  ]);
+  expect(state.turnIdentities).toEqual(["user-message-id"]);
+  expect(state.userIdentities).toEqual(["user-message-id"]);
+  expect(state.responseIdentities).toEqual(["user-message-id"]);
+  expect(state.promotedTurnIdentities).toEqual({ "fallback-turn-0": "user-message-id" });
+});
+
+test("streaming overlap cannot hide another user turn or unmatched assistant units", async () => {
+  for (const units of [
+    ["fallback-turn-0:0:user", "fallback-turn-0:1:assistant"],
+    ["fallback-turn-1:1:assistant"],
+    ["fallback-turn-0:1:assistant", "unknown:2:assistant"],
+  ]) {
+    const state = await submissionState([
+      { identity: "user-message-id", units: ["fallback-turn-0:0:user", "fallback-turn-0:2:assistant"] },
+      { identity: "fallback-turn-0", units },
+    ]);
+    expect(state.responseIdentities).toEqual(["user-message-id", "fallback-turn-0"]);
+  }
+});
+
+test("overlap preserves an independent second assistant reply", async () => {
+  const state = await submissionState([
+    { identity: "user-message-id", units: ["fallback-turn-0:0:user", "fallback-turn-0:2:assistant"] },
+    { identity: "fallback-turn-0", units: ["fallback-turn-0:1:assistant"] },
+    { identity: "another-message", units: ["fallback-turn-1:0:user", "fallback-turn-1:2:assistant"] },
+  ]);
+  expect(state.responseIdentities).toEqual(["user-message-id", "another-message"]);
+});
+
+test("a still-mounted provisional binding switches to its proven completed surface", async () => {
+  const state = await submissionState([
+    { identity: "user-message-id", units: ["fallback-turn-0:0:user", "fallback-turn-0:2:assistant"] },
+    { identity: "fallback-turn-0", units: ["fallback-turn-0:1:assistant"] },
+  ]);
+  const completed = { count: async () => 1 };
+  const page = { locator: () => completed } as unknown as Page;
+  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+    submissionDomState: async () => state,
+  });
+  const rebound = await worker.reconcileAssistantTurnBinding(page,
+    { initialTurnIdentities: [], domCache: {} },
+    { identity: "fallback-turn-0", locator: { count: async () => 1 }, acceptedTurnIdentities: ["fallback-turn-0"] });
+  expect(rebound.identity).toBe("user-message-id");
+  expect(rebound.locator).toBe(completed);
+});
+
 test("a promoted completed answer rebinds without accepting a different user submission", async () => {
   let state = await submissionState([{
     identity: "user-message-id",

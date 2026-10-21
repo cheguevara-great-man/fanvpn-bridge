@@ -2855,7 +2855,7 @@ export class ChatGptBrowserWorker {
     signal?: AbortSignal,
   ): Promise<ChatGptSubmissionDomState> {
     throwIfPromptAttachmentAborted(signal);
-    const observed = await withChatGptBrowserObservationTimeout(withBrowserTurnAbort(page.evaluate(options => {
+    const observe = () => withChatGptBrowserObservationTimeout(withBrowserTurnAbort(page.evaluate(options => {
       type ObserverState = { id: string; revision: number; observer: MutationObserver };
       const scope = globalThis as typeof globalThis & {
         __CODEX_WEB_GPT_TURN_OBSERVER__?: ObserverState;
@@ -2881,15 +2881,23 @@ export class ChatGptBrowserWorker {
       const observerKey = `${observerState.id}:${observerState.revision}`;
       if (options.knownKey === observerKey) return { key: observerKey };
       const identities = (elements: Element[], attribute: string): string[] => {
-        const values = elements.map(element => element.getAttribute(attribute) ?? element.getAttribute("data-turn-key"));
-        if (values.some(value => typeof value !== "string" || value.trim().length === 0)) {
-          throw new Error(`ChatGPT conversation turn has no stable ${attribute} identity`);
+        const nodes = new Map<string, Element>();
+        for (const element of elements) {
+          const identity = element.getAttribute(attribute) ?? element.getAttribute("data-turn-key");
+          if (typeof identity !== "string" || identity.trim().length === 0) {
+            throw new Error(`ChatGPT conversation turn has no stable ${attribute} identity`);
+          }
+          const previous = nodes.get(identity);
+          // During renderer migration the same logical turn can match both schemas, or have
+          // matching wrapper/section nodes. Only proven containment permits coalescing; two
+          // unrelated nodes with the same identity are still ambiguous, never guessed apart.
+          if (previous === element || previous?.contains(element)) continue;
+          if (previous && !element.contains(previous)) {
+            throw new Error("ChatGPT exposed duplicate conversation turn identities");
+          }
+          nodes.set(identity, element);
         }
-        const typed = values as string[];
-        if (new Set(typed).size !== typed.length) {
-          throw new Error("ChatGPT exposed duplicate conversation turn identities");
-        }
-        return typed;
+        return [...nodes.keys()];
       };
       const visible = (element: Element): boolean => {
         const candidate = element as HTMLElement;
@@ -2939,15 +2947,34 @@ export class ChatGptBrowserWorker {
           promotedTurnIdentities[previous] = identity;
         }
       }
+      // The outgoing streaming surface can remain mounted beside the completed surface.
+      // Its assistant-only fallback container is the same reply when the completed surface
+      // proves both role keys above. Do not merge another user turn or unrelated search units.
+      const settledAliases = new Map<string, string>();
+      for (const container of currentContainers) {
+        const previous = container.getAttribute("data-turn-key")!;
+        const canonical = promotedTurnIdentities[previous];
+        if (!canonical || userIdentities.includes(previous)) continue;
+        const units = [...container.querySelectorAll("[data-chatgpt-search-unit-key]")]
+          .filter(unit => unit.closest("[data-turn-key]") === container);
+        if (units.length > 0 && units.every(unit => {
+          const match = /^(fallback-turn-\d+):\d+:(user|assistant)$/.exec(
+            unit.getAttribute("data-chatgpt-search-unit-key") ?? "",
+          );
+          return match?.[1] === previous && match[2] === "assistant";
+        })) settledAliases.set(previous, canonical);
+      }
+      const canonicalIdentities = (values: string[]): string[] =>
+        [...new Set(values.map(identity => settledAliases.get(identity) ?? identity))];
       return {
         key: observerKey,
         snapshot: {
           userTurnCount: userIdentities.length,
-          assistantTurnCount: responseIdentities.length,
+          assistantTurnCount: canonicalIdentities(responseIdentities).length,
           visibleStopButtonCount: [...document.querySelectorAll(options.stopButtonSelector)].filter(visible).length,
-          turnIdentities,
+          turnIdentities: canonicalIdentities(turnIdentities),
           userIdentities,
-          responseIdentities,
+          responseIdentities: canonicalIdentities(responseIdentities),
           promotedTurnIdentities,
         },
       };
@@ -2958,6 +2985,23 @@ export class ChatGptBrowserWorker {
       knownKey: cache?.key,
       attributeFilter: [...CHATGPT_DOM_REVISION_ATTRIBUTES],
     }), signal));
+    let observed: Awaited<ReturnType<typeof observe>>;
+    const identityDeadline = Date.now() + CHATGPT_RESPONSE_DOM_GRACE_MS;
+    for (;;) {
+      try {
+        observed = await observe();
+        break;
+      } catch (error) {
+        // React can temporarily keep old and new surfaces mounted during the first staged
+        // submission. Wait for one unambiguous projection on this page; do not click Send,
+        // replace the baseline or start a new conversation. The owning stage can abort sooner.
+        if (!(error instanceof Error)
+          || !error.message.includes("ChatGPT exposed duplicate conversation turn identities")
+          || Date.now() >= identityDeadline) throw error;
+        throwIfPromptAttachmentAborted(signal);
+        await withBrowserTurnAbort(new Promise(resolveSleep => setTimeout(resolveSleep, 250)), signal);
+      }
+    }
     const snapshot = observed.snapshot ?? cache?.snapshot;
     if (!snapshot) throw new Error("ChatGPT turn DOM revision cache has no baseline snapshot");
     if (observed.snapshot && cache) {
@@ -3140,7 +3184,9 @@ export class ChatGptBrowserWorker {
     const boundCount = await withChatGptBrowserObservationTimeout(
       withBrowserTurnAbort(binding.locator.count(), signal),
     );
-    if (boundCount === 1) return binding;
+    // A provisional surface may still exist after the completed one was promoted. Prefer
+    // the proven canonical binding even before React removes the old streaming surface.
+    if (boundCount === 1 && !/^fallback-turn-\d+$/.test(binding.identity)) return binding;
     if (boundCount > 1) {
       throw new Error(`ChatGPT exposed ${boundCount} DOM nodes for the bound assistant turn`);
     }
@@ -4929,7 +4975,7 @@ export class ChatGptBrowserWorker {
               checkpoint => diagnostics.capture(page, `multipart-${index + 1}-${checkpoint}`),
               turn.abortSignal ? AbortSignal.any([stageSignal, turn.abortSignal]) : stageSignal,
               undefined,
-              undefined,
+              turn,
               undefined,
               launcherObservationRecovery
                 ? async (...args) => {
